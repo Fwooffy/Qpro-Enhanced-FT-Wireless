@@ -59,6 +59,9 @@ $labelBridgeProcess = $null
 $launcherFailure = $null
 $hadAndroidSerial = Test-Path Env:ANDROID_SERIAL
 $previousAndroidSerial = $env:ANDROID_SERIAL
+if ([string]::IsNullOrWhiteSpace($AdbTarget) -and -not [string]::IsNullOrWhiteSpace($env:QPRO_ADB_TARGET)) {
+    $AdbTarget = $env:QPRO_ADB_TARGET.Trim()
+}
 
 function Find-AdbExecutable {
     if (-not [string]::IsNullOrWhiteSpace($env:QPRO_ADB) -and (Test-Path -LiteralPath $env:QPRO_ADB)) {
@@ -221,7 +224,14 @@ try {
         throw "Start SteamVR first. SteamVR's vrserver process was not found."
     }
 
-    $python = if (-not [string]::IsNullOrWhiteSpace($env:QPRO_PYTHON)) { $env:QPRO_PYTHON } else { Join-Path $PSScriptRoot ".venv\Scripts\python.exe" }
+    $rocmPython = Join-Path $PSScriptRoot ".venv-rocm\Scripts\python.exe"
+    $useRocm = $TonguePreview -and (Test-Path -LiteralPath $rocmPython)
+    $python = if ($useRocm) { $rocmPython } elseif (-not [string]::IsNullOrWhiteSpace($env:QPRO_PYTHON)) { $env:QPRO_PYTHON } else { Join-Path $PSScriptRoot ".venv\Scripts\python.exe" }
+    if ($useRocm) {
+        & $python -c "import torch; assert torch.version.hip and torch.cuda.is_available(), 'AMD ROCm GPU is unavailable'; print('Tongue model GPU:', torch.cuda.get_device_name(0))"
+        if ($LASTEXITCODE -ne 0) { throw "The local ROCm runtime exists, but the AMD GPU is unavailable. Tongue tracking was not started on CPU." }
+    }
+    Write-Host "PC Python runtime: $python"
     $pythonFallback = Join-Path $PSScriptRoot ".venv\Scripts\qpro-python-console.exe"
     if (-not (Test-Path -LiteralPath $python) -and (Test-Path -LiteralPath $pythonFallback)) {
         $python = $pythonFallback

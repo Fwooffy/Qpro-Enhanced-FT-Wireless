@@ -14,6 +14,10 @@ import cv2
 import numpy as np
 import torch
 
+if torch.version.hip:
+    # Windows MIOpen HIPRTC cannot compile these tongue-model BatchNorm kernels.
+    torch.backends.cudnn.enabled = False
+
 from train_tongue_model import create_model
 
 

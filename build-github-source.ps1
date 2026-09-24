@@ -27,6 +27,20 @@ $sourceFiles = @(
     "build-and-run.ps1",
     "build-release.ps1",
     "build-github-source.ps1",
+    "Connect-QproWireless.ps1",
+    "Connect-QproWireless.cmd",
+    "Pair-QproWireless.ps1",
+    "Pair-QproWireless.cmd",
+    "Launch-QproWireless.ps1",
+    "Launch-QproWireless.cmd",
+    "Enable-QproWireless.ps1",
+    "Enable-QproWireless.cmd",
+    "Disable-QproWireless.ps1",
+    "Disable-QproWireless.cmd",
+    "Install-QproRocm.ps1",
+    "Install-AMD-ROCm.cmd",
+    "Launch-QproRocm.cmd",
+    "generate_sfx.py",
     "enable-quest-wireless.ps1",
     "disable-quest-wireless.ps1",
     "preview-latest-tongue.ps1",
@@ -83,6 +97,7 @@ $sourceFiles = @(
     "CONTRIBUTING.md",
     "SECURITY.md",
     "THIRD_PARTY_NOTICES.md",
+    "UPSTREAM-README.md",
     "release-manifest.json"
 )
 foreach ($file in $sourceFiles) { Copy-SourceFile $file }
@@ -93,7 +108,7 @@ foreach ($sound in @("succeed.wav", "trainingComplete.wav", "warning.wav")) {
     Copy-SourceFile ("SFX\" + $sound)
 }
 Copy-SourceFile "RELEASE_README.md" "README.md"
-Copy-SourceFile "GITHUB_SOURCE_GITIGNORE" ".gitignore"
+Copy-SourceFile ".gitignore"
 
 $forbidden = Get-ChildItem -LiteralPath $sourceRoot -Recurse -File | Where-Object {
     $_.Extension -in @(".exe", ".dll", ".so", ".pt", ".qpcap", ".qplabel", ".jsonl", ".npy", ".npz") -or

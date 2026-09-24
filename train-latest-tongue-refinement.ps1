@@ -9,7 +9,14 @@ param(
 $ErrorActionPreference = "Stop"
 Push-Location $PSScriptRoot
 try {
-    $python = if (-not [string]::IsNullOrWhiteSpace($env:QPRO_PYTHON)) { $env:QPRO_PYTHON } else { Join-Path $PSScriptRoot ".venv\Scripts\python.exe" }
+    $rocmPython = Join-Path $PSScriptRoot ".venv-rocm\Scripts\python.exe"
+    $useRocm = Test-Path -LiteralPath $rocmPython
+    $python = if ($useRocm) { $rocmPython } elseif (-not [string]::IsNullOrWhiteSpace($env:QPRO_PYTHON)) { $env:QPRO_PYTHON } else { Join-Path $PSScriptRoot ".venv\Scripts\python.exe" }
+    if ($useRocm) {
+        & $python -c "import torch; assert torch.version.hip and torch.cuda.is_available(), 'AMD ROCm GPU is unavailable'; print('Tongue training GPU:', torch.cuda.get_device_name(0))"
+        if ($LASTEXITCODE -ne 0) { throw "The local ROCm runtime exists, but the AMD GPU is unavailable. Training was not started on CPU." }
+    }
+    Write-Host "PC Python runtime: $python"
     $pythonFallback = Join-Path $PSScriptRoot ".venv\Scripts\qpro-python-console.exe"
     if (-not (Test-Path -LiteralPath $python) -and (Test-Path -LiteralPath $pythonFallback)) { $python = $pythonFallback }
     if (-not (Test-Path -LiteralPath $python)) { throw "Set up the PC runtime first." }

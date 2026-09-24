@@ -1,9 +1,16 @@
 {
   "name": "QproFaceTracking",
   "version": "0.1.10-poc",
-  "transport": "usb",
+  "transport": "usb or ADB TCP over Wi-Fi",
+  "wirelessSetup": "on-headset root terminal or Android wireless debugging pairing; USB fallback",
   "bundledEyeProfile": "qpro-independent-visual-axis-v2.json",
   "bundledTongueModel": "qpro-stereo-tongue-v8",
   "stockMetaModelIncluded": false,
-  "status": "experimental proof of concept"
+  "status": "experimental proof of concept",
+  "edition": "AMD Wireless Edition",
+  "gpuBackends": [
+    "AMD ROCm (optional install)",
+    "NVIDIA CUDA (original setup)",
+    "CPU fallback"
+  ]
 }

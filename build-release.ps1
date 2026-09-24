@@ -48,6 +48,19 @@ function Copy-ReleaseFile([string]$RelativePath) {
 
 $runtimeFiles = @(
     "build-and-run.ps1",
+    "Connect-QproWireless.ps1",
+    "Connect-QproWireless.cmd",
+    "Pair-QproWireless.ps1",
+    "Pair-QproWireless.cmd",
+    "Launch-QproWireless.ps1",
+    "Launch-QproWireless.cmd",
+    "Enable-QproWireless.ps1",
+    "Enable-QproWireless.cmd",
+    "Disable-QproWireless.ps1",
+    "Disable-QproWireless.cmd",
+    "Install-QproRocm.ps1",
+    "Install-AMD-ROCm.cmd",
+    "Launch-QproRocm.cmd",
     "preview-latest-tongue.ps1",
     "native-eye-local-branch-test.ps1",
     "install-vrcft-eye-bridge.ps1",
@@ -100,6 +113,7 @@ foreach ($file in @("python-3.12.10-amd64.exe", "LICENSE.txt", "README.txt")) {
     Copy-ReleaseFile ("python-runtime\" + $file)
 }
 Copy-Item -LiteralPath (Join-Path $root "RELEASE_README.md") -Destination (Join-Path $releaseRoot "README.md")
+Copy-Item -LiteralPath (Join-Path $root "UPSTREAM-README.md") -Destination (Join-Path $releaseRoot "UPSTREAM-README.md")
 
 New-Item -ItemType Directory -Force -Path (Join-Path $releaseRoot "captures"), (Join-Path $releaseRoot "training"), (Join-Path $releaseRoot "research\seacliff_eye_model") | Out-Null
 Set-Content -LiteralPath (Join-Path $releaseRoot "captures\.gitkeep") -Value ""

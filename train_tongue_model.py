@@ -10,6 +10,10 @@ from pathlib import Path
 
 import numpy as np
 import torch
+
+if torch.version.hip:
+    # Windows MIOpen HIPRTC cannot compile these tongue-model BatchNorm kernels.
+    torch.backends.cudnn.enabled = False
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
@@ -612,6 +616,12 @@ def main() -> int:
         f"{metrics['fusedVisibilityThreshold']:.2f}"
     )
     print(f"MODEL {output}")
+    if device.type == "cuda" and torch.version.hip:
+        # Windows ROCm can leave the Python process alive after training unless
+        # outstanding GPU work is synchronized before interpreter shutdown.
+        print("TRAIN_STATUS phase=rocm-finalize", flush=True)
+        torch.cuda.synchronize(device)
+        print("TRAIN_STATUS phase=rocm-finalized", flush=True)
     return 0
 
 

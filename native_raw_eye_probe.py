@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read VisualAxisDetector outputs before EyeData publication and fusion."""
+"""Read Quest Pro detector eye vectors from supported tracking-engine builds."""
 
 from __future__ import annotations
 
@@ -25,19 +25,36 @@ from native_eye_pupil_probe import KernelToPcMonotonicClock
 
 
 ENGINE_PATH = "/odm/lib64/libtrackingengines.so"
-EXPECTED_ENGINE_SIZE = 47_724_232
 TRACE_ROOT = "/sys/kernel/tracing"
 TRACE_INSTANCE = "qpro_raw_eye"
 TRACE_GROUP = "qpro_raw_eye"
 
-# Firmware-specific file offsets in the Quest Pro engine pulled on 2026-08-05.
-# VisionInterfaceResultsPublisher::publish calls the left EyeData accessor, then
-# the right accessor. At these two instruction boundaries x21 and x0 hold the
-# respective EyeData pointers. raw_gaze.visual_axis is EyeData + 0x300.
-LEFT_PROBE_OFFSET = 0xA0AAF0
-RIGHT_PROBE_OFFSET = 0xA0AAF8
-PREMERGE_PROBE_OFFSET = 0xB87EE0
-DETECTOR_PROBE_OFFSET = 0xB63FE4
+@dataclass(frozen=True)
+class EngineProbeProfile:
+    size: int
+    offset: int
+    arguments: str
+    sha256: str | None = None
+
+
+# The first profile is the previously supported 51483620027600340 engine.
+# The second is 51503870024400340. Its hook is after the detector has stored
+# the three visual-axis floats in EyeData; x19 still points to that EyeData.
+ENGINE_PROFILES = (
+    EngineProbeProfile(
+        47_724_232,
+        0xB63FE4,
+        "x=+0x30(%sp):x32 y=+0x34(%sp):x32 z=+0x38(%sp):x32 "
+        "tag=+0x0(%x19):x32",
+    ),
+    EngineProbeProfile(
+        47_418_280,
+        0xB1F3E8,
+        "x=+0x300(%x19):x32 y=+0x304(%x19):x32 z=+0x308(%x19):x32 "
+        "tag=+0x0(%x19):x32",
+        "0fb6f54a3e190bec791d757ea18d32a8ecc1af4a861992d04b1703c93293cd03",
+    ),
+)
 
 TRACE_SAMPLE = re.compile(
     r"(?P<time>\d+\.\d+): qpro_(?P<eye>left|right): .*?"
@@ -337,6 +354,7 @@ class RawTraceEyeReader:
         self._configured = False
         self._clock = KernelToPcMonotonicClock()
         self._root_shell: PersistentAdbRootShell | None = None
+        self.engine_profile: EngineProbeProfile | None = None
 
     @property
     def instance_path(self) -> str:
@@ -431,19 +449,28 @@ class RawTraceEyeReader:
             engine_size = int(size_result.stdout.strip().splitlines()[-1])
         except (ValueError, IndexError) as error:
             raise RuntimeError("Could not verify the headset tracking-engine build") from error
-        if engine_size != EXPECTED_ENGINE_SIZE:
+        profile = next((item for item in ENGINE_PROFILES if item.size == engine_size), None)
+        if profile is None:
             raise RuntimeError(
-                f"Tracking-engine size changed ({engine_size}, expected "
-                f"{EXPECTED_ENGINE_SIZE}); do not use firmware-specific probe offsets"
+                f"Unsupported tracking-engine size ({engine_size}); "
+                "do not use firmware-specific probe offsets"
             )
+        if profile.sha256 is not None:
+            hash_result = self._adb_root(f"sha256sum {ENGINE_PATH}")
+            actual_hash = hash_result.stdout.strip().split()[0].lower()
+            if actual_hash != profile.sha256:
+                raise RuntimeError(
+                    "Tracking-engine hash differs from the validated build; "
+                    "do not use firmware-specific probe offsets"
+                )
+        self.engine_profile = profile
 
         self._cleanup()
         self._adb_root(f"mkdir {self.instance_path}")
         try:
             self._write_event(
-                f"p:{TRACE_GROUP}/detector_output {ENGINE_PATH}:0x{DETECTOR_PROBE_OFFSET:x} "
-                "x=+0x30(%sp):x32 y=+0x34(%sp):x32 z=+0x38(%sp):x32 "
-                "tag=+0x0(%x19):x32"
+                f"p:{TRACE_GROUP}/detector_output {ENGINE_PATH}:0x{profile.offset:x} "
+                f"{profile.arguments}"
             )
             self._adb_root(
                 f"echo 1 '>' {self.instance_path}/events/{TRACE_GROUP}/detector_output/enable"
@@ -519,12 +546,14 @@ class RawTraceEyeReader:
             self._root_shell = None
 
 
-def save_capture(path: Path, samples: list[RawEyeSample]) -> None:
+def save_capture(
+    path: Path, samples: list[RawEyeSample], profile: EngineProbeProfile
+) -> None:
     payload = {
         "format": "qpro-visual-axis-detector-output-v1",
         "created_unix_ns": time.time_ns(),
-        "engine_size": EXPECTED_ENGINE_SIZE,
-        "probe_offset": DETECTOR_PROBE_OFFSET,
+        "engine_size": profile.size,
+        "probe_offset": profile.offset,
         "eye_mapping": "EyeData tag byte 0=left, 1=right",
         "samples": [asdict(sample) for sample in samples],
     }
@@ -735,7 +764,8 @@ def main() -> int:
             if character == "s":
                 stamp = time.strftime("%Y%m%d-%H%M%S")
                 path = Path("calibration") / f"detector-eye-probe-{stamp}.json"
-                save_capture(path, samples)
+                assert reader.engine_profile is not None
+                save_capture(path, samples, reader.engine_profile)
                 saved_message = f"Saved {path.resolve()}"
     finally:
         if calibration is not None:
