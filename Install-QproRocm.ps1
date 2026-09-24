@@ -30,8 +30,16 @@ if (-not (Test-Path -LiteralPath $qproRocmPython)) {
 }
 
 $qproRuntimeReady = $false
-& $qproRocmPython -c "import cv2,numpy,torch; assert torch.version.hip and torch.cuda.is_available()" > $null 2>&1
-if ($LASTEXITCODE -eq 0) { $qproRuntimeReady = $true }
+$qproSavedErrorActionPreference = $ErrorActionPreference
+try {
+    # Windows PowerShell 5.1 can promote Python's expected import traceback on
+    # stderr into a terminating NativeCommandError when preference is Stop.
+    $ErrorActionPreference = 'Continue'
+    & $qproRocmPython -c "import cv2,numpy,torch; assert torch.version.hip and torch.cuda.is_available()" > $null 2>&1
+    $qproRuntimeReady = $LASTEXITCODE -eq 0
+} finally {
+    $ErrorActionPreference = $qproSavedErrorActionPreference
+}
 
 if (-not $qproRuntimeReady) {
     & $qproRocmPython -m pip install --disable-pip-version-check --upgrade pip
