@@ -1,5 +1,7 @@
 dist/
 artifacts/
+**/bin/
+**/obj/
 .venv/
 .venv-*/
 __pycache__/

@@ -30,7 +30,7 @@ automatically generated “Source code” archives do not contain the large exec
 pretrained model, private Python installer, or bundled Android tools required to
 run the application.
 
-QproFaceTracking is an experimental, USB-connected Quest Pro proof of concept for
+QproFaceTracking is an experimental Quest Pro proof of concept for
 VRCFaceTracking. It keeps Virtual Desktop's normal face, brow, jaw, and blink data,
 then optionally replaces only:
 
@@ -40,14 +40,14 @@ then optionally replaces only:
   two lower-face cameras.
 
 This is enthusiast research software, not a polished consumer driver. It requires a
-rooted Quest Pro and currently supports USB only.
+rooted Quest Pro and supports USB or wireless ADB on a trusted private network.
 
 ## Requirements
 
 - Windows 10 or 11 x64
 - Rooted Quest Pro with face and eye tracking enabled
 - Magisk Superuser access granted to **Shell / ADB Shell**
-- Meta developer mode and an authorized USB debugging connection
+- Meta developer mode and an authorized ADB debugging connection over USB or Wi-Fi
 - No separate ADB installation; the release includes the required official Android
   Platform-Tools files
 - SteamVR, Virtual Desktop, and VRCFaceTracking
@@ -75,7 +75,7 @@ DISCLAIMER: Eye convergence may NOT work on modern firmwares, I have ONLY tested
 6. Start Virtual Desktop, SteamVR, and VRCFT. Confirm ordinary tracking works.
 7. Choose gaze and/or tongue tracking, select profiles and settings, then press
    **Apply and start selected**.
-8. Press **Stop and restore stock** before disconnecting USB or closing the app.
+8. Press **Stop and restore stock** before disconnecting the headset or closing the app.
 
 Tongue training automatically selects CUDA when PyTorch can access it and falls
 back to CPU instead of failing on systems without NVIDIA graphics. The

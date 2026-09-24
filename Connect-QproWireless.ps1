@@ -38,9 +38,16 @@ $ErrorActionPreference = "Continue"
 $connectOutput = (& $adb connect $AdbTarget 2>&1) -join "`n"
 $state = (& $adb -s $AdbTarget get-state 2>&1) -join "`n"
 $stateExit = $LASTEXITCODE
+if ($stateExit -ne 0 -or $state.Trim() -ne "device") {
+    # ADB can report "already connected" while keeping a stale offline transport.
+    $null = & $adb disconnect $AdbTarget 2>&1
+    $connectOutput = (& $adb connect $AdbTarget 2>&1) -join "`n"
+    $state = (& $adb -s $AdbTarget get-state 2>&1) -join "`n"
+    $stateExit = $LASTEXITCODE
+}
 $ErrorActionPreference = "Stop"
 if ($stateExit -ne 0 -or $state.Trim() -ne "device") {
-    throw "Could not connect to $AdbTarget. Enable Wireless ADB on the headset, then check its current IP and port. $connectOutput"
+    throw "Could not authorize $AdbTarget. Wake the Quest, approve its debugging prompt if shown, and check its current Wi-Fi IP and port. $connectOutput $state"
 }
 
 $ErrorActionPreference = "Continue"

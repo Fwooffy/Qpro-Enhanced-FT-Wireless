@@ -24,9 +24,14 @@ if ($AdbTarget -notmatch '^\d{1,3}(?:\.\d{1,3}){3}:\d{2,5}$') {
 $ErrorActionPreference = "Continue"
 $null = & $adb connect $AdbTarget 2>&1
 $state = (& $adb -s $AdbTarget get-state 2>&1) -join "`n"
+if ($LASTEXITCODE -ne 0 -or $state.Trim() -ne "device") {
+    $null = & $adb disconnect $AdbTarget 2>&1
+    $null = & $adb connect $AdbTarget 2>&1
+    $state = (& $adb -s $AdbTarget get-state 2>&1) -join "`n"
+}
 $ErrorActionPreference = "Stop"
 if ($LASTEXITCODE -ne 0 -or $state.Trim() -ne "device") {
-    throw "The Quest is unavailable at $AdbTarget. Enable Wireless ADB in the headset, then run Connect-QproWireless.cmd with its current IP and port."
+    throw "The Quest is unavailable or unauthorized at $AdbTarget. Wake it, approve any debugging prompt, then run Connect-QproWireless.cmd with its current IP and port."
 }
 $ErrorActionPreference = "Continue"
 $rootProbe = (& $adb -s $AdbTarget shell su -c id 2>&1) -join "`n"

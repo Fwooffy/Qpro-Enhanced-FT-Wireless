@@ -256,7 +256,7 @@ internal sealed class HubForm : Form
         page.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         var title = new Label { Text = "QproFaceTracking · Proof of Concept", AutoSize = true, Font = new Font(UiFontName, 22F, FontStyle.Bold), ForeColor = Color.White };
-        var subtitle = new Label { Text = "USB-first control hub · stock Virtual Desktop face, brow, jaw, and blink tracking stays intact", AutoSize = true, ForeColor = Muted, Margin = new Padding(2, 4, 0, 18) };
+        var subtitle = new Label { Text = "USB or Wi-Fi control hub · stock Virtual Desktop face, brow, jaw, and blink tracking stays intact", AutoSize = true, ForeColor = Muted, Margin = new Padding(2, 4, 0, 18) };
         var heading = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, Dock = DockStyle.Top };
         heading.Controls.Add(title); heading.Controls.Add(subtitle);
         page.Controls.Add(heading, 0, 0);
@@ -264,7 +264,7 @@ internal sealed class HubForm : Form
         var statuses = Card();
         statuses.ColumnCount = 6;
         statuses.RowCount = 2;
-        foreach (var label in new[] { "Quest USB", "SteamVR", "VRCFaceTracking", "Combined bridge", "PC runtime", "Gaze support" })
+        foreach (var label in new[] { "Quest ADB", "SteamVR", "VRCFaceTracking", "Combined bridge", "PC runtime", "Gaze support" })
             statuses.Controls.Add(new Label { Text = label, AutoSize = true, ForeColor = Muted, Margin = new Padding(8, 5, 25, 2) });
         foreach (var label in new[] { _usbStatus, _steamStatus, _vrcftStatus, _bridgeStatus, _runtimeStatus, _gazeStatus })
             statuses.Controls.Add(label);
@@ -435,7 +435,7 @@ internal sealed class HubForm : Form
         logCard.Controls.Add(logLayout); body.Panel2.Controls.Add(logCard);
         page.Controls.Add(body, 0, 3);
 
-        page.Controls.Add(new Label { Text = "Experimental research software. Press Stop before disconnecting USB or closing the hub.", AutoSize = true, ForeColor = Muted, Margin = new Padding(2, 12, 0, 0) }, 0, 4);
+        page.Controls.Add(new Label { Text = "Experimental research software. Press Stop before disconnecting the headset or closing the hub.", AutoSize = true, ForeColor = Muted, Margin = new Padding(2, 12, 0, 0) }, 0, 4);
         viewport.Controls.Add(page);
         return viewport;
     }
@@ -538,7 +538,7 @@ internal sealed class HubForm : Form
     {
         var missing = new List<string>();
         if (FindAdb() is null) missing.Add("re-extract the release; bundled platform-tools\\adb.exe is missing");
-        else if (!await HasUsbQuestAsync()) missing.Add("connect and authorize the rooted Quest Pro over USB");
+        else if (!await HasQuestAsync()) missing.Add("connect and authorize the rooted Quest Pro over USB or wireless ADB");
         if (!Process.GetProcessesByName("vrserver").Any()) missing.Add("start SteamVR");
         if (!Process.GetProcessesByName("VRCFaceTracking").Any()) missing.Add("start VRCFaceTracking and confirm Virtual Desktop face tracking is flowing");
         if (!BackendReady()) missing.Add("run First-time setup: Set up PC runtime");
@@ -622,25 +622,29 @@ internal sealed class HubForm : Form
             .Select(line => line.Trim())
             .Where(line => line.Length > 0)
             .ToArray();
-        var connected = deviceLines.Any(line => line.Contains("\tdevice", StringComparison.Ordinal));
+        var connected = await HasQuestAsync();
         if (!connection.Completed || !connected)
         {
             var stateHint = deviceLines.Any(line => line.Contains("\tunauthorized", StringComparison.OrdinalIgnoreCase))
-                ? "The headset is listed as unauthorized. Put it on and accept the USB debugging prompt."
+                ? "The headset is listed as unauthorized. Put it on and accept the debugging authorization prompt."
                 : deviceLines.Any(line => line.Contains("\toffline", StringComparison.OrdinalIgnoreCase))
-                    ? "The headset is listed as offline. Reconnect the USB cable and restart ADB or the headset."
+                    ? "The headset is listed as offline. Reconnect wireless ADB or the USB cable and try again."
                     : "No authorized headset was found over ADB.";
             PlaySfx("warning.wav");
             MessageBox.Show(
                 this,
-                stateHint + "\n\nConfirm that your Quest Pro is:\n\n• plugged into this PC with a USB data cable\n• awake, with Developer Mode enabled\n• authorized for USB debugging inside the headset\n\nThen press Prepare gaze again.",
+                stateHint + "\n\nFor wireless use, run Connect-QproWireless.cmd and then Launch-QproWireless.cmd. Confirm the headset is awake and Magisk Shell access is granted. USB is also supported. Then press Prepare gaze again.",
                 "Quest Pro not found over ADB",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
             return;
         }
 
-        var root = await RunAdbProbeAsync(adb, ["shell", "su", "-c", "id"], 8);
+        var target = GetConfiguredAdbTarget();
+        var rootArguments = string.IsNullOrWhiteSpace(target)
+            ? new[] { "shell", "su", "-c", "id" }
+            : new[] { "-s", target, "shell", "su", "-c", "id" };
+        var root = await RunAdbProbeAsync(adb, rootArguments, 8);
         if (!root.Completed || root.ExitCode != 0 || !root.Output.Contains("uid=0", StringComparison.OrdinalIgnoreCase))
         {
             PlaySfx("warning.wav");
@@ -731,7 +735,7 @@ internal sealed class HubForm : Form
         if (!_gaze.Checked && !_tongue.Checked) { PlaySfx("warning.wav"); MessageBox.Show(this, "Select at least one tracking feature."); return; }
         var missing = new List<string>();
         if (FindAdb() is null) missing.Add("the bundled Android tools — re-extract the complete release");
-        else if (!await HasUsbQuestAsync()) missing.Add("an authorized Quest connected by USB");
+        else if (!await HasQuestAsync()) missing.Add("an authorized Quest over USB or wireless ADB (run Connect-QproWireless.cmd, then Launch-QproWireless.cmd)");
         if (!Process.GetProcessesByName("vrserver").Any()) missing.Add("SteamVR");
         if (!Process.GetProcessesByName("VRCFaceTracking").Any()) missing.Add("VRCFaceTracking");
         if (!BridgeInstalled()) missing.Add("the combined Qpro VRCFT bridge — use First-time setup step 2");
@@ -1212,12 +1216,18 @@ internal sealed class HubForm : Form
             info.Environment["QPRO_PYTHON"] = python;
         var adb = FindAdb();
         if (adb is not null) info.Environment["QPRO_ADB"] = adb;
+        var target = GetConfiguredAdbTarget();
+        if (!string.IsNullOrWhiteSpace(target))
+        {
+            info.Environment["ANDROID_SERIAL"] = target;
+            info.Environment["QPRO_ADB_TARGET"] = target;
+        }
         return info;
     }
 
     private async Task RefreshStatusAsync()
     {
-        var usb = await HasUsbQuestAsync();
+        var usb = await HasQuestAsync();
         var steam = Process.GetProcessesByName("vrserver").Any();
         var vrcft = Process.GetProcessesByName("VRCFaceTracking").Any();
         SetStatus(_usbStatus, usb ? StatusKind.Good : StatusKind.Bad, usb ? "Connected" : "Not connected");
@@ -1266,21 +1276,42 @@ internal sealed class HubForm : Form
         }
     }
 
-    private async Task<bool> HasUsbQuestAsync()
+    private string? GetConfiguredAdbTarget()
+    {
+        foreach (var value in new[] { Environment.GetEnvironmentVariable("QPRO_ADB_TARGET"), Environment.GetEnvironmentVariable("ANDROID_SERIAL") })
+            if (!string.IsNullOrWhiteSpace(value)) return value.Trim();
+
+        var configPath = Path.Combine(_root, "config", "wireless-headset.json");
+        try
+        {
+            if (File.Exists(configPath))
+                return JsonNode.Parse(File.ReadAllText(configPath))?["adbTarget"]?.GetValue<string>()?.Trim();
+        }
+        catch { /* An invalid local config must not crash the hub. */ }
+        return null;
+    }
+
+    private async Task<bool> HasQuestAsync()
     {
         var adb = FindAdb();
         if (adb is null) return false;
-        try
+        var target = GetConfiguredAdbTarget();
+        if (!string.IsNullOrWhiteSpace(target))
         {
-            var info = new ProcessStartInfo(adb) { UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true };
-            info.ArgumentList.Add("devices");
-            using var process = Process.Start(info)!;
-            var output = await process.StandardOutput.ReadToEndAsync();
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-            await process.WaitForExitAsync(timeout.Token);
-            return output.Split('\n').Skip(1).Any(line => line.Trim().EndsWith("\tdevice", StringComparison.Ordinal));
+            var state = await RunAdbProbeAsync(adb, ["-s", target, "get-state"], 3);
+            if (state.Completed && state.ExitCode == 0 && state.Output.Trim() == "device") return true;
+            if (target.Contains(':'))
+            {
+                await RunAdbProbeAsync(adb, ["connect", target], 5);
+                state = await RunAdbProbeAsync(adb, ["-s", target, "get-state"], 3);
+                return state.Completed && state.ExitCode == 0 && state.Output.Trim() == "device";
+            }
+            return false;
         }
-        catch { return false; }
+        var devices = await RunAdbProbeAsync(adb, ["devices"], 3);
+        return devices.Completed && devices.ExitCode == 0 &&
+            devices.Output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+                .Count(line => line.Trim().EndsWith("\tdevice", StringComparison.Ordinal)) == 1;
     }
 
     private static async Task<(bool Completed, int ExitCode, string Output)> RunAdbProbeAsync(string adb, IEnumerable<string> arguments, int timeoutSeconds = 4)
