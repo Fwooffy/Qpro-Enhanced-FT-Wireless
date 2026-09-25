@@ -1,7 +1,8 @@
-# Quest Pro Enhanced Face Tracking — AMD Wireless Edition
+# QproFaceTracking — AMD/NVIDIA Wireless Edition
 
-This fork adds optional AMD ROCm acceleration for the tongue model and wireless ADB
-transport to [Qpro-Enhanced-FT](https://github.com/n0tmast3r/Qpro-Enhanced-FT).
+This project builds on the original
+[Qpro-Enhanced-FT](https://github.com/n0tmast3r/Qpro-Enhanced-FT) and adds
+optional AMD ROCm acceleration for the tongue model and wireless ADB transport.
 The original NVIDIA CUDA and CPU runtime paths remain available. Download the
 complete [AMD Wireless Edition release](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases),
 not GitHub's automatically generated source archive, to get the runnable Windows
@@ -14,7 +15,7 @@ compatibility is retained in code but has not been tested with this edition.
 
 The rest of this README preserves the original project's setup and feature notes.
 Its USB-only and NVIDIA-focused instructions describe the upstream build; use
-the edition setup guide for this fork's additions.
+the edition setup guide for this project's additions.
 
 ## [Watch the demo!](https://youtu.be/BR_hIHFeo80)
 [![Watch the demo](https://github.com/user-attachments/assets/df6e8aab-7081-449b-bb0d-14f7e286a5b3)](https://youtu.be/BR_hIHFeo80)
