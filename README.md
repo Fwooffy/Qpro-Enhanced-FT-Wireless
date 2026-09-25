@@ -1,184 +1,58 @@
 # QproFaceTracking — AMD/NVIDIA Wireless Edition
 
-This project builds on the original
-[Qpro-Enhanced-FT](https://github.com/n0tmast3r/Qpro-Enhanced-FT) and adds
-optional AMD ROCm acceleration for the tongue model and wireless ADB transport.
-The original NVIDIA CUDA and CPU runtime paths remain available. Download the
-complete [AMD Wireless Edition release](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases),
-not GitHub's automatically generated source archive, to get the runnable Windows
-hub and bundled Android tools. See the [edition setup guide](RELEASE_README.md)
-for AMD, NVIDIA, and cable-free setup steps.
+Experimental face-tracking tools for a **rooted Quest Pro** on Windows. This edition builds on [n0tmast3r's Qpro-Enhanced-FT](https://github.com/n0tmast3r/Qpro-Enhanced-FT) and adds wireless ADB support and an optional AMD ROCm path for tongue tracking and training. The original NVIDIA CUDA and CPU paths remain in the code.
 
-Wireless ADB and the camera relay were tested on a rooted Quest Pro running build
-`51503870024400340`. AMD inference was tested with a Radeon RX 7900 XTX. NVIDIA
-compatibility is retained in code but has not been tested with this edition.
+**[Download the latest release](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases/latest)** · [Detailed setup guide](RELEASE_README.md) · [Community support](https://discord.com/invite/hantnor)
 
-The rest of this README preserves the original project's setup and feature notes.
-Its USB-only and NVIDIA-focused instructions describe the upstream build; use
-the edition setup guide for this project's additions.
+Download the **ZIP asset** from Releases and extract the entire folder. GitHub's automatically generated source archives do not include the runnable Hub, demonstration model, Android tools, or bundled Python installer.
 
-## [Watch the demo!](https://youtu.be/BR_hIHFeo80)
-[![Watch the demo](https://github.com/user-attachments/assets/df6e8aab-7081-449b-bb0d-14f7e286a5b3)](https://youtu.be/BR_hIHFeo80)
+## New to rooting a Quest Pro?
 
-## ROOT IS REQUIRED FOR THIS TO FUNCITON. IF YOU ARE NOT ON v2.7 OR LOWER THIS WILL NOT WORK
-[Root details](https://github.com/Lumince/singularity)
+Start with [**Root Your Meta Quest with Singularity — a beginner guide by Fwooffy**](https://github.com/glorpette/quest-guides/blob/main/root_guide_by_fwooffy.md). Fwooffy created the guide; it is hosted in the `glorpette/quest-guides` repository. It covers a Meta developer account, ADB, checking the headset’s exact firmware build, Singularity, wireless debugging, and verifying root.
 
-## Download
+Before changing your headset, compare its **exact model and firmware build** with the current [Singularity documentation and releases](https://github.com/Lumince/singularity). The root guide covers several Quest models; **this face-tracking app is for Quest Pro**.
 
-For normal use, download the complete `QproFaceTracking-0.1.10-AMD-Wireless-Edition.zip`
-package from this repository's **Releases** page and extract the whole folder. GitHub's
-automatically generated “Source code” archives do not contain the large executable,
-pretrained model, private Python installer, or bundled Android tools required to
-run the application.
+## What the public release does
 
-QproFaceTracking is an experimental Quest Pro proof of concept for
-VRCFaceTracking. It keeps Virtual Desktop's normal face, brow, jaw, and blink data,
-then optionally replaces only:
+- Preserves Virtual Desktop's normal face, brow, jaw, and blink tracking while adding optional independent eye gaze and convergence.
+- Adds stereo camera tongue tracking with a demonstration model that can be personalized through a quick refinement or full capture.
+- Carries headset camera and eye data over USB or wireless ADB. Wireless ADB requires Magisk root access for Shell / ADB Shell and a trusted private network.
+- Runs the tongue model on AMD ROCm, NVIDIA CUDA, or CPU when the corresponding runtime is available. The Hub's Activity log reports the backend used.
 
-- left/right gaze with independently preserved detector rays, allowing visible eye
-  divergence and convergence; and
-- detailed tongue channels with a personalized stereo model using the Quest Pro's
-  two lower-face cameras.
-
-This is enthusiast research software, not a polished consumer driver. It requires a
-rooted Quest Pro and supports USB or wireless ADB on a trusted private network.
+**Experimental relative pupil dilation** is being tested in local builds. Check a release's notes before expecting it in the downloadable version; it is an avatar animation estimate, not a calibrated pupil measurement.
 
 ## Requirements
 
-- Windows 10 or 11 x64
-- Rooted Quest Pro with face and eye tracking enabled
-- Magisk Superuser access granted to **Shell / ADB Shell**
-- Meta developer mode and an authorized ADB debugging connection over USB or Wi-Fi
-- No separate ADB installation; the release includes the required official Android
-  Platform-Tools files
-- SteamVR, Virtual Desktop, and VRCFaceTracking
-- A current NVIDIA display driver is strongly recommended for fast tongue-model
-  training. NVIDIA hardware is optional; CPU training is supported but is much
-  slower, especially for the full dataset.
+- Windows 10 or 11, x64.
+- A rooted Quest Pro with eye and face tracking enabled, Developer Mode on, and an authorized ADB connection.
+- Magisk Superuser access granted to Shell / ADB Shell.
+- Virtual Desktop, SteamVR, and VRCFaceTracking for the tracking workflow.
+- Internet access and free disk space for the PC runtime. The release bundles ADB, so a separate ADB installation is not needed for the Hub.
+
+The wireless transport and AMD inference were tested on a Quest Pro with build `51503870024400340` and a Radeon RX 7900 XTX. NVIDIA support is retained but has not been live-tested in this edition. Eye convergence can vary by firmware; a successful root or eye-camera connection does not establish convergence support on every build.
 
 ## First run
-DISCLAIMER: Eye convergence may NOT work on modern firmwares, I have ONLY tested it on version `51483620027600340`
 
-1. Extract the entire release folder. Do not run the executable from inside the zip.
-2. Double-click `QproFaceTracking.exe`.
-3. Select **Set up PC runtime**. No preinstalled Python or PATH modification is
-   required. The release carries the official signed Python 3.12.10 installer and
-   silently installs a private per-user copy plus OpenCV, NumPy, and PyTorch under
-   `%LOCALAPPDATA%\QproFaceTracking\runtime`. It creates no launcher, shortcuts,
-   file associations, or PATH entries. PyTorch is a large download, but later
-   release folders reuse the same runtime. Setup uses PyTorch's official CUDA 12.8
-   wheel when an NVIDIA driver/GPU is detected and the official CPU wheel
-   otherwise.
-4. Close VRCFaceTracking, then select **Install/update bridge**. Restart VRCFT.
-5. For independent gaze, connect the rooted headset and select **Prepare gaze from
-   headset**. The tool reads the stock eye archive from *your headset*, creates the
-   byte-length-preserving local patch, and deletes the temporary stock copy.
-6. Start Virtual Desktop, SteamVR, and VRCFT. Confirm ordinary tracking works.
-7. Choose gaze and/or tongue tracking, select profiles and settings, then press
-   **Apply and start selected**.
-8. Press **Stop and restore stock** before disconnecting the headset or closing the app.
+1. Extract the complete release ZIP. Open `QproFaceTracking.exe` from the extracted folder, not from inside the ZIP.
+2. Use the Hub’s **Set up PC runtime** action. It creates a separate Qpro Python environment. If a compatible 64-bit Python 3.12 is already installed, setup can use it as the base without replacing its packages.
+3. For an AMD GPU, close the Hub and run `Install-AMD-ROCm.cmd`, then reopen the Hub. NVIDIA and CPU users skip this helper.
+4. Close VRCFaceTracking, use **Install/update bridge** in the Hub, then restart VRCFaceTracking.
+5. For independent gaze, connect the rooted headset and use **Prepare gaze from headset**. The Hub makes a temporary patch from your headset’s own eye model.
+6. Start Virtual Desktop, SteamVR, and VRCFaceTracking. Confirm ordinary face tracking works, select the features you want in the Hub, then press **Apply and start selected**.
+7. When finished, press **Stop and restore stock** and wait for the Activity log to confirm cleanup.
 
-Tongue training automatically selects CUDA when PyTorch can access it and falls
-back to CPU instead of failing on systems without NVIDIA graphics. The
-personalization page shows frame preparation, the active device, checkpoint stage,
-epoch count, and overall completion while training is active. The progress panel is
-collapsed while idle, and the personalization page has its own scrollbar when the
-live status needs more room. CPU mode uses a smaller batch to remain usable
-on ordinary PCs, but it can take substantially longer; full-dataset CPU training
-may take hours. Installing the CUDA-enabled PyTorch wheel does not replace the
-Windows NVIDIA display driver—the driver must already be installed and working.
+For cable-free sessions after rooting, use `Connect-QproWireless.cmd` (or `Pair-QproWireless.cmd` if pairing is needed), followed by `Launch-QproWireless.cmd`. The [detailed setup guide](RELEASE_README.md) explains pairing, AMD and NVIDIA setup, and troubleshooting.
 
-If gaze startup was interrupted, the next launch automatically removes the stale
-headset trace reader before applying the independent-eye branch. You should not
-need to reboot the headset or manually clean tracefs.
+## Models, data, and source
 
-## Included profiles
+The bundled tongue model and eye profile are **developer demonstrations**, so alignment and tongue detection may differ for another wearer. Quick refinement is a practical starting point. Personal captures, trained models, saved headset addresses, and generated eye patches are not included in the release ZIP. Camera captures are sensitive: share them only with the wearer’s permission.
 
-- `Developer visual-axis mapping v2` is a demonstrator calibrated to the original
-  developer. Eye anatomy and headset fit differ, so its absolute alignment may be
-  imperfect for another wearer.
-- `Developer-trained tongue model v8 (demo)` is trained on one person. It is useful
-  as an immediate bootstrap/demo, not a universal model. Quick refinement is
-  recommended for another wearer; false positives and blind spots remain possible
-  with different mouths, facial hair, clothing, and headset fit.
+This repository holds the editable source. Its release build also needs larger assets distributed with the ZIP. See [contributing](CONTRIBUTING.md), [third-party notices](THIRD_PARTY_NOTICES.md), and the [license](LICENSE) before redistributing changes. The [upstream README](UPSTREAM-README.md) retains the original project’s notes, including older USB-oriented instructions.
 
-The hub discovers additional paired tongue files named
-`qpro-stereo-tongue-vN-gate.pt` and `qpro-stereo-tongue-vN-direction.pt`. Full or
-quick-personalization training chooses the next unused version and never overwrites
-the bundled v8 pair.
+## Credits
 
-After a guided capture closes, the hub asks for a friendly dataset name. The raw
-timestamped capture remains unchanged for reliability, while the friendly name is
-stored in its session metadata and carried into the trained model. Each
-personalization card lists completed, untrained datasets; select the one you want
-before pressing Train. Successfully trained datasets leave that queue.
-When running from a versioned `dist` folder, the hub also discovers captures in
-adjacent QproFaceTracking release folders, so an upgrade does not hide recordings
-made with the previous build.
-On first launch it also copies complete personal tongue model pairs from an
-adjacent older release into the new release folder. The public package itself still
-contains only the developer v8 demonstration model.
+- [n0tmast3r](https://github.com/n0tmast3r/Qpro-Enhanced-FT) created the original Qpro-Enhanced-FT project.
+- [Lumince and Singularity contributors](https://github.com/Lumince/singularity) created the headset root project used by this workflow.
+- **Fwooffy** created the [beginner Quest root guide](https://github.com/glorpette/quest-guides/blob/main/root_guide_by_fwooffy.md), hosted by [glorpette](https://github.com/glorpette/quest-guides).
 
-Capture currently requires Virtual Desktop tracking, SteamVR, and VRCFaceTracking
-to be running because the trainer records Quest Pro's native `TongueOut` confidence
-as an auxiliary visibility label. The hub checks these common prerequisites before
-opening the guided camera window and explains what is missing directly.
-
-The **Tongue model manager** tab can rename, export, import, and delete personal
-paired models. Export produces one `.qptonguemodel` package containing both neural
-network checkpoints. Import assigns the next unused local version. Only import
-models from people you trust; PyTorch model files are executable data when loaded.
-The bundled developer v8 demo is protected from accidental deletion.
-
-## Tongue controls
-
-- **Motion smoothing:** left/`0` is most responsive; right/`100` is smoothest but
-  adds latency. Camera inference is frame-based, so this control filters steps but
-  does not create extra tracking samples between camera frames.
-- **Weighted camera + native:** recommended default; combines the stereo model with
-  Quest Pro's native `TongueOut` confidence.
-- **Camera only:** ignores native tongue confidence.
-- **Native only:** diagnostic visibility gate; direction still comes from cameras.
-- **Conservative agreement:** requires both visibility sources and reduces false
-  positives, at the cost of more false negatives.
-- **Camera FPS cap:** 24 is the conservative default. Higher choices, up to 72,
-  request a faster headset source cadence. On the tested Quest Pro, a 72 cap was
-  stable but produced about 36 paired stereo samples per second; it does not imply
-  72 completed tongue inferences per second.
-
-## Source and development
-
-The main repository contains the editable WinForms/.NET hub, Python tracking and
-training code, and C headset relay/injector sources. Large generated executables,
-the developer-trained model, Android tools, and the private Python installer are
-kept out of Git history and distributed in the versioned Release package instead.
-That keeps clones reviewable while ordinary users still receive a complete build.
-
-A source-only clone can build and edit the managed/Python/C components, but the
-full `build-release.ps1` packaging step also requires maintainer-staged assets that
-are intentionally not kept in Git: the developer model checkpoints, official
-Python installer, Android Platform Tools, and prebuilt rooted-headset binaries.
-GitHub does not automatically produce a runnable package from the repository;
-official runnable builds are attached explicitly on the Releases page.
-
-Developers rebuilding native components can run:
-
-```powershell
-.\build-and-run.ps1 -RebuildNative
-```
-
-Developers rebuilding managed helpers can use `-RebuildManaged` or build the
-individual `.csproj` files. See `CONTRIBUTING.md` and `THIRD_PARTY_NOTICES.md` before
-redistributing changes.
-
-## Safety and privacy
-
-Inward camera frames are highly sensitive. Live frames remain local and recordings
-are created only during explicit calibration. Never publish `captures/`,
-`training/`, a generated eye archive, or another person's model without informed
-consent. A headset reboot removes injected native code. The launcher also uses a
-capture lease and attempts scoped cleanup on every normal exit.
-
-Firmware updates can change provider symbols, trace offsets, or model contracts.
-Treat every update as unsupported until revalidated. This project is unaffiliated
-with Meta, Virtual Desktop, VRCFaceTracking, VRChat, Project Babble, or EyeTrackVR.
+This project is unaffiliated with Meta, Virtual Desktop, VRCFaceTracking, or VRChat.
