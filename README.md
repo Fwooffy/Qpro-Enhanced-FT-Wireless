@@ -8,7 +8,7 @@ Download the **ZIP asset** from Releases and extract the entire folder. GitHub's
 
 ## New to rooting a Quest Pro?
 
-Start with [**Root Your Meta Quest with Singularity — a beginner guide by Fwooffy**](https://github.com/glorpette/quest-guides/blob/main/root_guide_by_fwooffy.md). Fwooffy created the guide; it is hosted in the `glorpette/quest-guides` repository. It covers a Meta developer account, ADB, checking the headset’s exact firmware build, Singularity, wireless debugging, and verifying root.
+Start with [**Root Your Meta Quest with Singularity — a beginner guide by Fwooffy and glorpette**](https://github.com/glorpette/quest-guides/blob/main/root_guide_by_fwooffy.md). Fwooffy created the original guide, and glorpette made the GitHub version in the `glorpette/quest-guides` repository. It covers a Meta developer account, ADB, checking the headset’s exact firmware build, Singularity, wireless debugging, and verifying root.
 
 Before changing your headset, compare its **exact model and firmware build** with the current [Singularity documentation and releases](https://github.com/Lumince/singularity). The root guide covers several Quest models; **this face-tracking app is for Quest Pro**.
 
@@ -53,6 +53,6 @@ This repository holds the editable source. Its release build also needs larger a
 
 - [n0tmast3r](https://github.com/n0tmast3r/Qpro-Enhanced-FT) created the original Qpro-Enhanced-FT project.
 - [Lumince and Singularity contributors](https://github.com/Lumince/singularity) created the headset root project used by this workflow.
-- **Fwooffy** created the [beginner Quest root guide](https://github.com/glorpette/quest-guides/blob/main/root_guide_by_fwooffy.md), hosted by [glorpette](https://github.com/glorpette/quest-guides).
+- **Fwooffy** created the original [beginner Quest root guide](https://github.com/glorpette/quest-guides/blob/main/root_guide_by_fwooffy.md). **[glorpette](https://github.com/glorpette/quest-guides)** made and hosts its GitHub version.
 
 This project is unaffiliated with Meta, Virtual Desktop, VRCFaceTracking, or VRChat.
