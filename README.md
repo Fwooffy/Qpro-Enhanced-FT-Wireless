@@ -8,7 +8,7 @@ Download the **ZIP asset** from Releases and extract the entire folder. GitHub's
 
 ## New to rooting a Quest Pro?
 
-Start with [**Root Your Meta Quest with Singularity — a beginner guide by Fwooffy and glorpette**](https://github.com/glorpette/quest-guides/blob/main/root_guide_by_fwooffy.md). Fwooffy created the original guide, and glorpette made the GitHub version in the `glorpette/quest-guides` repository. It covers a Meta developer account, ADB, checking the headset’s exact firmware build, Singularity, wireless debugging, and verifying root.
+Start with [**Root Your Meta Quest with Singularity — a beginner guide by Fwooffy and glorpette**](https://github.com/glorpette/quest-guides). Fwooffy created the original guide, and glorpette made the GitHub version in the `glorpette/quest-guides` repository. It covers a Meta developer account, ADB, checking the headset’s exact firmware build, Singularity, wireless debugging, and verifying root.
 
 Before changing your headset, compare its **exact model and firmware build** with the current [Singularity documentation and releases](https://github.com/Lumince/singularity). The root guide covers several Quest models; **this face-tracking app is for Quest Pro**.
 
