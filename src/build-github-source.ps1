@@ -185,9 +185,10 @@ foreach ($testSource in Get-ChildItem -LiteralPath (Join-Path $root "tests\hub-d
     Copy-SourceFile ("tests\hub-datasets\" + $testSource.Name)
 }
 $exportedReleaseReadme = Join-Path $sourceRoot "RELEASE_README.md"
-$releaseGuide = Get-Content -LiteralPath $exportedReleaseReadme -Raw
+# Windows PowerShell otherwise reads UTF-8 punctuation through the ANSI default.
+$releaseGuide = [System.IO.File]::ReadAllText($exportedReleaseReadme, [System.Text.Encoding]::UTF8)
 $releaseGuide = $releaseGuide.Replace("(Docs/UPSTREAM-README.md)", "(UPSTREAM-README.md)").Replace("(Docs/LICENSE)", "(LICENSE)").Replace("(Docs/THIRD_PARTY_NOTICES.md)", "(THIRD_PARTY_NOTICES.md)")
-Set-Content -LiteralPath $exportedReleaseReadme -Value $releaseGuide -Encoding utf8
+[System.IO.File]::WriteAllText($exportedReleaseReadme, $releaseGuide, [System.Text.UTF8Encoding]::new($false))
 foreach ($test in Get-ChildItem -LiteralPath $root -File -Filter "test_*.py") {
     Copy-SourceFile $test.Name
 }
