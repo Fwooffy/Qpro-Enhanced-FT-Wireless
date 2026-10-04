@@ -4,11 +4,15 @@
 const configuration = globalThis.QPRO_PROFILE;
 const layout = configuration.pcLayout;
 let state = 'idle', error = null, driver = null, input = null, updateAddress = null;
-let originalUpdate = null, replaced = false, poseHook = null, observer = null;
+let updateHooks = [], updateTargets = [], poseHook = null, observer = null, cleanupScheduled = false;
 let poll = null, lease = null, interfaceVersion = null;
 const sides = [null, null], submissions = [0, 0], lastSubmission = [0, 0];
 const activeSides = [false, false];
 let restored = 0;
+const calls = {seen: 0, inputOwner: 0, matched: 0, successful: 0, invalidBones: 0, poseCopies: 0,
+    sources: {'public': 0, 'vd-original': 0}};
+const resultCounts = {};
+const routes = [0, 1].map(() => ({reason: 'not-running', physical: false, optical: false, handle: false}));
 
 function readable(address, bytes) {
     if (address.isNull()) return false;
@@ -83,13 +87,17 @@ function deactivate() {
     const failures = [];
     if (poll !== null) { clearInterval(poll); poll = null; }
     if (lease !== null) { clearTimeout(lease); lease = null; }
-    if (replaced) {
-        try { Interceptor.revert(updateAddress); replaced = false; } catch (failure) { failures.push(String(failure)); }
+    const remainingHooks = [];
+    for (const hook of updateHooks) {
+        try { hook.detach(); } catch (failure) { failures.push(String(failure)); remainingHooks.push(hook); }
     }
+    updateHooks = remainingHooks;
     if (poseHook !== null) {
         try { poseHook.detach(); poseHook = null; } catch (failure) { failures.push(String(failure)); }
     }
-    if (observer !== null) { observer.detach(); observer = null; }
+    if (observer !== null) {
+        try { observer.detach(); observer = null; } catch (failure) { failures.push(String(failure)); }
+    }
     for (const record of sides) {
         try { restore(record); } catch (failure) { failures.push(String(failure)); }
     }
@@ -97,7 +105,14 @@ function deactivate() {
     if (failures.length) { error = failures.join('; '); state = 'restore-failed'; }
     else state = 'stopped';
 }
-function fail(failure) { error = String(failure); deactivate(); }
+function fail(failure) {
+    error = String(failure);
+    if (cleanupScheduled || state === 'stopped' || state === 'restore-failed') return;
+    // Native callbacks must return before their listeners are detached or
+    // shared driver fields are restored. Stop new routing writes immediately.
+    state = 'failing'; cleanupScheduled = true;
+    setImmediate(() => { cleanupScheduled = false; deactivate(); });
+}
 function heartbeat(seconds) {
     if (!Number.isFinite(seconds) || seconds < 1 || seconds > 30 || state !== 'running') throw new Error('Invalid skeleton lease');
     if (lease !== null) clearTimeout(lease);
@@ -105,7 +120,11 @@ function heartbeat(seconds) {
 }
 function resolveInterfaces() {
     driver = Process.getModuleByName('driver_VirtualDesktop.dll');
-    if (driver.size <= Math.max(layout.skeletonTable, layout.controllerTable) + 16) throw new Error('The VD driver is too small for this profile');
+    if (!Number.isSafeInteger(layout.skeletonOriginal) || layout.skeletonOriginal < 0)
+        throw new Error('The saved skeleton callable is missing from this profile');
+    if (driver.size <= Math.max(layout.skeletonTable, layout.controllerTable, layout.skeletonOriginal) + 16)
+        throw new Error('The VD driver is too small for this profile');
+    input = null; updateAddress = null; interfaceVersion = null; updateTargets = [];
     const context = requireObject(driver.base.add(layout.driverContext).readPointer(), Process.pointerSize, 'OpenVR driver context');
     const contextTable = requireObject(context.readPointer(), Process.pointerSize, 'OpenVR context table');
     const getAddress = contextTable.readPointer();
@@ -122,6 +141,14 @@ function resolveInterfaces() {
         input = candidate; updateAddress = address; interfaceVersion = name; break;
     }
     if (input === null) throw new Error('A supported OpenVR skeletal input interface is unavailable');
+    const savedSlot = requireObject(driver.base.add(layout.skeletonOriginal), Process.pointerSize, 'Saved skeleton callable slot');
+    const savedUpdate = savedSlot.readPointer();
+    if (savedUpdate.isNull() || !executable(savedUpdate)) throw new Error('The saved skeleton callable is not executable');
+    // VD sends optical bones through its saved original callable, bypassing the
+    // public entry. Public calls can be suppressed by VD's native detour, so
+    // only calls that actually reach the original establish skeleton readiness.
+    updateTargets = updateAddress.equals(savedUpdate) ? [{address: savedUpdate, source: 'vd-original'}] :
+        [{address: updateAddress, source: 'public'}, {address: savedUpdate, source: 'vd-original'}];
     const host = requireObject(driver.base.add(layout.driverHost).readPointer(), Process.pointerSize, 'OpenVR driver host');
     const hostTable = requireObject(host.readPointer(), 2 * Process.pointerSize, 'OpenVR host vtable');
     const poseAddress = hostTable.add(Process.pointerSize).readPointer();
@@ -134,12 +161,21 @@ function updateRoutes() {
         for (let side = 0; side < 2; side++) {
             let record = sides[side];
             if (record === null || !sameObjects(record)) record = sides[side] = resolveSide(side);
-            if (record === null) { activeSides[side] = false; continue; }
+            if (record === null) {
+                routes[side] = {reason: 'controller-unavailable', physical: false, optical: false, handle: false};
+                activeSides[side] = false; continue;
+            }
             const data = record.controller.add(layout.dataPointer).readPointer();
-            if (data.isNull()) { restore(record); record.physical = false; activeSides[side] = false; continue; }
+            if (data.isNull()) {
+                routes[side] = {reason: 'controller-data-unavailable', physical: false, optical: false, handle: false};
+                restore(record); record.physical = false; activeSides[side] = false; continue;
+            }
             requireObject(data, layout.opticalFlags + 2, 'VD controller frame');
             const frame = data.readPointer();
-            if (frame.isNull()) { restore(record); record.physical = false; activeSides[side] = false; continue; }
+            if (frame.isNull()) {
+                routes[side] = {reason: 'tracking-frame-unavailable', physical: false, optical: false, handle: false};
+                restore(record); record.physical = false; activeSides[side] = false; continue;
+            }
             requireObject(frame, layout.frameFlags + layout.frameSideStride * side + 1, 'VD tracking frame');
             const physical = (frame.add(layout.frameFlags + layout.frameSideStride * side).readU8() & 3) === 1;
             const optical = data.add(layout.opticalFlags + side).readU8();
@@ -151,52 +187,80 @@ function updateRoutes() {
             record.controller.add(layout.multiModal).writeU8(enabled ? 1 : record.original.controllerMode);
             record.handle = handle; record.routeActive = enabled; record.physical = physical;
             activeSides[side] = enabled && Date.now() - lastSubmission[side] < 500;
+            routes[side] = {reason: !physical ? 'controller-not-held' : optical !== 1 ? 'optical-hand-unavailable' :
+                handle.equals(0) ? 'skeleton-handle-unavailable' : activeSides[side] ? 'active' : 'waiting-for-skeleton',
+                physical, optical: optical === 1, handle: !handle.equals(0)};
         }
     } catch (failure) { fail(failure); }
 }
 rpc.exports = {
     validate() {
         resolveInterfaces(); sides[0] = resolveSide(0); sides[1] = resolveSide(1);
-        return {compatible: true, interfaceVersion, boneCount: configuration.boneCount};
+        return {compatible: true, interfaceVersion, boneCount: configuration.boneCount,
+            controllersPresent: sides.map(record => record !== null), skeletonObservers: updateTargets.length};
     },
     activate(seconds) {
         if (state !== 'idle') throw new Error('Skeleton adapter is already used');
         const poseAddress = resolveInterfaces(); state = 'running';
         try {
-            originalUpdate = new NativeFunction(updateAddress, 'int', ['pointer', 'uint64', 'int', 'pointer', 'uint32']);
-            Interceptor.replace(updateAddress, new NativeCallback((owner, handle, range, bones, count) => {
-                let record = null;
-                try {
-                    if (state === 'running') record = sides.find(candidate => candidate !== null && sameObjects(candidate) && candidate.handle.equals(handle));
-                    if (record?.routeActive && count === configuration.boneCount && !owner.equals(input)) return 0;
-                    const result = originalUpdate(owner, handle, range, bones, count);
-                    if (result === 0 && state === 'running' && record?.routeActive && validateBones(bones, count)) {
-                        submissions[record.side]++; lastSubmission[record.side] = Date.now();
-                    }
-                    return result;
-                } catch (failure) { fail(failure); return originalUpdate(owner, handle, range, bones, count); }
-            }, 'int', ['pointer', 'uint64', 'int', 'pointer', 'uint32']));
-            replaced = true;
+            // Observe the public API without replacing it. Interface instances
+            // can share this function; every driver's update must run unchanged.
+            for (const target of updateTargets) updateHooks.push(Interceptor.attach(target.address, {
+                onEnter(args) {
+                    this.record = null; this.valid = false;
+                    if (state !== 'running') return;
+                    calls.seen++;
+                    calls.sources[target.source]++;
+                    try {
+                        if (args[0].equals(input)) calls.inputOwner++;
+                        const handle = args[1].toString();
+                        const record = sides.find(candidate => candidate !== null && sameObjects(candidate) &&
+                            candidate.handle.equals(uint64(handle)));
+                        if (record === undefined) return;
+                        calls.matched++;
+                        this.record = record;
+                        this.valid = validateBones(args[3], args[4].toUInt32());
+                        if (!this.valid) calls.invalidBones++;
+                    } catch (failure) { fail(failure); }
+                },
+                onLeave(result) {
+                    if (state !== 'running') return;
+                    try {
+                        const code = result.toInt32();
+                        resultCounts[code] = (resultCounts[code] || 0) + 1;
+                        if (code === 0) calls.successful++;
+                        if (target.source === 'vd-original' && code === 0 && this.record?.routeActive && this.valid && sameObjects(this.record)) {
+                            submissions[this.record.side]++; lastSubmission[this.record.side] = Date.now();
+                        }
+                    } catch (failure) { fail(failure); }
+                }
+            }));
             poseHook = Interceptor.attach(poseAddress, {onEnter(args) {
                 if (state !== 'running') return;
                 try {
                     const device = args[1].toUInt32();
                     const record = sides.find(candidate => candidate !== null && sameObjects(candidate) && candidate.handDevice === device);
-                    if (record === undefined || !record.physical) return;
+                    if (record === undefined || !record.physical || !record.routeActive) return;
                     // Public DriverPose_t validity bytes for the admitted win64 ABI.
                     const pose = args[2];
-                    if (args[3].toUInt32() < 280 || !writable(pose, 280)) throw new Error('DriverPose_t ABI mismatch');
-                    pose.add(276).writeU8(0); pose.add(279).writeU8(0);
+                    if (args[3].toUInt32() !== 280 || !readable(pose, 280)) throw new Error('DriverPose_t ABI mismatch');
+                    // OpenVR takes a const reference. Redirect this invocation
+                    // to a retained copy rather than editing VD's own pose.
+                    this.poseCopy = Memory.alloc(280);
+                    Memory.copy(this.poseCopy, pose, 280);
+                    this.poseCopy.add(276).writeU8(0); this.poseCopy.add(279).writeU8(0);
+                    args[2] = this.poseCopy; calls.poseCopies++;
                 } catch (failure) { fail(failure); }
-            }});
+            }, onLeave() { this.poseCopy = null; }});
             observer = Process.attachModuleObserver({onRemoved(module) {
                 if (module.base.equals(driver.base)) fail('VD driver unloaded');
             }});
             poll = setInterval(updateRoutes, 16);
             heartbeat(seconds);
-        } catch (failure) { fail(failure); throw failure; }
+        } catch (failure) { error = String(failure); deactivate(); throw failure; }
     },
     heartbeat, deactivate,
-    status() { return {state, error, interfaceVersion, activeSides, skeletonSubmissions: submissions, restored}; },
+    status() { return {state, error, interfaceVersion, activeSides, skeletonSubmissions: submissions,
+        callbacks: calls, results: resultCounts, routes, restored}; },
     dispose: deactivate
 };

@@ -9,6 +9,7 @@
   "pcLayout": {
     "controllerTable": 632640,
     "skeletonTable": 632744,
+    "skeletonOriginal": 632800,
     "driverContext": 632504,
     "driverHost": 632544,
     "handPointer": 72,
