@@ -83,8 +83,8 @@ class FakeAdapter:
 
 
 class FakeSession:
-    def __init__(self, events): self.events = events
-    def on(self, *args): pass
+    def __init__(self, events): self.events, self.callbacks = events, {}
+    def on(self, name, callback): self.callbacks[name] = callback
     def detach(self): self.events.append(("detach",))
     def create_script(self, source):
         kind = "optical" if "libmonosgen" in source else "native" if "ARM64 runtime" in source else "pc"
@@ -225,6 +225,142 @@ class HybridTests(unittest.TestCase):
         supervisor.active_scripts.add(id(adapter))
         with patch.object(controller, "emit", lambda *_args, **_kwargs: None):
             with self.assertRaises(controller.CleanupError): supervisor.cleanup()
+
+    def test_readiness_timeout_records_fresh_optical_data_before_cleanup(self):
+        supervisor, events, _, root = self.make_supervisor()
+        supervisor.profile = dict(self.profile, readinessSeconds=0)
+        original_status = FakeAdapter.status
+        def without_pc_confirmation(adapter):
+            state = original_status(adapter)
+            state.update(validFrames=[3089, 3092], freshSides=[True, True],
+                         activeSides=[False, False], skeletonSubmissions=[0, 0])
+            return state
+        records = []
+        with patch.object(FakeAdapter, "status", without_pc_confirmation), patch.object(controller, "emit", lambda event, **values: records.append((event, values))):
+            with self.assertRaisesRegex(RuntimeError, "headset is producing fresh optical hand data"):
+                controller.run_supervised(supervisor)
+        names = [name for name, _ in records]
+        self.assertNotIn("READY", names)
+        self.assertLess(names.index("STATUS"), names.index("STOP_CAUSE"))
+        self.assertLess(names.index("STOP_CAUSE"), names.index("CLEANUP_STAGE"))
+        cause = next(values for name, values in records if name == "STOP_CAUSE")
+        self.assertEqual(cause["errorType"], "RuntimeError")
+        self.assertEqual(cause["adapters"][1]["validFrames"], [3089, 3092])
+        self.assertEqual(cause["adapters"][2]["skeletonSubmissions"], [0, 0])
+        self.assertEqual(next(values for name, values in records if name == "CLEANUP"), {"confirmed": True, "problems": []})
+        self.assertEqual([entry[1] for entry in events if entry[0] == "stop"], ["pc", "optical", "native"])
+        self.assertTrue(root.closed)
+        self.assertTrue(supervisor.finished.is_set())
+
+    def test_destroyed_active_adapter_keeps_timeout_and_cleanup_unconfirmed(self):
+        supervisor, _, _, _ = self.make_supervisor()
+        adapter = FakeAdapter("pc", [])
+        supervisor.adapters = [("steamvr-skeleton", adapter)]
+        supervisor.active_scripts.add(id(adapter))
+        session = supervisor._attach(FakeDevice([]), "vrserver.exe", "steamvr")
+        records = []
+        def start():
+            supervisor.last_statuses = [{"queries": 6186}, {"freshSides": [True, True]},
+                                        {"activeSides": [False, False], "skeletonSubmissions": [0, 0]}]
+            raise RuntimeError("Hand routing confirmation timed out.")
+        def destroyed():
+            session.callbacks["detached"]("process-terminated", None)
+            raise RuntimeError("script has been destroyed")
+        with patch.object(supervisor, "start", start), patch.object(adapter, "deactivate", destroyed), patch.object(controller, "emit", lambda event, **values: records.append((event, values))):
+            with self.assertRaises(controller.CleanupError) as caught:
+                controller.run_supervised(supervisor)
+        self.assertIn("Hand routing confirmation timed out", str(caught.exception.__context__))
+        names = [name for name, _ in records]
+        self.assertLess(names.index("STOP_CAUSE"), names.index("CLEANUP_STAGE"))
+        self.assertLess(names.index("CLEANUP_STAGE"), names.index("DETACHED"))
+        failure = next(values for name, values in records if name == "CLEANUP_ADAPTER_FAILED")
+        self.assertEqual(failure["stage"], "deactivate")
+        self.assertTrue(failure["active"])
+        self.assertFalse(failure["restorationAcknowledged"])
+        detached = next(values for name, values in records if name == "DETACHED")
+        self.assertEqual(detached["session"], "steamvr")
+        self.assertEqual(detached["process"], "vrserver.exe")
+        self.assertEqual(detached["reason"], "process-terminated")
+        self.assertTrue(detached["duringCleanup"])
+        self.assertFalse(next(values for name, values in records if name == "CLEANUP")["confirmed"])
+        self.assertTrue(supervisor.finished.is_set())
+
+    def test_missing_controller_queries_are_reported_even_with_pc_routing(self):
+        supervisor, _, _, _ = self.make_supervisor()
+        supervisor.profile = dict(self.profile, readinessSeconds=0)
+        original_status = FakeAdapter.status
+        def no_queries(adapter):
+            state = original_status(adapter)
+            state["queries"] = 0
+            return state
+        with patch.object(FakeAdapter, "status", no_queries), patch.object(controller, "emit"):
+            with self.assertRaisesRegex(RuntimeError, "No headset controller-selection queries were observed"):
+                controller.run_supervised(supervisor)
+
+    def test_cleanup_failure_exits_five_after_logging_the_start_error(self):
+        supervisor, _, _, _ = self.make_supervisor()
+        adapter = FakeAdapter("pc", [])
+        supervisor.adapters = [("steamvr-skeleton", adapter)]
+        supervisor.active_scripts.add(id(adapter))
+        records = []
+        with patch.object(controller, "inspect", return_value={"compatible": True}), patch.object(controller, "Supervisor", return_value=supervisor), patch.object(controller, "start_stop_watchers"), patch.object(controller.signal, "signal"), patch.object(supervisor, "start", side_effect=RuntimeError("original readiness timeout")), patch.object(adapter, "deactivate", side_effect=RuntimeError("script has been destroyed")), patch.object(controller, "emit", lambda event, **values: records.append((event, values))):
+            code = controller.main(["--target", "serial", "--adb", "fixture",
+                                    "--stop-file", str(self.home / "new-stop")])
+        self.assertEqual(code, 5)
+        cause = next(values for name, values in records if name == "STOP_CAUSE")
+        self.assertEqual(cause["error"], "original readiness timeout")
+        self.assertFalse(next(values for name, values in records if name == "CLEANUP")["confirmed"])
+        self.assertIn("script has been destroyed", next(values for name, values in records if name == "CLEANUP_FAILED")["error"])
+
+    def test_detachment_summary_is_bounded_and_excludes_report_and_paths(self):
+        supervisor, _, _, _ = self.make_supervisor()
+        session = supervisor._attach(FakeDevice([]), 100, "headset-virtual-desktop")
+        records = []
+        crash = SimpleNamespace(summary="Access violation " + "x" * 500 + "\nprivate detail", report="raw private dump")
+        with patch.object(controller, "emit", lambda event, **values: records.append((event, values))):
+            session.callbacks["detached"]("process-terminated", crash)
+            crash.summary = "Access violation at C:\\synthetic-fixture\\secret.txt"
+            session.callbacks["detached"]("process-terminated", crash)
+        first, second = [values for name, values in records if name == "DETACHED"]
+        self.assertLessEqual(len(first["crashSummary"]), 240)
+        self.assertNotIn("private", json.dumps(first).lower())
+        self.assertEqual(second["crashSummary"], "Access violation at [path omitted]")
+        self.assertFalse(first["duringCleanup"])
+        self.assertEqual(first["process"], 100)
+        self.assertTrue(supervisor.detached)
+        with self.assertRaisesRegex(RuntimeError, "disconnected"):
+            supervisor._ensure_running()
+
+    def test_destroyed_script_during_status_or_unload_stays_unconfirmed(self):
+        for failed_stage in ("restoration-status", "unload"):
+            with self.subTest(stage=failed_stage):
+                supervisor, _, _, _ = self.make_supervisor()
+                adapter = FakeAdapter("pc", [])
+                supervisor.adapters = [("steamvr-skeleton", adapter)]
+                supervisor.active_scripts.add(id(adapter))
+                records = []
+                method = "status" if failed_stage == "restoration-status" else "unload"
+                with patch.object(adapter, method, side_effect=RuntimeError("script has been destroyed")), patch.object(controller, "emit", lambda event, **values: records.append((event, values))):
+                    with self.assertRaisesRegex(controller.CleanupError, "script has been destroyed"):
+                        supervisor.cleanup()
+                failure = next(values for name, values in records if name == "CLEANUP_ADAPTER_FAILED")
+                self.assertEqual(failure["stage"], failed_stage)
+                self.assertEqual(failure["restorationAcknowledged"], failed_stage == "unload")
+                self.assertFalse(next(values for name, values in records if name == "CLEANUP")["confirmed"])
+
+    def test_latest_status_is_saved_before_a_heartbeat_failure(self):
+        supervisor, _, _, _ = self.make_supervisor()
+        records = []
+        def failed_heartbeat(adapter, lease):
+            if adapter.kind == "pc":
+                raise RuntimeError("heartbeat script has been destroyed")
+        with patch.object(FakeAdapter, "heartbeat", failed_heartbeat), patch.object(controller, "emit", lambda event, **values: records.append((event, values))):
+            with self.assertRaisesRegex(RuntimeError, "heartbeat script has been destroyed"):
+                controller.run_supervised(supervisor)
+        cause = next(values for name, values in records if name == "STOP_CAUSE")
+        self.assertEqual(len(cause["adapters"]), 3)
+        self.assertEqual(cause["adapters"][2]["state"], "running")
+        self.assertTrue(next(values for name, values in records if name == "CLEANUP")["confirmed"])
 
     def test_unactivated_adapter_is_unloaded_without_restoration_rpc(self):
         supervisor, events, _, _ = self.make_supervisor()

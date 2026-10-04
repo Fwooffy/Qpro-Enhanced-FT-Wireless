@@ -186,13 +186,32 @@ class Supervisor:
         self.forward_uncertain = False
         self.helper_pid = None
         self.detached = False
+        self.detached_sessions = []
+        self.cleaning_up = False
+        self.last_statuses = []
         self.progress = time.monotonic()
         self.finished = threading.Event()
 
-    def _attach(self, device, process):
+    def _attach(self, device, process, label=None):
         session = device.attach(process)
-        session.on("detached", lambda *_: setattr(self, "detached", True))
         self.sessions.append(session)
+        def on_detached(reason="unknown", crash=None, *_):
+            self.detached = True
+            # Frida's crash report can contain dumps and paths. Keep only a
+            # short summary, without serials, reports, or local file paths.
+            summary = getattr(crash, "summary", None)
+            if isinstance(summary, str):
+                summary = summary.splitlines()[0] if summary else ""
+                summary = re.sub(r"(?:[A-Za-z]:[\\/]|\\\\|/).*", "[path omitted]", summary)
+                summary = summary[:240]
+            else:
+                summary = None
+            details = {"session": label or str(process), "process": process,
+                       "reason": str(reason)[:80], "duringCleanup": self.cleaning_up,
+                       "crashSummary": summary}
+            self.detached_sessions.append(details)
+            emit("DETACHED", **details)
+        session.on("detached", on_detached)
         return session
 
     def _adapter(self, session, filename, name):
@@ -273,8 +292,8 @@ class Supervisor:
         pids = self.adb.run("shell", "pidof", self.profile["androidPackage"]).split()
         if len(pids) != 1 or not pids[0].isdigit():
             raise CompatibilityError("Open Virtual Desktop on the headset and connect to this PC.")
-        quest = self._attach(device, int(pids[0]))
-        pc = self._attach(self.frida.get_local_device(), "vrserver.exe")
+        quest = self._attach(device, int(pids[0]), "headset-virtual-desktop")
+        pc = self._attach(self.frida.get_local_device(), "vrserver.exe", "steamvr")
         native = self._adapter(quest, "quest_controller_adapter.js", "controller-selection")
         hands = self._adapter(quest, "quest_hand_adapter.js", "optical-hands")
         routing = self._adapter(pc, "steamvr_skeleton_adapter.js", "steamvr-skeleton")
@@ -294,8 +313,14 @@ class Supervisor:
             now = time.monotonic()
             if now >= next_beat:
                 statuses = []
-                for name, script in self.adapters:
+                for index, (name, script) in enumerate(self.adapters):
                     status = script.exports_sync.status()
+                    # Save each observation before heartbeat/state checks, so
+                    # a later RPC or cleanup error cannot hide the last facts.
+                    if index < len(self.last_statuses):
+                        self.last_statuses[index] = status
+                    else:
+                        self.last_statuses.append(status)
                     if status.get("state") not in ("starting", "running"):
                         raise RuntimeError(name + " stopped: " + str(status.get("error")))
                     script.exports_sync.heartbeat(lease)
@@ -304,36 +329,52 @@ class Supervisor:
                     ready = input_is_ready(statuses)
                     if ready:
                         emit("READY", activeSides=statuses[2]["activeSides"], experimental=True)
-                    elif now >= deadline:
-                        raise RuntimeError("Hooks installed, but no fresh optical skeleton reached a held controller. Wear the headset, hold a controller, and keep your fingers visible.")
                 emit("STATUS", ready=ready, adapters=statuses)
+                if not ready and now >= deadline:
+                    if statuses[0].get("queries", 0) <= 0:
+                        raise RuntimeError("Hand routing confirmation timed out. No headset controller-selection queries were observed. Check the latest HANDS_STATUS adapter counters.")
+                    if any(statuses[1].get("freshSides", [False, False])):
+                        raise RuntimeError("Hand routing confirmation timed out. The headset is producing fresh optical hand data, but SteamVR skeleton routing for that data was not confirmed. Check the latest HANDS_STATUS adapter counters.")
+                    raise RuntimeError("Hand routing confirmation timed out. No side had both fresh headset optical data and confirmed SteamVR skeleton routing. Wear the headset, hold a controller, and keep your fingers visible; check the latest HANDS_STATUS adapter counters.")
                 next_beat = now + self.profile["heartbeatSeconds"]
             self.stop_requested.wait(0.1)
 
     def cleanup(self):
+        self.cleaning_up = True
         failures = []
         if self.forward_uncertain:
             failures.append("ADB hand-forward allocation was ambiguous; no unidentified forward was removed.")
         for name, script in reversed(self.adapters):
+            active = id(script) in self.active_scripts
+            stage = "unload" if not active else "deactivate"
+            acknowledged = False
             try:
                 self.progress = time.monotonic()
-                if id(script) not in self.active_scripts:
+                emit("CLEANUP_STAGE", adapter=name, stage=stage, active=active)
+                if not active:
                     script.unload()
                     continue
                 script.exports_sync.deactivate()
+                stage = "restoration-status"
+                emit("CLEANUP_STAGE", adapter=name, stage=stage, active=active)
                 deadline = time.monotonic() + 6
                 while time.monotonic() < deadline:
                     state = script.exports_sync.status()
                     if state.get("state") == "stopped":
+                        acknowledged = True
                         break
                     if state.get("state") == "restore-failed":
                         raise CleanupError(str(state.get("error")))
                     time.sleep(0.1)
                 else:
                     raise CleanupError("Restoration was not acknowledged.")
+                stage = "unload"
+                emit("CLEANUP_STAGE", adapter=name, stage=stage, active=active)
                 script.unload()
             except Exception as error:
                 failures.append(name + ": " + str(error))
+                emit("CLEANUP_ADAPTER_FAILED", adapter=name, stage=stage,
+                     active=active, restorationAcknowledged=acknowledged, error=str(error))
         for session in reversed(self.sessions):
             try:
                 self.progress = time.monotonic()
@@ -376,6 +417,11 @@ def run_supervised(supervisor):
     threading.Thread(target=watchdog, daemon=True).start()
     try:
         supervisor.start()
+    except Exception as error:
+        if not isinstance(error, InterruptedError):
+            emit("STOP_CAUSE", error=str(error), errorType=type(error).__name__,
+                 adapters=supervisor.last_statuses, detached=supervisor.detached_sessions)
+        raise
     finally:
         supervisor.progress = time.monotonic()
         try:
