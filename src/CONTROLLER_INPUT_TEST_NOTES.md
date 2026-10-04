@@ -17,6 +17,9 @@ default. It is a **test build**, not a validated hardware release.
 - Added exact version/fingerprint checks, fresh-input readiness reporting,
   renewable adapter leases, parent-EOF and stop-file supervision, stale-packet
   neutralization, and cleanup confirmation.
+- Hand startup now asks ADB for a free PC port, preserving other listeners and
+  forwards. Cleanup uses each worker's explicit restoration result, drains its
+  final Activity lines and keeps startup errors separate from cleanup failures.
 - Kept the Hub's existing visual style. Grouped wireless pairing and standalone
   cheek-camera training into expandable sections, aligned the new fields and
   improved disabled toggle readability.
@@ -39,11 +42,13 @@ Controllers** switch; turn off a separate Frida Server first. The thumb-rest
 reader admits firmware build **51503870024400340**. Steam Link controller input
 is not admitted by this prototype. Unknown builds are refused.
 
-Builds and offline checks passed: 12 fake hand lifecycle checks, synthetic
+Builds and offline checks passed: 16 fake hand lifecycle checks, synthetic
 adapter ABI/skeleton/restore checks, 45 native packet/contact/settings checks,
-11 fake-page/lifetime checks, 8 optional-component checks, and a functional
+11 fake-page/lifetime checks, 18 optional-component checks, and a functional
 Windows PowerShell/native-child EOF cleanup check. There were 2,782 private UI
 layout/state checks across narrow, standard and wide Windows fixtures.
+The startup fix also has functional Python-child output/EOF checks; see
+**HANDS_STARTUP_FIX_NOTES.md** in the source repository.
 
 These checks do not establish live headset behaviour. Before a release, verify
 both hands while holding controllers, mixed controller/empty-hand use, optical

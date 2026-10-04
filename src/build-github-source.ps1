@@ -162,7 +162,8 @@ $sourceFiles = @(
 )
 foreach ($file in $sourceFiles) { Copy-SourceFile $file }
 foreach ($file in @('controller-input.ps1', 'CONTROLLER_INPUT.md',
-    'CONTROLLER_INPUT_TEST_NOTES.md', 'GAZE_ENGINE_TEST_NOTES.md', 'test_controller_components.py')) { Copy-SourceFile $file }
+    'CONTROLLER_INPUT_TEST_NOTES.md', 'HANDS_STARTUP_FIX_NOTES.md', 'GAZE_ENGINE_TEST_NOTES.md',
+    'test_controller_components.py')) { Copy-SourceFile $file }
 foreach ($folder in @('hybrid', 'controller-input')) {
     foreach ($file in Get-ChildItem -LiteralPath (Join-Path $root $folder) -Recurse -File | Where-Object {
         $_.Extension -in @('.py', '.js', '.json', '.c', '.cpp', '.h', '.hpp', '.md', '.ps1', '.txt', '.vrdrivermanifest') -or
