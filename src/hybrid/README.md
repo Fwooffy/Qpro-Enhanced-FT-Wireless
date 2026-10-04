@@ -45,7 +45,10 @@ already present is refused before any headset command.
 - `HANDS_STAGE`: validation or optical-hand readiness progress.
 - `HANDS_READY`: fresh valid optical data has reached at least one held physical
   controller's skeleton. `activeSides` identifies which side(s).
-- `HANDS_STATUS`: adapter states, frame and skeleton counters.
+- `HANDS_STATUS`: adapter states, frame and skeleton counters, native callback
+  results and per-side reasons a route is not ready.
+- `HANDS_STOP_CAUSE`: original failure and the last adapter states before cleanup.
+- `HANDS_DETACHED`: process identity and the session-disconnection reason.
 - `HANDS_CLEANUP`: restoration confirmation; `HANDS_CLEANUP_FAILED` is a failure.
 
 Adapters use 20-second leases renewed every three seconds. Stop restores saved
@@ -60,6 +63,16 @@ pointer access, 31-bone input and the admitted ABI. Its driver object layout and
 the Android query are private compatibility facts, so future Virtual Desktop or
 firmware versions require fresh validation. Body tracking interaction needs a
 live check; this prototype makes no support claim for simultaneous body tracking.
+
+Skeletal updates are observed without replacing the native function or retrying
+native calls. Virtual Desktop sends optical bones through its saved original
+callable, so the exact driver profile also identifies and validates that callable.
+Public and original entry points are observed separately when they differ.
+Only successful, valid 31-bone updates through the saved original for an enabled
+side establish readiness; a suppressed public call can also return success.
+The duplicate hand-device pose uses a retained copy of the supplied const pose;
+the driver's original buffer is untouched. Callback errors schedule restoration
+outside the callback.
 
 Native routing validation follows returning ARM64 calls only when the side flag
 is held in an AAPCS64 callee-saved register. It stops when that register or the

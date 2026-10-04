@@ -22,6 +22,12 @@ No gaze source or the previously excluded gaze commit was used.
 - The PC profile describes the controller/hand table, roles, validity fields,
   multimodal fields and skeleton handles in that exact proprietary driver.
   These are compatibility facts, not a stable Virtual Desktop SDK contract.
+- A subsequent read-only audit of the admitted local PC driver confirmed those
+  frame/validity offsets and its saved original skeletal callable. Optical bone
+  generation calls that original directly; the public detoured entry already
+  suppresses competing controller skeletons when the native multimodal field is
+  enabled. Readiness must observe the original path too. The JavaScript adapter
+  therefore observes both validated entry points without replacing either.
 - The researched PC runtime requests IVRDriverInput_005. The public OpenVR header
   also exposes the compatible skeletal method layout in IVRDriverInput_004.
   The prototype probes either interface and checks executable vtable entries;

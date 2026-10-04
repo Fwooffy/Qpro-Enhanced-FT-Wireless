@@ -23,6 +23,11 @@ default. It is a **test build**, not a validated hardware release.
 - Native routing validation now follows returning calls when the side flag is
   held in an AAPCS64 callee-saved register. A validation-only headset/PC probe
   passed all three adapters with no tracking activation and confirmed cleanup.
+- Skeletal update observation now includes Virtual Desktop's saved original
+  callable, used by its optical generator. The observer leaves native calls
+  unchanged, copies the const pose for duplicate hand-device suppression and
+  schedules callback-error restoration outside the callback. Failure and
+  disconnect diagnostics retain the original cause before cleanup.
 - Kept the Hub's existing visual style. Grouped wireless pairing and standalone
   cheek-camera training into expandable sections, aligned the new fields and
   improved disabled toggle readability.
@@ -45,7 +50,7 @@ Controllers** switch; turn off a separate Frida Server first. The thumb-rest
 reader admits firmware build **51503870024400340**. Steam Link controller input
 is not admitted by this prototype. Unknown builds are refused.
 
-Builds and offline checks passed: 16 fake hand lifecycle checks, synthetic
+Builds and offline checks passed: 23 fake hand lifecycle checks, synthetic
 adapter ABI/skeleton/restore checks, 45 native packet/contact/settings checks,
 11 fake-page/lifetime checks, 18 optional-component checks, and a functional
 Windows PowerShell/native-child EOF cleanup check. There were 2,782 private UI
@@ -58,6 +63,11 @@ both hands while holding controllers, mixed controller/empty-hand use, optical
 loss, controller reconnect, haptics/buttons, app input bindings, sleep/reconnect,
 and confirmed restoration after Stop or a process exit. Body-tracking
 interaction and high-DPI physical displays still need validation.
+
+A subsequent user check reported real finger movement, but SteamVR crashed at
+the readiness timeout while the old public-entry counter stayed at zero. That
+run did not complete the stability/restoration checks. See
+**HANDS_RUNTIME_FIX_NOTES.md** for the new test and its limits.
 
 No live module/add-on was installed during this build. The validation-only probe
 used a temporary owned helper and process attachments with activation blocked.
