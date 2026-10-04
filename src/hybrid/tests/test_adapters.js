@@ -31,6 +31,7 @@ assert.equal(context.rpc.exports.status().state, 'stopped');
 assert.equal(detached, 1);
 console.log('Hybrid adapters: syntax, unsupported resolver, no preflight hook, lease expiry passed.');
 
+const memoryReads = {float: 0, byteArray: 0, byteArraySize: 0, module: 0, range: 0};
 class Address {
     constructor(value, memory = new Map()) { this.value = Number(value); this.memory = memory; }
     add(amount) { return new Address(this.value + amount, this.memory); }
@@ -45,7 +46,14 @@ class Address {
     writePointer(value) { this.memory.set(this.value, value.value); }
     readU8() { return Number(this.memory.get(this.value) || 0); }
     readU32() { return Number(this.memory.get(this.value) || 0); }
-    readFloat() { return this.memory.has(this.value) ? Number(this.memory.get(this.value)) : 0; }
+    readFloat() { memoryReads.float++; return this.memory.has(this.value) ? Number(this.memory.get(this.value)) : 0; }
+    readByteArray(size) {
+        memoryReads.byteArray++; memoryReads.byteArraySize = size;
+        const buffer = new ArrayBuffer(size), view = new DataView(buffer);
+        for (let offset = 0; offset < size; offset += 4) view.setFloat32(offset,
+            this.memory.has(this.value + offset) ? Number(this.memory.get(this.value + offset)) : 0, true);
+        return buffer;
+    }
     readU64() { return new Handle(this.memory.get(this.value) || 0); }
     writeU8(value) { this.memory.set(this.value, value); }
     writeS32(value) { this.memory.set(this.value, value); }
@@ -171,8 +179,8 @@ let allocation = 4000000;
 const driver = {base: address(base), size: 1000000};
 const pcSandbox = vm.createContext({
     QPRO_PROFILE: profile, rpc: {exports: {}}, ptr: address, uint64: value => new Handle(value),
-    Process: {pointerSize: 8, getModuleByName: () => driver, findModuleByName: () => driver,
-        findRangeByAddress: () => ({base: address(0), size: 8000000, protection: 'rwx'}),
+    Process: {pointerSize: 8, getModuleByName: () => driver, findModuleByName: () => {memoryReads.module++; return driver;},
+        findRangeByAddress: () => {memoryReads.range++; return {base: address(0), size: 8000000, protection: 'rwx'};},
         attachModuleObserver: () => ({detach() {}})},
     Memory: {alloc: size => {const value = address(allocation); allocation += size; return value;}, allocUtf8String: text => text,
         copy(destination, source, size) {
@@ -199,20 +207,23 @@ assert.equal(pcSandbox.rpc.exports.validate().compatible, true);
 assert.equal(observed.replacements, 0);
 pcSandbox.rpc.exports.activate(20); observed.tick();
 assert.equal(bytes.get(27000 + layout.skeleton), 100n);
-function skeletonUpdate(owner, count = 31, result = 0, listener = observed.update) {
-    const invocation = {}, args = [address(owner), address(100), address(0), address(34000), address(count)];
+function skeletonUpdate(owner, count = 31, result = 0, listener = observed.update, handle = 100) {
+    const invocation = {}, args = [address(owner), address(handle), address(0), address(34000), address(count)];
     listener.onEnter.call(invocation, args);
-    assert.equal(args[0].value, owner); assert.equal(args[1].value, 100);
+    assert.equal(args[0].value, owner); assert.equal(args[1].value, handle);
     assert.equal(args[3].value, 34000); assert.equal(args[4].value, count);
     const returned = address(result);
     listener.onLeave.call(invocation, returned);
     assert.equal(returned.toInt32(), result, 'The native result must pass through unchanged');
 }
-skeletonUpdate(22000, 31, 0, observed.publicUpdate);
-observed.tick();
-assert.equal(pcSandbox.rpc.exports.status().skeletonSubmissions[0], 0, 'VD can return success for a suppressed public update');
+assert.equal(observed.publicUpdate, null, 'The public entry is checked in preflight but does not get a diagnostic hook');
+assert.equal(observed.attachments, 2, 'Only the saved original and pose callbacks are attached');
 assert.equal(pcSandbox.rpc.exports.status().activeSides[0], false);
+const bulkBefore = memoryReads.byteArray, scalarBefore = memoryReads.float;
 skeletonUpdate(22000);
+assert.equal(memoryReads.byteArray, bulkBefore + 1, 'All 248 floats are copied in one memory operation');
+assert.equal(memoryReads.byteArraySize, 992);
+assert.equal(memoryReads.float, scalarBefore, 'Full validation must not make individual float reads');
 observed.tick();
 assert.equal(pcSandbox.rpc.exports.status().activeSides[0], true);
 assert.equal(pcSandbox.rpc.exports.status().skeletonSubmissions[0], 1);
@@ -222,17 +233,84 @@ skeletonUpdate(23001);
 assert.equal(pcSandbox.rpc.exports.status().skeletonSubmissions[0], 2, 'A shared function may serve another input interface instance');
 skeletonUpdate(22000, 31, 4);
 assert.equal(pcSandbox.rpc.exports.status().skeletonSubmissions[0], 2);
-assert.equal(pcSandbox.rpc.exports.status().callbacks.seen, 5);
-assert.equal(pcSandbox.rpc.exports.status().callbacks.inputOwner, 4);
-assert.equal(pcSandbox.rpc.exports.status().callbacks.sources.public, 1);
+assert.equal(pcSandbox.rpc.exports.status().callbacks.seen, 4);
+assert.equal(pcSandbox.rpc.exports.status().callbacks.inputOwner, 3);
+assert.equal(pcSandbox.rpc.exports.status().callbacks.sources.public, undefined);
 assert.equal(pcSandbox.rpc.exports.status().callbacks.sources['vd-original'], 4);
 assert.equal(pcSandbox.rpc.exports.status().callbacks.invalidBones, 1);
 assert.equal(pcSandbox.rpc.exports.status().results[4], 1);
 assert.equal(observed.replacements, 0);
 
+// Every value remains checked, including the final quaternion element. Invalid
+// data is diagnostic only: the native arguments and result remain unchanged.
+for (const value of [NaN, Infinity, -Infinity]) {
+    write(34000, 247 * 4, value);
+    const invalidBefore = pcSandbox.rpc.exports.status().callbacks.invalidBones;
+    skeletonUpdate(22000);
+    assert.equal(pcSandbox.rpc.exports.status().callbacks.invalidBones, invalidBefore + 1);
+    assert.equal(pcSandbox.rpc.exports.status().skeletonSubmissions[0], 2);
+}
+write(34000, 247 * 4, 0);
+const originalBulkRead = Address.prototype.readByteArray;
+try {
+    for (const malformed of [null, new ArrayBuffer(988)]) {
+        Address.prototype.readByteArray = () => malformed;
+        const invalidBefore = pcSandbox.rpc.exports.status().callbacks.invalidBones;
+        skeletonUpdate(22000);
+        assert.equal(pcSandbox.rpc.exports.status().callbacks.invalidBones, invalidBefore + 1);
+        assert.equal(pcSandbox.rpc.exports.status().skeletonSubmissions[0], 2, 'A null or truncated bulk read cannot establish readiness');
+    }
+} finally { Address.prototype.readByteArray = originalBulkRead; }
+const unmatchedBefore = {...memoryReads};
+skeletonUpdate(22000, 31, 0, observed.update, 999);
+assert.equal(memoryReads.module, unmatchedBefore.module);
+assert.equal(memoryReads.range, unmatchedBefore.range);
+assert.equal(memoryReads.byteArray, unmatchedBefore.byteArray);
+
 // The const pose stays unchanged; the copied argument stays retained until the
 // native invocation returns. An inactive optical route must not hide the hand.
 write(35000, 276, 1); write(35000, 279, 1);
+function rejectChangedIdentity(change, restoreIdentity) {
+    const before = pcSandbox.rpc.exports.status().skeletonSubmissions[0];
+    const copiedBefore = pcSandbox.rpc.exports.status().callbacks.poseCopies;
+    const handHandle = bytes.get(27000 + layout.skeleton), controllerMode = bytes.get(26000 + layout.multiModal);
+    change();
+    try {
+        skeletonUpdate(22000);
+        const args = [address(24000), address(3), address(35000), address(280)];
+        observed.pose.onEnter.call({}, args);
+        assert.equal(args[2].value, 35000, 'A changed module/object cannot redirect the pose');
+        assert.equal(pcSandbox.rpc.exports.status().skeletonSubmissions[0], before);
+        assert.equal(pcSandbox.rpc.exports.status().callbacks.poseCopies, copiedBefore);
+        assert.equal(bytes.get(35000 + 276), 1); assert.equal(bytes.get(35000 + 279), 1);
+        assert.equal(bytes.get(27000 + layout.skeleton), handHandle);
+        assert.equal(bytes.get(26000 + layout.multiModal), controllerMode);
+    } finally { restoreIdentity(); }
+    // Recheck identity on leave too: an object can change while the untouched
+    // native skeleton function runs, after its arguments have been validated.
+    const invocation = {}, args = [address(22000), address(100), address(0), address(34000), address(31)];
+    observed.update.onEnter.call(invocation, args);
+    change();
+    try {
+        observed.update.onLeave.call(invocation, address(0));
+        assert.equal(pcSandbox.rpc.exports.status().skeletonSubmissions[0], before);
+    } finally { restoreIdentity(); }
+}
+const moduleLookup = pcSandbox.Process.findModuleByName;
+rejectChangedIdentity(() => {pcSandbox.Process.findModuleByName = () => null;},
+    () => {pcSandbox.Process.findModuleByName = moduleLookup;});
+rejectChangedIdentity(() => {pcSandbox.Process.findModuleByName = () => ({base: address(base + 1), size: driver.size});},
+    () => {pcSandbox.Process.findModuleByName = moduleLookup;});
+rejectChangedIdentity(() => write(base, layout.controllerTable, 26001),
+    () => write(base, layout.controllerTable, 26000));
+rejectChangedIdentity(() => write(26000, layout.handPointer, 27001),
+    () => write(26000, layout.handPointer, 27000));
+const unrelatedBefore = {...memoryReads};
+const unrelatedArgs = [address(24000), address(0), address(35000), address(280)];
+observed.pose.onEnter.call({}, unrelatedArgs);
+assert.equal(unrelatedArgs[2].value, 35000);
+assert.equal(memoryReads.module, unrelatedBefore.module, 'Unrelated poses must not enumerate modules');
+assert.equal(memoryReads.range, unrelatedBefore.range, 'Unrelated poses must not query memory ranges');
 const poseInvocation = {}, poseArgs = [address(24000), address(3), address(35000), address(280)];
 observed.pose.onEnter.call(poseInvocation, poseArgs);
 assert.notEqual(poseArgs[2].value, 35000);
@@ -260,7 +338,7 @@ assert.equal(pcSandbox.rpc.exports.status().state, 'failing');
 assert.equal(observed.detached, 0);
 assert.equal(observed.immediate.length, 1);
 observed.immediate.shift()();
-assert.equal(observed.detached, 3);
+assert.equal(observed.detached, 2);
 pcSandbox.rpc.exports.deactivate();
 assert.equal(pcSandbox.rpc.exports.status().state, 'stopped');
 assert.equal(observed.reverts, 0);
@@ -268,7 +346,8 @@ assert.equal(bytes.get(26000 + layout.multiModal), 0);
 
 // The stored optical callable is part of preflight, before any listener can be
 // attached. Null/non-executable callables and unreadable/out-of-module slots
-// cannot be used to infer a native ABI. An identical public target is deduped.
+// cannot be used to infer a native ABI. Only the saved original is observed,
+// whether it is identical to the public entry or a separate native trampoline.
 function pcPreflight(overrides = {}) {
     const sandbox = vm.createContext({...pcSandbox, ...overrides, rpc: {exports: {}}});
     vm.runInContext(fs.readFileSync(path.join(directory, 'steamvr_skeleton_adapter.js'), 'utf8'), sandbox);
@@ -297,6 +376,6 @@ assert.equal(observed.attachments, attachedBeforePreflight);
 write(base, layout.skeletonOriginal, 32000);
 assert.equal(pcPreflight().validate().skeletonObservers, 1);
 write(base, layout.skeletonOriginal, 36000);
-assert.equal(pcPreflight().validate().skeletonObservers, 2);
+assert.equal(pcPreflight().validate().skeletonObservers, 1);
 assert.equal(observed.attachments, attachedBeforePreflight);
 console.log('Hybrid adapters: admitted ABI, transparent skeleton callbacks, const-pose copy, route loss, deferred cleanup and restoration passed.');

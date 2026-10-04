@@ -10,7 +10,7 @@ const sides = [null, null], submissions = [0, 0], lastSubmission = [0, 0];
 const activeSides = [false, false];
 let restored = 0;
 const calls = {seen: 0, inputOwner: 0, matched: 0, successful: 0, invalidBones: 0, poseCopies: 0,
-    sources: {'public': 0, 'vd-original': 0}};
+    sources: {'vd-original': 0}};
 const resultCounts = {};
 const routes = [0, 1].map(() => ({reason: 'not-running', physical: false, optical: false, handle: false}));
 
@@ -65,8 +65,13 @@ function resolveSide(side) {
 }
 function validateBones(bones, count) {
     if (count !== configuration.boneCount || !readable(bones, count * 32)) return false;
-    for (let index = 0; index < count * 8; index++) {
-        if (!Number.isFinite(bones.add(index * 4).readFloat())) return false;
+    // Copy once across Frida's memory bridge, then inspect the same 248 values
+    // in JavaScript. Individual readFloat calls block the native driver thread.
+    const buffer = bones.readByteArray(count * 32);
+    if (buffer === null || buffer.byteLength !== count * 32) return false;
+    const values = new Float32Array(buffer);
+    for (const value of values) {
+        if (!Number.isFinite(value)) return false;
     }
     return true;
 }
@@ -144,11 +149,10 @@ function resolveInterfaces() {
     const savedSlot = requireObject(driver.base.add(layout.skeletonOriginal), Process.pointerSize, 'Saved skeleton callable slot');
     const savedUpdate = savedSlot.readPointer();
     if (savedUpdate.isNull() || !executable(savedUpdate)) throw new Error('The saved skeleton callable is not executable');
-    // VD sends optical bones through its saved original callable, bypassing the
-    // public entry. Public calls can be suppressed by VD's native detour, so
-    // only calls that actually reach the original establish skeleton readiness.
-    updateTargets = updateAddress.equals(savedUpdate) ? [{address: savedUpdate, source: 'vd-original'}] :
-        [{address: updateAddress, source: 'public'}, {address: savedUpdate, source: 'vd-original'}];
+    // VD sends optical bones through its saved original callable. Observe only
+    // that callable: the public entry can return success for suppressed updates
+    // and adds native-thread callbacks without establishing skeleton readiness.
+    updateTargets = [{address: savedUpdate, source: 'vd-original'}];
     const host = requireObject(driver.base.add(layout.driverHost).readPointer(), Process.pointerSize, 'OpenVR driver host');
     const hostTable = requireObject(host.readPointer(), 2 * Process.pointerSize, 'OpenVR host vtable');
     const poseAddress = hostTable.add(Process.pointerSize).readPointer();
@@ -203,8 +207,8 @@ rpc.exports = {
         if (state !== 'idle') throw new Error('Skeleton adapter is already used');
         const poseAddress = resolveInterfaces(); state = 'running';
         try {
-            // Observe the public API without replacing it. Interface instances
-            // can share this function; every driver's update must run unchanged.
+            // Observe the saved public API implementation without replacing it;
+            // every driver's input arguments and result pass through unchanged.
             for (const target of updateTargets) updateHooks.push(Interceptor.attach(target.address, {
                 onEnter(args) {
                     this.record = null; this.valid = false;
@@ -213,9 +217,9 @@ rpc.exports = {
                     calls.sources[target.source]++;
                     try {
                         if (args[0].equals(input)) calls.inputOwner++;
-                        const handle = args[1].toString();
-                        const record = sides.find(candidate => candidate !== null && sameObjects(candidate) &&
-                            candidate.handle.equals(uint64(handle)));
+                        const handle = uint64(args[1].toString());
+                        const record = sides.find(candidate => candidate !== null && candidate.handle.equals(handle) &&
+                            sameObjects(candidate));
                         if (record === undefined) return;
                         calls.matched++;
                         this.record = record;
@@ -239,7 +243,7 @@ rpc.exports = {
                 if (state !== 'running') return;
                 try {
                     const device = args[1].toUInt32();
-                    const record = sides.find(candidate => candidate !== null && sameObjects(candidate) && candidate.handDevice === device);
+                    const record = sides.find(candidate => candidate !== null && candidate.handDevice === device && sameObjects(candidate));
                     if (record === undefined || !record.physical || !record.routeActive) return;
                     // Public DriverPose_t validity bytes for the admitted win64 ABI.
                     const pose = args[2];

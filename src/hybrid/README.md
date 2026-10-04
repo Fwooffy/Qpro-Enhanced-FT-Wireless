@@ -67,9 +67,11 @@ live check; this prototype makes no support claim for simultaneous body tracking
 Skeletal updates are observed without replacing the native function or retrying
 native calls. Virtual Desktop sends optical bones through its saved original
 callable, so the exact driver profile also identifies and validates that callable.
-Public and original entry points are observed separately when they differ.
+Only the saved original is observed; the public entry is checked in preflight.
 Only successful, valid 31-bone updates through the saved original for an enabled
 side establish readiness; a suppressed public call can also return success.
+Each skeleton is copied once and all 248 float values are checked. Handle and
+device matching precede object checks so unrelated updates avoid those queries.
 The duplicate hand-device pose uses a retained copy of the supplied const pose;
 the driver's original buffer is untouched. Callback errors schedule restoration
 outside the callback.
