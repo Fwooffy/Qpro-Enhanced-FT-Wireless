@@ -5,8 +5,166 @@ if (Process.arch !== 'arm64') throw new Error('Hands require an ARM64 runtime');
 const library = Process.getModuleByName('libvrapiimpl.so');
 const executable = library.enumerateRanges('r-x');
 let state = 'idle', error = null, hook = null, timer = null, resolution = null;
+let native = null, cleanupTimer = null, cleanupDeadline = 0;
 let queries = 0, changes = 0;
-const ids = {};
+let ids = {};
+// Writable state is supplied externally: CModule's own data is read-only.
+const QUERY_CALLBACKS = `
+#include <gum/guminterceptor.h>
+#include <gum/gummemory.h>
+#include <glib.h>
+typedef struct {
+    GMutex lock;
+    gpointer caller;
+    GHashTable * ids;
+    guint enabled, pending, error;
+    guint64 queries, changes;
+} QueryState;
+typedef struct { gpointer output; guint id, applies, counted; } QueryInvocation;
+typedef struct { guint64 queries, changes; guint error, pending, count, padding; } QuerySnapshot;
+typedef struct { guint id, padding; guint64 count; } IdSnapshot;
+extern QueryState shared;
+extern guint initialized;
+guint state_size(void) { return sizeof(QueryState); }
+guint invocation_size(void) { return sizeof(QueryInvocation); }
+guint snapshot_size(void) { return sizeof(QuerySnapshot); }
+guint id_size(void) { return sizeof(IdSnapshot); }
+gboolean initialize_state(guint capacity) {
+    if (capacity < sizeof(QueryState)) return FALSE;
+    shared.lock.p = NULL; g_mutex_init(&shared.lock);
+    shared.caller = NULL; shared.enabled = shared.pending = shared.error = 0;
+    shared.queries = shared.changes = 0;
+    shared.ids = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+    initialized = 1; return TRUE;
+}
+void start(gpointer caller) {
+    g_mutex_lock(&shared.lock);
+    shared.caller = caller; shared.enabled = 1;
+    g_mutex_unlock(&shared.lock);
+}
+void disable(void) {
+    g_mutex_lock(&shared.lock); shared.enabled = 0; g_mutex_unlock(&shared.lock);
+}
+guint pending(void) {
+    guint value;
+    g_mutex_lock(&shared.lock); value = shared.pending; g_mutex_unlock(&shared.lock);
+    return value;
+}
+void onEnter(GumInvocationContext * ic) {
+    QueryInvocation * call = GUM_IC_GET_INVOCATION_DATA(ic, QueryInvocation);
+    call->counted = call->applies = 0; call->output = NULL; call->id = 0;
+    g_mutex_lock(&shared.lock);
+    if (shared.enabled) {
+        shared.pending++; call->counted = 1;
+        call->applies = gum_invocation_context_get_return_address(ic) == shared.caller;
+        call->output = gum_invocation_context_get_nth_argument(ic, 2);
+        call->id = GPOINTER_TO_UINT(gum_invocation_context_get_nth_argument(ic, 1));
+    }
+    g_mutex_unlock(&shared.lock);
+}
+void onLeave(GumInvocationContext * ic) {
+    QueryInvocation * call = GUM_IC_GET_INVOCATION_DATA(ic, QueryInvocation);
+    guint8 * bytes;
+    gsize length = 0;
+    guint64 * count;
+    if (!call->counted) return;
+    g_mutex_lock(&shared.lock);
+    if (shared.enabled && call->applies &&
+            GPOINTER_TO_INT(gum_invocation_context_get_return_value(ic)) == 0) {
+        bytes = gum_memory_read(call->output, 1, &length);
+        if (bytes == NULL || length != 1) { shared.error = 1; shared.enabled = 0; }
+        else if (bytes[0] > 1) { shared.error = 2; shared.enabled = 0; }
+        else {
+            shared.queries++;
+            count = g_hash_table_lookup(shared.ids, GUINT_TO_POINTER(call->id));
+            if (count == NULL) {
+                count = g_new0(guint64, 1);
+                g_hash_table_insert(shared.ids, GUINT_TO_POINTER(call->id), count);
+            }
+            (*count)++;
+            if (bytes[0] == 0) {
+                bytes[0] = 1;
+                if (gum_memory_write(call->output, bytes, 1)) shared.changes++;
+                else { shared.error = 1; shared.enabled = 0; }
+            }
+        }
+        g_free(bytes);
+    }
+    shared.pending--; call->counted = 0;
+    g_mutex_unlock(&shared.lock);
+}
+guint snapshot(gpointer output, guint capacity) {
+    guint count, needed;
+    QuerySnapshot * header = output;
+    IdSnapshot * rows;
+    GHashTableIter iter;
+    gpointer key, value;
+    g_mutex_lock(&shared.lock);
+    count = g_hash_table_size(shared.ids);
+    if (count > (1048576 - sizeof(QuerySnapshot)) / sizeof(IdSnapshot)) {
+        shared.error = 3; shared.enabled = 0;
+        g_mutex_unlock(&shared.lock); return 0;
+    }
+    needed = sizeof(QuerySnapshot) + count * sizeof(IdSnapshot);
+    if (capacity >= needed) {
+        header->queries = shared.queries; header->changes = shared.changes;
+        header->error = shared.error; header->pending = shared.pending;
+        header->count = count; header->padding = 0;
+        rows = (IdSnapshot *) (header + 1);
+        g_hash_table_iter_init(&iter, shared.ids);
+        while (g_hash_table_iter_next(&iter, &key, &value)) {
+            rows->id = GPOINTER_TO_UINT(key); rows->padding = 0;
+            rows->count = *((guint64 *) value); rows++;
+        }
+    }
+    g_mutex_unlock(&shared.lock); return needed;
+}
+void finalize(void) {
+    if (!initialized) return;
+    g_hash_table_unref(shared.ids); g_mutex_clear(&shared.lock); initialized = 0;
+}
+`;
+function prepareNative() {
+    if (native !== null) return native;
+    const storage = Memory.alloc(256), initialized = Memory.alloc(4);
+    initialized.writeU32(0);
+    const module = new CModule(QUERY_CALLBACKS, {shared: storage, initialized}, {toolchain: 'internal'});
+    const bind = (name, result, args = []) => new NativeFunction(module[name], result, args,
+        {scheduling: 'cooperative', traps: 'none'});
+    try {
+        const size = bind('state_size', 'uint')(), invocationSize = bind('invocation_size', 'uint')();
+        if (Process.pointerSize !== 8 || size < 1 || size > 256 || invocationSize < 1 || invocationSize > 1024 ||
+                bind('snapshot_size', 'uint')() !== 32 || bind('id_size', 'uint')() !== 16)
+            throw new Error('Native controller callback layout is unsupported');
+        if (!bind('initialize_state', 'int', ['uint'])(256)) throw new Error('Native controller callbacks did not initialize');
+        native = {module, storage, initialized, start: bind('start', 'void', ['pointer']),
+            disable: bind('disable', 'void'), pending: bind('pending', 'uint'),
+            snapshot: bind('snapshot', 'uint', ['pointer', 'uint']), buffer: Memory.alloc(1024), capacity: 1024,
+            attached: false};
+        return native;
+    } catch (failure) { module.dispose(); throw failure; }
+}
+function readCounters() {
+    if (native === null) return;
+    let bytes = native.snapshot(native.buffer, native.capacity);
+    if (bytes > native.capacity && bytes <= 1048576) {
+        native.buffer = Memory.alloc(bytes); native.capacity = bytes;
+        bytes = native.snapshot(native.buffer, native.capacity);
+    }
+    if (bytes < 32 || bytes > native.capacity) throw new Error('Native controller counter snapshot is unsupported');
+    queries = native.buffer.readU64().toNumber(); changes = native.buffer.add(8).readU64().toNumber();
+    const count = native.buffer.add(24).readU32(), failure = native.buffer.add(16).readU32();
+    if (32 + count * 16 !== bytes) throw new Error('Native controller counter snapshot is inconsistent');
+    ids = {};
+    for (let index = 0; index < count; index++) {
+        const row = native.buffer.add(32 + index * 16);
+        ids[row.readU32()] = row.add(8).readU64().toNumber();
+    }
+    if (failure !== 0 && state === 'running') {
+        error = failure === 2 ? 'Unexpected controller query result' : 'Native controller query output or counters are unsupported';
+        deactivate();
+    }
+}
 function instruction(address) {
     if (!executable.some(range => address.compare(range.base) >= 0 && address.add(4).compare(range.base.add(range.size)) <= 0))
         throw new Error('Instruction lies outside the controller runtime');
@@ -173,9 +331,28 @@ function resolve() {
     resolution = matches[0]; return resolution;
 }
 function deactivate() {
+    if (['stopped', 'restore-failed', 'restoring'].includes(state)) return;
     if (timer !== null) { clearTimeout(timer); timer = null; }
-    if (hook !== null) { hook.detach(); hook = null; }
-    state = 'stopped';
+    if (native !== null) native.disable();
+    state = 'restoring';
+    if (cleanupTimer !== null) return;
+    cleanupDeadline = Date.now() + 5000;
+    function finish() {
+        cleanupTimer = null;
+        try {
+            // Keep paired listeners attached until every accepted query leaves.
+            // After detach, Gum may omit an outstanding listener's onLeave.
+            if (native !== null && native.pending() !== 0) {
+                if (Date.now() >= cleanupDeadline) throw new Error('Native controller callbacks did not drain');
+                cleanupTimer = setTimeout(finish, 25); return;
+            }
+            if (hook !== null) { hook.detach(); hook = null; Interceptor.flush(); }
+            // A zero work count is not proof that native code has returned.
+            // Retain CModule/state through Frida's native script-unload drain.
+            state = 'stopped';
+        } catch (failure) { error = String(failure); state = 'restore-failed'; }
+    }
+    cleanupTimer = setTimeout(finish, 0);
 }
 function heartbeat(seconds) {
     if (!Number.isFinite(seconds) || seconds < 1 || seconds > 30 || state !== 'running') throw new Error('Invalid controller lease');
@@ -183,27 +360,24 @@ function heartbeat(seconds) {
     timer = setTimeout(deactivate, seconds * 1000);
 }
 rpc.exports = {
-    validate() { resolve(); return {compatible: true, arm64QueryValidated: true}; },
+    validate() { resolve(); prepareNative(); return {compatible: true, arm64QueryValidated: true,
+        nativeCallbacks: true, fridaRuntime: Script.runtime}; },
     activate(seconds) {
         if (state !== 'idle') throw new Error('Controller adapter is already used');
-        const evidence = resolve(); state = 'running';
+        const evidence = resolve(), callbacks = prepareNative(); state = 'running';
         try {
-            hook = Interceptor.attach(evidence.callee, {
-                onEnter(args) { this.output = args[2]; this.id = args[1].toUInt32(); this.applies = this.returnAddress.equals(evidence.caller); },
-                onLeave(result) {
-                    if (state !== 'running' || !this.applies || result.toInt32() !== 0) return;
-                    try {
-                        const held = this.output.readU8();
-                        if (held !== 0 && held !== 1) throw new Error('Unexpected controller query result');
-                        queries++; ids[this.id] = (ids[this.id] || 0) + 1;
-                        if (held === 0) { this.output.writeU8(1); changes++; }
-                    } catch (failure) { error = String(failure); deactivate(); }
-                }
-            });
+            callbacks.start(evidence.caller);
+            hook = Interceptor.attach(evidence.callee, {onEnter: callbacks.module.onEnter, onLeave: callbacks.module.onLeave});
+            callbacks.attached = true;
             heartbeat(seconds);
         } catch (failure) { error = String(failure); deactivate(); throw failure; }
     },
     heartbeat, deactivate,
-    status() { return {state, error, queries, changes, controllerIds: ids}; },
+    status() {
+        try { readCounters(); } catch (failure) {
+            if (!['stopped', 'restore-failed'].includes(state)) { error = String(failure); deactivate(); }
+        }
+        return {state, error, queries, changes, controllerIds: ids, nativeCallbacks: true, fridaRuntime: Script.runtime};
+    },
     dispose: deactivate
 };
