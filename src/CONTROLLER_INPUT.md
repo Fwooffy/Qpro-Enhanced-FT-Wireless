@@ -40,6 +40,13 @@ starting Qpro hands. Keep controller firmware current. Body-tracking
 interaction is unverified. A compatible version/fingerprint is an admission
 check, not proof that the feature works on every headset.
 
+Installing hand/controller components does not turn on headset hand tracking or
+Singularity's switch. If Activity reports `hand_tracking_enabled: false` or
+`multimodal_hands_and_controllers_enabled: false`, enable the corresponding
+headset setting and check compatibility again. Qpro refuses activation while
+either setting is off. Uninstalling the controller add-on only removes optional
+thumb-rest input; it does not uninstall the hands runtime components.
+
 ## Setup and use
 
 1. Install the normal **PC runtime** through the Hub. Close **SteamVR**.

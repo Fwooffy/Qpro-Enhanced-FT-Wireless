@@ -148,8 +148,9 @@ class ComponentTests(unittest.TestCase):
                 output = ('HANDS_CLEANUP {"confirmed": true, "problems": []}\n'
                           + event + ' {"error": "bind port 27062: 10048"}\n')
                 child = FakeWorker(output, code)
-                with self.assertRaisesRegex(RuntimeError, 'worker exited before Stop'):
+                with self.assertRaisesRegex(module.WorkerFailure, 'bind port 27062: 10048') as failure:
                     self.run_workers([child])
+                self.assertEqual(failure.exception.returncode, code)
                 self.assertIn(output, self.activity.getvalue())
                 self.assertTrue(self.aggregate()['confirmed'])
                 self.assertEqual(self.aggregate()['reader'], 'stopped')
@@ -159,6 +160,79 @@ class ComponentTests(unittest.TestCase):
                 self.assertEqual(options['stdout'], module.subprocess.PIPE)
                 self.assertEqual(options['stderr'], module.subprocess.STDOUT)
                 self.assertTrue(options['text'])
+
+    def test_failed_check_forwards_json_and_returns_the_compatibility_code(self):
+        reasons = ['Enable headset hand tracking: hand_tracking_enabled is false.',
+                   'Enable simultaneous hands and controllers: multimodal_hands_and_controllers_enabled is false.']
+        output = 'HANDS_CHECK ' + json.dumps({'compatible': False, 'problems': reasons}) + '\n'
+        result = module.subprocess.CompletedProcess(['fixture-python'], 4, output, 'fixture stderr\n')
+        activity = io.StringIO()
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary, \
+             patch.dict(module.os.environ, {'LOCALAPPDATA': temporary}), \
+             patch.object(module, 'select_target', return_value='quest'), \
+             patch.object(module.subprocess, 'run', return_value=result) as execute, \
+             contextlib.redirect_stdout(activity):
+            code = module.entry_point(['check', '--root', str(HERE), '--adb', 'fake-adb'])
+        self.assertEqual(code, 4)
+        self.assertIn(output, activity.getvalue())
+        self.assertIn('fixture stderr\n', activity.getvalue())
+        self.assertNotIn('CONTROLLER_CHECK ', activity.getvalue())
+        error = json.loads(next(line.partition(' ')[2] for line in activity.getvalue().splitlines()
+                                if line.startswith('CONTROLLER_ERROR ')))
+        self.assertEqual(error['message'], '; '.join(reasons))
+        self.assertTrue(execute.call_args.kwargs['capture_output'])
+
+    def test_successful_check_still_forwards_its_structured_result(self):
+        output = 'HANDS_CHECK {"compatible": true, "problems": []}\n'
+        result = module.subprocess.CompletedProcess(['fixture-python'], 0, output, '')
+        activity = io.StringIO()
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary, \
+             patch.dict(module.os.environ, {'LOCALAPPDATA': temporary}), \
+             patch.object(module, 'select_target', return_value='quest'), \
+             patch.object(module.subprocess, 'run', return_value=result), \
+             contextlib.redirect_stdout(activity):
+            code = module.entry_point(['check', '--root', str(HERE), '--adb', 'fake-adb'])
+        self.assertEqual(code, 0)
+        self.assertIn(output, activity.getvalue())
+        self.assertIn('CONTROLLER_CHECK ', activity.getvalue())
+        self.assertNotIn('CONTROLLER_ERROR ', activity.getvalue())
+
+    def test_run_reports_preflight_reasons_and_startup_errors_with_original_codes(self):
+        reasons = ['hand_tracking_enabled is false', 'multimodal_hands_and_controllers_enabled is false']
+        cases = [(4, 'HANDS_CHECK ' + json.dumps({'compatible': False, 'problems': reasons}) + '\n', '; '.join(reasons)),
+                 (1, 'HANDS_FAILED {"error": "bind port 27062: 10048"}\n', 'bind port 27062: 10048')]
+        for expected_code, diagnostic, reason in cases:
+            with self.subTest(code=expected_code), tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+                local = Path(temporary)
+                hands, _ = module.managed_paths(local)
+                (hands / '.venv' / 'Scripts').mkdir(parents=True)
+                (hands / '.venv' / 'Scripts' / 'python.exe').touch()
+                (hands / 'ready.json').touch()
+                cleanup = 'HANDS_CLEANUP {"confirmed": true, "problems": [], "phase": "not-started"}\n'
+                child = FakeWorker(diagnostic + cleanup, expected_code)
+                activity = io.StringIO()
+                with patch.dict(module.os.environ, {'LOCALAPPDATA': temporary}), \
+                     patch.object(module, 'select_target', return_value='quest'), \
+                     patch.object(module.subprocess, 'Popen', return_value=child), \
+                     contextlib.redirect_stdout(activity):
+                    code = module.entry_point(['run', '--root', str(HERE), '--adb', 'fake-adb',
+                                               '--hands', '--stop-file', str(local / 'stop')])
+                self.assertEqual(code, expected_code)
+                self.assertIn(diagnostic + cleanup, activity.getvalue())
+                error = json.loads(next(line.partition(' ')[2] for line in activity.getvalue().splitlines()
+                                        if line.startswith('CONTROLLER_ERROR ')))
+                self.assertIn(reason, error['message'])
+                aggregate = json.loads([line.partition(' ')[2] for line in activity.getvalue().splitlines()
+                                        if line.startswith('CONTROLLER_CLEANUP ')][-1])
+                self.assertTrue(aggregate['confirmed'])
+                self.assertTrue(child.stdin.closed and child.stdout.closed)
+
+    def test_cleanup_failure_keeps_original_operational_reason_visible(self):
+        output = ('HANDS_STOP_CAUSE {"error": "original readiness timeout"}\n'
+                  'HANDS_CLEANUP_FAILED {"error": "script has been destroyed"}\n')
+        with self.assertRaisesRegex(RuntimeError, 'cleanup was not confirmed.*original readiness timeout'):
+            self.run_workers([FakeWorker(output, code=5)])
+        self.assertFalse(self.aggregate()['confirmed'])
 
     def test_missing_malformed_and_failed_cleanup_are_not_confirmed(self):
         success = 'HANDS_CLEANUP {"confirmed": true, "problems": []}\n'

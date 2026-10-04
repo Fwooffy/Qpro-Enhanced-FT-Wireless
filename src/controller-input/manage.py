@@ -38,6 +38,12 @@ NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 OUTPUT_LOCK = threading.Lock()
 
 
+class WorkerFailure(RuntimeError):
+    def __init__(self, message, returncode):
+        super().__init__(message)
+        self.returncode = returncode
+
+
 def report(stage: str, **values):
     with OUTPUT_LOCK:
         print(stage + ' ' + json.dumps(values, sort_keys=True), flush=True)
@@ -50,6 +56,33 @@ def command(args, timeout=20, capture=True):
         raise RuntimeError(f'{Path(str(args[0])).name} failed ({result.returncode}): '
                            + ((result.stdout or '') + (result.stderr or '')).strip())
     return (result.stdout or '').strip()
+
+
+def forward_output(output):
+    if output:
+        with OUTPUT_LOCK:
+            print(output, end='' if output.endswith('\n') else '\n', flush=True)
+
+
+def failure_reason(line):
+    stage, _, payload = line.partition(' ')
+    if stage not in ('HANDS_CHECK', 'HANDS_FAILED', 'HANDS_INCOMPATIBLE',
+                     'HANDS_STOP_CAUSE', 'HANDS_CLEANUP_FAILED', 'CONTROLLER_ERROR'):
+        return None
+    try:
+        result = json.loads(payload)
+    except ValueError:
+        return None
+    if not isinstance(result, dict):
+        return None
+    if stage == 'HANDS_CHECK':
+        problems = result.get('problems')
+        if result.get('compatible') is False and isinstance(problems, list):
+            reasons = [problem for problem in problems if isinstance(problem, str) and problem.strip()]
+            return '; '.join(reasons) or None
+        return None
+    reason = result.get('message' if stage == 'CONTROLLER_ERROR' else 'error')
+    return reason if isinstance(reason, str) and reason.strip() else None
 
 
 def managed_paths(local: Path):
@@ -343,6 +376,7 @@ class WorkerOutput:
         self.process, self.name = process, name
         self.cleanup_confirmed = None
         self.output_error = None
+        self.failure_reason = None
         self.reader = None
         self.reader_started = False
 
@@ -358,6 +392,8 @@ class WorkerOutput:
             raise
 
     def _observe(self, line):
+        if self.failure_reason is None:
+            self.failure_reason = failure_reason(line)
         stage, _, payload = line.partition(' ')
         if self.name == 'hands' and stage == 'HANDS_CLEANUP_FAILED':
             self.cleanup_confirmed = False
@@ -420,6 +456,7 @@ def run(args, local: Path, adb: Path, target: str):
     root = Path(args.root).resolve()
     hands, _ = managed_paths(local)
     children = []
+    exited_before_stop = False
     try:
         if args.hands:
             python = hands / '.venv' / 'Scripts' / 'python.exe'
@@ -444,7 +481,10 @@ def run(args, local: Path, adb: Path, target: str):
         while not stop.exists() and not parent_closed.is_set():
             exited = [worker for worker in children if worker.process.poll() is not None]
             if exited:
-                raise RuntimeError('A controller worker exited before Stop. See its Activity lines for the compatibility or cleanup result.')
+                # Read the final diagnostic and cleanup lines before deciding
+                # which failure to report; process exit can precede that drain.
+                exited_before_stop = True
+                break
             time.sleep(.1)
     finally:
         failures = []
@@ -483,9 +523,21 @@ def run(args, local: Path, adb: Path, target: str):
                restoration='unconfirmed' if failures else 'confirmed',
                reader='unconfirmed' if failures else 'stopped', problems=failures)
         if failures:
-            raise RuntimeError('Controller cleanup was not confirmed. Keep the Hub open and check Activity.')
-        if sys.exc_info()[0] is None and any(worker.process.returncode != 0 for worker in children):
-            raise RuntimeError('A controller worker failed. See its Activity lines for the startup or runtime error.')
+            reasons = [worker.name + ': ' + worker.failure_reason for worker in children
+                       if worker.failure_reason]
+            raise RuntimeError('Controller cleanup was not confirmed. Keep the Hub open and check Activity.'
+                               + (' Original failure: ' + '; '.join(reasons) if reasons else ''))
+        if sys.exc_info()[0] is None:
+            failed = [worker for worker in children if worker.process.returncode != 0]
+            if failed:
+                prefix = ('A controller worker exited before Stop' if exited_before_stop
+                          else 'A controller worker failed')
+                details = [worker.name + ' (exit ' + str(worker.process.returncode) + '): '
+                           + (worker.failure_reason or 'See its Activity lines for the startup or runtime error.')
+                           for worker in failed]
+                raise WorkerFailure(prefix + ': ' + '; '.join(details), failed[0].process.returncode)
+            if exited_before_stop:
+                raise RuntimeError('A controller worker exited before Stop without reporting an error.')
 
 
 def main(argv=None):
@@ -510,8 +562,20 @@ def main(argv=None):
         adb = Path(args.adb) if args.adb else root / 'platform-tools' / 'adb.exe'
         target = select_target(adb, args.target)
         if args.action == 'check':
-            command([sys.executable, '-u', root / 'hybrid' / 'controller.py', '--adb', adb,
-                     '--target', target, '--check'], timeout=30, capture=False)
+            result = subprocess.run([sys.executable, '-u', str(root / 'hybrid' / 'controller.py'),
+                                     '--adb', str(adb), '--target', target, '--check'],
+                                    timeout=30, text=True, capture_output=True, creationflags=NO_WINDOW)
+            output = result.stdout or ''
+            errors = result.stderr or ''
+            forward_output(output)
+            forward_output(errors)
+            if result.returncode:
+                reasons = [reason for line in (output + '\n' + errors).splitlines()
+                           if (reason := failure_reason(line))]
+                fallback = 'Hand/controller compatibility check failed (exit ' + str(result.returncode) + ').'
+                detail = (output + errors).strip()
+                raise WorkerFailure(reasons[0] if reasons else fallback + (' ' + detail if detail else ''),
+                                    result.returncode)
             report('CONTROLLER_CHECK', touchpad='Sensor compatibility is checked at start; legacy firmware profile required',
                    frida='installed' if (managed_paths(local)[0] / 'ready.json').is_file() else 'not-installed')
         elif args.action == 'run':
@@ -520,9 +584,14 @@ def main(argv=None):
             relay(root, local, adb, target, Path(args.stop_file), args.mode, parent_closed_event(args.parent_stdin))
 
 
-if __name__ == '__main__':
+def entry_point(argv=None):
     try:
-        main()
+        main(argv)
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
         report('CONTROLLER_ERROR', message=str(error))
-        sys.exit(1)
+        return error.returncode if isinstance(error, WorkerFailure) else 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(entry_point())
