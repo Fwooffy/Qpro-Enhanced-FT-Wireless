@@ -58,20 +58,32 @@ class Handle {
 
 // Positive native resolution exercises the actual disassembly/data-flow code,
 // then a changed side-flag branch must be refused without attaching anything.
-function nativeFixture(wrongSide = false) {
+function nativeFixture(wrongSide = false, options = {}) {
     const rows = new Map();
-    const row = (address, mnemonic, opStr) => rows.set(address, {mnemonic, opStr});
-    row(492, 'add', 'x2, sp, #0x20'); row(496, 'ldr', 'w8, [sp, #0x40]');
+    const flags = options.flags || 'w8', prefix = [], expression = [];
+    if (options.call) prefix.push({mnemonic: options.call, opStr: options.call === 'bl' ? '#0x1800' : 'x22', regsAccessed: {written: ['x30']}});
+    if (options.tstMetadataAlias) prefix.push({mnemonic: 'tst', opStr: flags + ', #4', regsAccessed: {written: ['nzcv', flags]}});
+    if (options.clobber === 'flags') prefix.push({mnemonic: 'mov', opStr: 'x' + flags.slice(1) + ', #7', regsAccessed: {written: ['x' + flags.slice(1)]}});
+    if (options.clobber === 'sp') prefix.push({mnemonic: 'add', opStr: 'sp, sp, #0x10', regsAccessed: {written: ['sp']}});
+    if (options.clobber === 'wsp') prefix.push({mnemonic: 'add', opStr: 'wsp, wsp, #0x10', regsAccessed: {written: ['wsp']}});
+    if (options.missingMetadata) prefix.push({mnemonic: 'nop', opStr: ''});
+    if (options.expressionClobber === 'side-byte') expression.push({mnemonic: 'ldrb', opStr: flags + ', [sp, #0x24]', regsAccessed: {written: [flags]}});
+    if (options.expressionClobber === 'held-byte') expression.push({mnemonic: 'ldrb', opStr: 'w11, [sp, #0x24]', regsAccessed: {written: ['w11']}});
+    if (options.expressionClobber === 'side-pointer') expression.push({mnemonic: 'ldr', opStr: 'x' + flags.slice(1) + ', [sp, #0x28]', regsAccessed: {written: ['x' + flags.slice(1)]}});
+    const row = (address, mnemonic, opStr) => rows.set(address >= 556 && address < 4096 ?
+        address + prefix.length * 4 + (address >= 560 ? expression.length * 4 : 0) : address,
+        {mnemonic, opStr, regsAccessed: {written: []}});
+    row(492, 'add', 'x2, sp, #0x20'); row(496, 'ldr', flags + ', [sp, #0x40]');
     row(500, 'ldr', 'w1, [sp, #0x30]'); row(504, 'mov', 'x0, x19');
     row(508, 'strb', 'wzr, [sp, #0x20]'); row(512, 'bl', '#0x1000');
-    row(516, 'tbz', 'w8, #2, #0x220'); row(520, 'ldrb', 'w9, [sp, #0x20]');
+    row(516, 'tbz', flags + ', #2, #0x220'); row(520, 'ldrb', 'w9, [sp, #0x20]');
     row(524, 'str', 'w9, [sp, #0x50]'); row(528, 'b', '#0x22c');
-    row(544, 'tbz', 'w8, #' + (wrongSide ? 4 : 3) + ', #0x22c');
+    row(544, 'tbz', flags + ', #' + (wrongSide ? 4 : 3) + ', #0x22c');
     row(548, 'ldrb', 'w10, [sp, #0x20]'); row(552, 'str', 'w10, [sp, #0x54]');
     row(556, 'ldrb', 'w11, [sp, #0x20]');
     for (let index = 0; index < 4; index++) row(560 + index * 4, 'mov', 'x' + (12 + index) + ', #0x' + ((index + 1) * 256).toString(16));
     row(576, 'tst', 'w11, #1'); row(580, 'csel', 'x16, x12, x13, ne');
-    row(584, 'csel', 'x17, x14, x15, ne'); row(588, 'tst', 'w8, #4');
+    row(584, 'csel', 'x17, x14, x15, ne'); row(588, 'tst', flags + ', #4');
     row(592, 'csel', 'x18, x16, x17, ne'); row(596, 'add', 'x0, x25, x18');
     const functionRows = [
         ['mov', 'x19, x0'], ['mov', 'w20, w1'], ['mov', 'x21, x2'], ['nop', ''],
@@ -80,6 +92,10 @@ function nativeFixture(wrongSide = false) {
         ['blr', 'x23'], ['mov', 'w24, w0'], ['mov', 'w0, w24'], ['ret', '']
     ];
     functionRows.forEach(([mnemonic, operands], index) => row(4096 + index * 4, mnemonic, operands));
+    prefix.forEach((instruction, index) => rows.set(556 + index * 4, instruction));
+    expression.forEach((instruction, index) => rows.set(560 + prefix.length * 4 + index * 4, instruction));
+    if (options.expressionMissingMetadata === 'start') delete rows.get(556 + prefix.length * 4).regsAccessed;
+    if (options.expressionMissingMetadata === 'interior') delete rows.get(560 + (prefix.length + expression.length) * 4).regsAccessed;
     let hooks = 0;
     const sandbox = vm.createContext({
         QPRO_PROFILE: profile, rpc: {exports: {}}, ptr: value => new Address(Number(value)),
@@ -100,6 +116,39 @@ validNative.sandbox.rpc.exports.deactivate();
 const wrongNative = nativeFixture(true);
 assert.throws(() => wrongNative.sandbox.rpc.exports.validate(), /ambiguous or unsupported/);
 assert.equal(wrongNative.hookCount(), 0);
+
+// Returning calls preserve AAPCS64 saved registers; caller-saved flags cannot
+// prove the later routing expression still uses the query caller's side flag.
+for (const call of ['bl', 'blr']) {
+    const savedFlags = nativeFixture(false, {call, flags: 'w23'});
+    assert.equal(savedFlags.sandbox.rpc.exports.validate().compatible, true);
+    assert.equal(savedFlags.hookCount(), 0);
+    // Capstone can list a TST source register as written for this alias; TST
+    // changes NZCV only and must not erase a saved side flag's provenance.
+    const readOnlyAlias = nativeFixture(false, {call, flags: 'w23', tstMetadataAlias: true});
+    assert.equal(readOnlyAlias.sandbox.rpc.exports.validate().compatible, true);
+    assert.equal(readOnlyAlias.hookCount(), 0);
+    const volatileFlags = nativeFixture(false, {call, flags: 'w8'});
+    assert.throws(() => volatileFlags.sandbox.rpc.exports.validate(), /ambiguous or unsupported/);
+    assert.equal(volatileFlags.hookCount(), 0);
+    for (const protection of [{clobber: 'flags'}, {clobber: 'sp'}, {clobber: 'wsp'}, {missingMetadata: true}]) {
+        const unprovenRoute = nativeFixture(false, {call, flags: 'w23', ...protection});
+        assert.throws(() => unprovenRoute.sandbox.rpc.exports.validate(), /ambiguous or unsupported/);
+        assert.equal(unprovenRoute.hookCount(), 0);
+    }
+}
+
+// Every expression instruction must retain proven side/held inputs. Loading a
+// different stack slot destroys that register's earlier byte provenance.
+for (const protection of [
+    {expressionClobber: 'side-byte'}, {expressionClobber: 'held-byte'},
+    {expressionClobber: 'side-pointer'}, {expressionMissingMetadata: 'start'},
+    {expressionMissingMetadata: 'interior'}
+]) {
+    const unprovenExpression = nativeFixture(false, {flags: 'w23', ...protection});
+    assert.throws(() => unprovenExpression.sandbox.rpc.exports.validate(), /ambiguous or unsupported/);
+    assert.equal(unprovenExpression.hookCount(), 0);
+}
 
 // Synthetic PC memory exercises the actual role checks, hand-handle routing,
 // loss of frame data and restoration; no proprietary binary is loaded.

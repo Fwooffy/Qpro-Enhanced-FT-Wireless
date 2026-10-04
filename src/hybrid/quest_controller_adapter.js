@@ -61,8 +61,13 @@ function routingExpression(start, slot, flags) {
     let condition = null;
     for (let index = 0; index < 32; index++) {
         const row = instruction(start.add(index * 4));
+        const written = row.regsAccessed?.written;
+        if (!Array.isArray(written) || written.some(register => /^(?:w?sp)$/.test(register))) return false;
         let match;
         if (row.mnemonic === 'ldrb' && (match = row.opStr.match(/^(w[0-9]+), \[sp, #((?:0x[0-9a-f]+|[0-9]+))\]$/))) {
+            // A new load replaces the register's provenance even when its
+            // source is a different stack slot.
+            values.delete(registerKey(match[1]));
             if (integer(match[2]) === slot) values.set(registerKey(match[1]), {kind: 'held'});
             continue;
         }
@@ -90,7 +95,7 @@ function routingExpression(start, slot, flags) {
         if (/^(str|stur|stp)$/.test(row.mnemonic) && !row.opStr.includes('!') && !row.opStr.includes('],')) continue;
         if (/^(ldr|ldur|ldp)$/.test(row.mnemonic) && !row.opStr.includes('!') && !row.opStr.includes('],')) {
             const destinations = row.opStr.split('[')[0].match(/[xw][0-9]+/g) || [];
-            if (destinations.includes(flags)) return false;
+            if (destinations.some(register => registerKey(register) === registerKey(flags))) return false;
             for (const register of destinations) values.delete(registerKey(register));
             continue;
         }
@@ -100,13 +105,28 @@ function routingExpression(start, slot, flags) {
 }
 function routesFrom(join, slot, flags) {
     const pending = [join], visited = new Set();
+    const sideRegister = flags.replace(/^w/, 'x');
+    const preservedAcrossCalls = /^w(?:19|2[0-8])$/.test(flags);
     while (pending.length && visited.size < 6144) {
         const address = pending.pop(), key = address.toString();
         if (visited.has(key) || address.compare(join) < 0 || address.compare(join.add(24576)) >= 0) continue;
         visited.add(key);
         const row = instruction(address);
         if (row.mnemonic === 'ldrb' && routingExpression(address, slot, flags)) return true;
-        if (['ret', 'br', 'blr'].includes(row.mnemonic)) continue;
+        if (['ret', 'br'].includes(row.mnemonic)) continue;
+        if (row.mnemonic === 'bl' || row.mnemonic === 'blr') {
+            // A returning call preserves x19-x28 under AAPCS64. Follow its
+            // continuation only when the side flag has that ownership.
+            if (preservedAcrossCalls) pending.push(address.add(4));
+            continue;
+        }
+        const written = row.regsAccessed?.written;
+        // Test/compare aliases read their integer operands. Some Capstone
+        // builds also list that operand as written for the ANDS/TST alias.
+        const readsOnly = /^(cmp|cmn|tst|ccmp|ccmn|cbz|cbnz|tbz|tbnz|b(?:\..+)?)$/.test(row.mnemonic);
+        if (!Array.isArray(written)) continue;
+        if (!readsOnly && written.some(register =>
+            /^(?:w?sp)$/.test(register) || register.replace(/^w/, 'x') === sideRegister)) continue;
         if (/^(b|b\..+|cbz|cbnz|tbz|tbnz)$/.test(row.mnemonic)) {
             const branch = destination(address); if (branch !== null) pending.push(branch);
             if (row.mnemonic === 'b') continue;
