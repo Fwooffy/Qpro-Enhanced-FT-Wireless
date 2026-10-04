@@ -27,6 +27,11 @@ python controller.py --target SERIAL --adb PATH --frida-server PATH --stop-file 
 starts a helper, forwards a port, attaches to a process or loads an adapter.
 It can run without Frida; `componentsReady` then reports whether setup is needed.
 It does request root for preference reads, so allow the existing Magisk prompt.
+All preferences are read for the currently active headset user. Recognized
+inactive hand/multimodal boolean values are warnings before VD activation;
+simultaneous mode must be `1`, and missing, duplicate or unsupported readings
+remain errors. The temporary adapters must still establish real same-side
+optical/skeletal readiness after activation.
 
 The tracking command uses the selected ADB target. It refuses an occupied headset
 helper port and known existing Frida servers. It owns only its helper PID,

@@ -20,13 +20,16 @@ class FakeAdb:
         self.profile, self.rules, self.calls = profile, rules, []
         self.target = "serial"
         self.allocated_port = "43817"
+        self.preference_output = ("[hand_tracking_enabled : true]\n"
+                                  "[multimodal_hands_and_controllers_enabled : true]\n"
+                                  "[simultaneous_hands_and_controllers_mode : 1]")
 
     def run(self, *args, **kwargs):
         self.calls.append(args)
         if args[:3] == ("shell", "dumpsys", "package"):
             return "versionName=" + self.profile["androidVersion"]
         if "oculuspreferences" in " ".join(args):
-            return "[hand_tracking_enabled : true]\n[multimodal_hands_and_controllers_enabled : true]\n[simultaneous_hands_and_controllers_mode : 1]"
+            return self.preference_output
         if args == ("forward", "--list"):
             return self.rules
         if args[:2] == ("forward", "--no-rebind"):
@@ -116,6 +119,132 @@ class HybridTests(unittest.TestCase):
         self.assertFalse(report["componentsReady"])
         self.assertEqual(len(report["componentProblems"]), 2)
         self.assertTrue(all(call[0] == "shell" for call in adb.calls))
+
+    def inspect_preferences(self, values=None, output=None):
+        adb = FakeAdb(self.profile)
+        if output is not None:
+            adb.preference_output = output
+        elif values is not None:
+            adb.preference_output = "\n".join("[" + name + " : " + value + "]" for name, value in values.items())
+        report = controller.inspect(adb, self.profile, "17.18.0", self.server, str(self.home))
+        preference_calls = [call for call in adb.calls if "oculuspreferences" in " ".join(call)]
+        self.assertEqual(preference_calls, [("shell", "su -c 'oculuspreferences --getc hand_tracking_enabled "
+                                              "multimodal_hands_and_controllers_enabled simultaneous_hands_and_controllers_mode'")])
+        self.assertEqual(len(adb.calls), 2)
+        self.assertTrue(all(call[0] == "shell" for call in adb.calls))
+        self.assertEqual(report["settingSource"], "current-user")
+        return report
+
+    def enabled_preferences(self):
+        return {"hand_tracking_enabled": "true", "multimodal_hands_and_controllers_enabled": "true",
+                "simultaneous_hands_and_controllers_mode": "1"}
+
+    def test_preferences_use_one_read_only_active_user_query(self):
+        report = self.inspect_preferences()
+        self.assertTrue(report["compatible"])
+        self.assertEqual(report["problems"], [])
+        self.assertEqual(report["warnings"], [])
+        self.assertEqual(report["settings"], self.enabled_preferences())
+
+    def test_each_inactive_boolean_is_an_explicit_live_readiness_warning(self):
+        for name in ("hand_tracking_enabled", "multimodal_hands_and_controllers_enabled"):
+            for inactive in ("false", "0"):
+                with self.subTest(name=name, inactive=inactive):
+                    values = self.enabled_preferences()
+                    values[name] = inactive
+                    report = self.inspect_preferences(values)
+                    self.assertTrue(report["compatible"])
+                    self.assertEqual(report["problems"], [])
+                    self.assertEqual(report["warnings"], ["Headset reports " + name + " inactive before startup; "
+                        "Qpro will check live optical input after requesting Virtual Desktop multimodal mode."])
+
+    def test_mode_one_admits_inactive_multimodal_with_warning(self):
+        values = self.enabled_preferences()
+        values["multimodal_hands_and_controllers_enabled"] = "false"
+        report = self.inspect_preferences(values)
+        self.assertTrue(report["compatible"])
+        self.assertTrue(report["componentsReady"])
+        self.assertEqual(report["settings"]["hand_tracking_enabled"], "true")
+        self.assertEqual(report["settings"]["simultaneous_hands_and_controllers_mode"], "1")
+        self.assertEqual(report["problems"], [])
+        self.assertEqual(len(report["warnings"]), 1)
+        self.assertIn("multimodal_hands_and_controllers_enabled", report["warnings"][0])
+
+    def test_mode_one_admits_both_inactive_booleans_with_two_warnings(self):
+        values = self.enabled_preferences()
+        values["hand_tracking_enabled"] = values["multimodal_hands_and_controllers_enabled"] = "false"
+        report = self.inspect_preferences(values)
+        self.assertTrue(report["compatible"])
+        self.assertEqual(report["problems"], [])
+        self.assertEqual(len(report["warnings"]), 2)
+        for name, warning in zip(("hand_tracking_enabled", "multimodal_hands_and_controllers_enabled"), report["warnings"]):
+            self.assertIn(name, warning)
+
+    def test_mode_zero_is_refused_even_with_enabled_booleans(self):
+        values = self.enabled_preferences()
+        values["simultaneous_hands_and_controllers_mode"] = "0"
+        report = self.inspect_preferences(values)
+        self.assertFalse(report["compatible"])
+        self.assertEqual(len(report["problems"]), 1)
+        self.assertIn("current-user setting simultaneous_hands_and_controllers_mode must be 1", report["problems"][0])
+        self.assertIn("Singularity, turn on Simultaneous Hands & Controllers", report["problems"][0])
+        self.assertEqual(report["warnings"], [])
+
+    def test_unsupported_mode_values_are_refused(self):
+        for unsupported in ("true", "false", "2"):
+            with self.subTest(value=unsupported):
+                values = self.enabled_preferences()
+                values["simultaneous_hands_and_controllers_mode"] = unsupported
+                report = self.inspect_preferences(values)
+                self.assertFalse(report["compatible"])
+                self.assertEqual(len(report["problems"]), 1)
+                self.assertIn("supported current-user value for simultaneous_hands_and_controllers_mode", report["problems"][0])
+                self.assertEqual(report["warnings"], [])
+
+    def test_missing_preferences_are_unverified_and_refused(self):
+        for name in self.enabled_preferences():
+            with self.subTest(name=name):
+                values = self.enabled_preferences()
+                del values[name]
+                report = self.inspect_preferences(values)
+                self.assertFalse(report["compatible"])
+                self.assertIsNone(report["settings"][name])
+                self.assertEqual(len(report["problems"]), 1)
+                self.assertIn("supported current-user value for " + name, report["problems"][0])
+                self.assertEqual(report["warnings"], [])
+
+    def test_malformed_and_conflicting_preferences_are_refused(self):
+        for name in self.enabled_preferences():
+            for malformed in ("[" + name + " : unknown]", "[" + name + " = true]",
+                              "[" + name + " : true", "[" + name + " : false]\n[" + name + " : true]",
+                              "[" + name + " : 1]\n[" + name + " : 1]"):
+                with self.subTest(name=name, malformed=malformed):
+                    values = self.enabled_preferences()
+                    del values[name]
+                    output = "\n".join("[" + key + " : " + value + "]" for key, value in values.items())
+                    report = self.inspect_preferences(output=output + "\n" + malformed)
+                    self.assertFalse(report["compatible"])
+                    self.assertEqual(len(report["problems"]), 1)
+                    self.assertIn("supported current-user value for " + name, report["problems"][0])
+                    self.assertEqual(report["warnings"], [])
+        report = self.inspect_preferences(output="")
+        self.assertFalse(report["compatible"])
+        self.assertEqual(len(report["problems"]), 3)
+        self.assertEqual(report["warnings"], [])
+
+    def test_valid_value_with_malformed_duplicate_is_refused(self):
+        for name in self.enabled_preferences():
+            for malformed in ("[" + name + " = true]", "[" + name + " : true", "[ " + name):
+                with self.subTest(name=name, malformed=malformed):
+                    values = self.enabled_preferences()
+                    if name != "simultaneous_hands_and_controllers_mode":
+                        values[name] = "false"
+                    output = "\n".join("[" + key + " : " + value + "]" for key, value in values.items())
+                    report = self.inspect_preferences(output=output + "\n" + malformed)
+                    self.assertFalse(report["compatible"])
+                    self.assertEqual(len(report["problems"]), 1)
+                    self.assertIn("supported current-user value for " + name, report["problems"][0])
+                    self.assertEqual(report["warnings"], [])
 
     def test_tracking_requires_components(self):
         report = controller.inspect(FakeAdb(self.profile), self.profile, None, None, str(self.home))

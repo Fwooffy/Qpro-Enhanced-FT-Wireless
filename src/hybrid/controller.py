@@ -84,7 +84,7 @@ def inspect(adb: Adb, profile: dict, frida_version: str | None,
             require_components=True):
     """Reads facts only; callers decide whether a failed check prevents startup."""
     driver = Path(program_files or os.environ.get("ProgramFiles", r"C:\Program Files")) / profile["pcDriverRelativePath"]
-    problems = []
+    problems, warnings = [], []
     driver_hash = hashlib.sha256(driver.read_bytes()).hexdigest() if driver.is_file() else None
     if driver_hash != profile["pcDriverSha256"]:
         problems.append("This Virtual Desktop Streamer driver has no validated hand profile.")
@@ -100,22 +100,36 @@ def inspect(adb: Adb, profile: dict, frida_version: str | None,
     version = version.group(1) if version else None
     if version != profile["androidVersion"]:
         problems.append("This headset Virtual Desktop version has no validated hand profile.")
-    preference_command = ("oculuspreferences --get hand_tracking_enabled; "
-                          "oculuspreferences --get multimodal_hands_and_controllers_enabled; "
-                          "oculuspreferences --getc simultaneous_hands_and_controllers_mode")
-    # adb shell joins its arguments into a remote command; quoting must survive
-    # that join so every preference read is inside the one root command.
-    settings = adb.run("shell", "su -c " + shell_quote(preference_command))
-    values = dict(re.findall(r"\[(\w+)\s*:\s*([^\]]+)\]", settings))
     required = ("hand_tracking_enabled", "multimodal_hands_and_controllers_enabled",
                 "simultaneous_hands_and_controllers_mode")
+    # --getc reads the currently active headset user. --get instead reads the
+    # calling user, which can differ when this command runs through root.
+    preference_command = "oculuspreferences --getc " + " ".join(required)
+    # adb shell joins its arguments into a remote command; quoting must survive
+    # that join so the single preference query stays inside the root command.
+    settings = adb.run("shell", "su -c " + shell_quote(preference_command))
+    entries = re.findall(r"\[(\w+)\s*:\s*([^\[\]\r\n]+)\]", settings)
+    values = dict(entries)
     for name in required:
-        if values.get(name, "").strip().lower() not in ("true", "1"):
-            problems.append("Enable headset hand tracking and Singularity's Simultaneous Hands & Controllers; could not verify " + name + ".")
+        value = values.get(name, "").strip().lower()
+        is_mode = name == "simultaneous_hands_and_controllers_mode"
+        supported = ("0", "1") if is_mode else ("true", "1", "false", "0")
+        mentions = len(re.findall(r"\[\s*" + re.escape(name) + r"\b", settings))
+        if mentions != 1 or sum(key == name for key, _ in entries) != 1 or value not in supported:
+            problems.append("Could not read one supported current-user value for " + name +
+                            ". Check the headset connection and root access, then check compatibility again.")
+        elif is_mode and value != "1":
+            problems.append("Headset current-user setting " + name + " must be 1. "
+                            "In Singularity, turn on Simultaneous Hands & Controllers, then check compatibility again.")
+        elif value in ("false", "0"):
+            # Preliminary booleans cannot prove live optical availability;
+            # activation and the fresh same-side readiness check establish it.
+            warnings.append("Headset reports " + name + " inactive before startup; "
+                            "Qpro will check live optical input after requesting Virtual Desktop multimodal mode.")
     return {"compatible": not problems, "androidVersion": version,
             "pcDriverSha256": driver_hash, "fridaVersion": frida_version,
-            "settings": {key: values.get(key) for key in required},
-            "experimental": True, "runtimeValidated": False, "problems": problems,
+            "settings": {key: values.get(key) for key in required}, "settingSource": "current-user",
+            "experimental": True, "runtimeValidated": False, "problems": problems, "warnings": warnings,
             "componentsReady": not component_problems, "componentProblems": component_problems}
 
 
