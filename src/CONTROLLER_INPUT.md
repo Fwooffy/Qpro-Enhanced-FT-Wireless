@@ -41,11 +41,14 @@ interaction is unverified. A compatible version/fingerprint is an admission
 check, not proof that the feature works on every headset.
 
 Installing hand/controller components does not turn on headset hand tracking or
-Singularity's switch. If Activity reports `hand_tracking_enabled: false` or
-`multimodal_hands_and_controllers_enabled: false`, enable the corresponding
-headset setting and check compatibility again. Qpro refuses activation while
-either setting is off. Uninstalling the controller add-on only removes optional
-thumb-rest input; it does not uninstall the hands runtime components.
+Singularity's switch. The two boolean preference readings can report inactive
+before Virtual Desktop requests multimodal mode, even with the menu switches on.
+Known inactive values produce startup warnings; Qpro then verifies actual optical
+finger data and SteamVR skeleton updates. Simultaneous mode must still be `1`,
+and missing, duplicate or unsupported values refuse startup. The check reads
+preferences for the currently active headset user and never writes them.
+Uninstalling the controller add-on only removes optional thumb-rest input; it
+does not uninstall the hands runtime components.
 
 ## Setup and use
 

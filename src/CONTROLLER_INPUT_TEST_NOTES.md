@@ -50,7 +50,7 @@ Controllers** switch; turn off a separate Frida Server first. The thumb-rest
 reader admits firmware build **51503870024400340**. Steam Link controller input
 is not admitted by this prototype. Unknown builds are refused.
 
-Builds and offline checks passed: 23 fake hand lifecycle checks, synthetic
+Builds and offline checks passed: 32 fake hand lifecycle/preference checks, synthetic
 adapter ABI/skeleton/restore checks, 45 native packet/contact/settings checks,
 11 fake-page/lifetime checks, 22 optional-component checks, and a functional
 Windows PowerShell/native-child EOF cleanup check. There were 2,782 private UI
@@ -74,6 +74,12 @@ after Stop. Severe game lag was then reported with only hands/controllers
 enabled, clearing after Stop. The next test reduces skeletal callback memory
 reads and removes an unnecessary observer; sustained performance remains
 unverified. See **HANDS_PERFORMANCE_FIX_NOTES.md**.
+
+The following startup-check test uses one active-user preference read and treats
+recognized inactive hand booleans as warnings before VD activation. Mode `1`,
+unambiguous supported readings, exact compatibility and real optical/skeletal
+readiness remain required. See **HANDS_PREFERENCE_FIX_NOTES.md** for the reported
+menu/readings mismatch and test limits.
 
 No live module/add-on was installed during this build. The validation-only probe
 used a temporary owned helper and process attachments with activation blocked.

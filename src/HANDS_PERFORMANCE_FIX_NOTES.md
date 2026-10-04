@@ -5,6 +5,9 @@ restored the adapters, followed by a report of severe game lag with only
 **Experimental hands + controllers** enabled. The lag cleared after Stop.
 This remains an experimental test build.
 
+The later startup-check test revises the preference rule in step 3 below; see
+**HANDS_PREFERENCE_FIX_NOTES.md**. The performance changes remain in that build.
+
 ## Changes
 
 - **Bone validation:** Read each 31-bone skeleton in one 992-byte copy instead
