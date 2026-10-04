@@ -28,10 +28,11 @@ starts a helper, forwards a port, attaches to a process or loads an adapter.
 It can run without Frida; `componentsReady` then reports whether setup is needed.
 It does request root for preference reads, so allow the existing Magisk prompt.
 
-The tracking command uses the selected ADB target. It refuses occupied helper
-or forwarding ports and known existing Frida servers. It owns only its helper
-PID, `/data/local/tmp/qpro-hands-frida`, headset/PC loopback port **27062**, and
-the forward it creates. It does not terminate another server or remove another
+The tracking command uses the selected ADB target. It refuses an occupied headset
+helper port and known existing Frida servers. It owns only its helper PID,
+`/data/local/tmp/qpro-hands-frida`, headset loopback port **27062**, an automatically
+allocated PC port, and the exact forward it creates. It does not terminate
+another server or remove another
 forward. The stop file may be created by the Hub; without it, stdin EOF requests
 stop. `--parent-stdin` also watches parent EOF when a stop file is supplied, so
 a parent crash or failed stop-file write still requests restoration. A stop file
@@ -40,6 +41,7 @@ already present is refused before any headset command.
 ## Status and recovery
 
 - `HANDS_CHECK`: compatibility and component details.
+- `HANDS_TRANSPORT`: allocated PC port and headset helper port.
 - `HANDS_STAGE`: validation or optical-hand readiness progress.
 - `HANDS_READY`: fresh valid optical data has reached at least one held physical
   controller's skeleton. `activeSides` identifies which side(s).
@@ -58,6 +60,13 @@ pointer access, 31-bone input and the admitted ABI. Its driver object layout and
 the Android query are private compatibility facts, so future Virtual Desktop or
 firmware versions require fresh validation. Body tracking interaction needs a
 live check; this prototype makes no support claim for simultaneous body tracking.
+
+Native routing validation follows returning ARM64 calls only when the side flag
+is held in an AAPCS64 callee-saved register. It stops when that register or the
+stack pointer is overwritten, and still requires one uniquely validated query
+caller, two-sided result copies and four distinct held/side routing choices.
+Test/compare aliases have read-only integer operands; their condition-code writes
+cannot be treated as changes to the side flag.
 
 ## Offline checks
 

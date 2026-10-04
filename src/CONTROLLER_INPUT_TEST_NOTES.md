@@ -20,6 +20,9 @@ default. It is a **test build**, not a validated hardware release.
 - Hand startup now asks ADB for a free PC port, preserving other listeners and
   forwards. Cleanup uses each worker's explicit restoration result, drains its
   final Activity lines and keeps startup errors separate from cleanup failures.
+- Native routing validation now follows returning calls when the side flag is
+  held in an AAPCS64 callee-saved register. A validation-only headset/PC probe
+  passed all three adapters with no tracking activation and confirmed cleanup.
 - Kept the Hub's existing visual style. Grouped wireless pairing and standalone
   cheek-camera training into expandable sections, aligned the new fields and
   improved disabled toggle readability.
@@ -50,13 +53,15 @@ layout/state checks across narrow, standard and wide Windows fixtures.
 The startup fix also has functional Python-child output/EOF checks; see
 **HANDS_STARTUP_FIX_NOTES.md** in the source repository.
 
-These checks do not establish live headset behaviour. Before a release, verify
+These checks do not establish functional optical routing. Before a release, verify
 both hands while holding controllers, mixed controller/empty-hand use, optical
 loss, controller reconnect, haptics/buttons, app input bindings, sleep/reconnect,
 and confirmed restoration after Stop or a process exit. Body-tracking
 interaction and high-DPI physical displays still need validation.
 
-No live module/add-on was installed during this build. The ZIP contains no raw
+No live module/add-on was installed during this build. The validation-only probe
+used a temporary owned helper and process attachments with activation blocked.
+The ZIP contains no raw
 camera recordings, personal profiles, saved headset addresses, local Python
 environments, compiler caches, debug symbols or reference repository copy.
 
