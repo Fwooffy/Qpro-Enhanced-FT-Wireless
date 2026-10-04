@@ -2,8 +2,10 @@
 
 This test implements two independently authored paths. It does not reuse the
 QFTPlus gaze code or modify Qpro's face models. These features are **off by
-default**, are currently **Virtual Desktop only**, and have not been validated
-on a live headset. Do not describe this build as verified simultaneous tracking.
+default** and are currently **Virtual Desktop only**. A live test confirmed real
+finger movement while controllers were held, but also found a substantial frame
+rate drop. The native-callback revision still needs a live performance check;
+do not describe it as ready for general release.
 
 ## How the paths work
 
@@ -28,8 +30,8 @@ bindings are not included in this first prototype.
 
 | Component | First admitted profile | Verification limit |
 | --- | --- | --- |
-| Headset Virtual Desktop | 1.34.22.0 | Exact version gate; live routing pending |
-| PC Streamer driver | SHA-256 `ad3c99c7f7346613d4c7106fb94476be5859ca17a637a11cfc156184d466f36f` | Exact fingerprint gate; live routing pending |
+| Headset Virtual Desktop | 1.34.22.0 | Exact version gate; sustained performance unverified |
+| PC Streamer driver | SHA-256 `ad3c99c7f7346613d4c7106fb94476be5859ca17a637a11cfc156184d466f36f` | Exact fingerprint gate; sustained performance unverified |
 | Python and Android helper | Frida 17.18.0, Windows x64 / Android ARM64 | Official downloads pinned by SHA-256 |
 | Thumb-rest sensor layout | Firmware build `51503870024400340` | Experimental read-only profile; live validation pending |
 | Steam Link | Not admitted | Controller identity and optical transport need separate validation |
@@ -77,6 +79,13 @@ running while owned workers clean up so the Hub does not orphan them. Activity
 distinguishes valid routed fingers from hook startup, and reports cleanup
 failures explicitly. Unknown product versions and driver fingerprints fail
 before attachment; runtime ABI mismatches fail before adapter activation.
+
+Frequent SteamVR skeleton and pose callbacks run in native code. The headset's
+controller query and idle Update gate also run natively; managed finger
+conversion retains its existing error handling. Stop disables new mutable work,
+waits for accepted callbacks, then restores the temporary state. Native code and
+callback memory remain retained until Frida finishes unloading the script.
+An incomplete drain or failed restoration is reported as a cleanup failure.
 
 The read-only sensor helper has a bounded connection lifetime. Stale or invalid
 packets clear custom controller output; mouse mode releases its pressed button.
