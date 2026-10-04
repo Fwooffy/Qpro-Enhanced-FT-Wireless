@@ -52,7 +52,7 @@ is not admitted by this prototype. Unknown builds are refused.
 
 Builds and offline checks passed: 23 fake hand lifecycle checks, synthetic
 adapter ABI/skeleton/restore checks, 45 native packet/contact/settings checks,
-11 fake-page/lifetime checks, 18 optional-component checks, and a functional
+11 fake-page/lifetime checks, 22 optional-component checks, and a functional
 Windows PowerShell/native-child EOF cleanup check. There were 2,782 private UI
 layout/state checks across narrow, standard and wide Windows fixtures.
 The startup fix also has functional Python-child output/EOF checks; see
@@ -68,6 +68,12 @@ A subsequent user check reported real finger movement, but SteamVR crashed at
 the readiness timeout while the old public-entry counter stayed at zero. That
 run did not complete the stability/restoration checks. See
 **HANDS_RUNTIME_FIX_NOTES.md** for the new test and its limits.
+
+A later short run accepted updates from both hands and acknowledged restoration
+after Stop. Severe game lag was then reported with only hands/controllers
+enabled, clearing after Stop. The next test reduces skeletal callback memory
+reads and removes an unnecessary observer; sustained performance remains
+unverified. See **HANDS_PERFORMANCE_FIX_NOTES.md**.
 
 No live module/add-on was installed during this build. The validation-only probe
 used a temporary owned helper and process attachments with activation blocked.
