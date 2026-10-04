@@ -6,13 +6,286 @@ const layout = configuration.pcLayout;
 let state = 'idle', error = null, driver = null, input = null, updateAddress = null;
 let updateHooks = [], updateTargets = [], poseHook = null, observer = null, cleanupScheduled = false;
 let poll = null, lease = null, interfaceVersion = null;
-const sides = [null, null], submissions = [0, 0], lastSubmission = [0, 0];
+let native = null, cleanupPromise = null;
+const sides = [null, null], submissions = [0, 0];
+const submissionAge = [0xffffffff, 0xffffffff];
 const activeSides = [false, false];
 let restored = 0;
 const calls = {seen: 0, inputOwner: 0, matched: 0, successful: 0, invalidBones: 0, poseCopies: 0,
     sources: {'vd-original': 0}};
 const resultCounts = {};
 const routes = [0, 1].map(() => ({reason: 'not-running', physical: false, optical: false, handle: false}));
+
+// Frida's native listeners avoid entering JavaScript on SteamVR's driver
+// threads. Only the slow route/lease poll and RPC snapshots cross that boundary.
+// Writable storage is supplied explicitly: CModule's own data is read-only.
+const nativeSource = `
+#include <gum/guminterceptor.h>
+#include <gum/gummemory.h>
+#include <gum/gumspinlock.h>
+#include <string.h>
+
+typedef struct {
+  double time_offset, world_rotation[4], world_translation[3];
+  double head_rotation[4], head_translation[3], position[3], velocity[3];
+  double acceleration[3], rotation[4], angular_velocity[3], angular_acceleration[3];
+  gint32 result;
+  guint8 valid, drift, head_model, connected;
+} DriverPose;
+typedef struct {
+  gpointer controller, hand;
+  guint64 handle;
+  guint device, physical, active, generation;
+} Side;
+typedef struct {
+  GumSpinlock lock;
+  guint enabled, module_alive, fault, poses;
+  gpointer table, input;
+  gsize hand_offset;
+  Side sides[2];
+  guint seen, owner, matched, successful, invalid, copies, submissions[2];
+  guint results[32], other_results;
+  guint64 last_submission[2];
+} State;
+typedef struct { guint side, generation, valid; Side record; } SkeletonCall;
+typedef struct { DriverPose * copy; } PoseCall;
+extern State qpro_state;
+/* Windows uptime is monotonic and uses the same clock for native timestamps
+ * and snapshot ages; it is never compared with JavaScript's wall clock. */
+extern guint64 qpro_now(void);
+
+/* Never dereference a cached driver object. A module/object may disappear
+ * between the JavaScript poll and this callback; partial reads are refused. */
+static gboolean read_exact(gconstpointer address, gpointer output, gsize size) {
+  gsize count = 0;
+  guint8 * bytes;
+  if (address == NULL) return FALSE;
+  bytes = gum_memory_read(address, size, &count);
+  if (bytes == NULL) return FALSE;
+  if (count == size) memcpy(output, bytes, size);
+  g_free(bytes);
+  return count == size;
+}
+static gboolean identity(const Side * side, guint index) {
+  gpointer controller = NULL, hand = NULL;
+  return read_exact((guint8 *) qpro_state.table + index * sizeof(gpointer), &controller, sizeof(controller)) &&
+    controller == side->controller && controller != NULL &&
+    read_exact((guint8 *) controller + qpro_state.hand_offset, &hand, sizeof(hand)) && hand == side->hand;
+}
+static void fault(guint code) {
+  gum_spinlock_acquire(&qpro_state.lock);
+  if (qpro_state.fault == 0) qpro_state.fault = code;
+  qpro_state.enabled = FALSE;
+  gum_spinlock_release(&qpro_state.lock);
+}
+static gboolean current(const Side * side, guint index) {
+  const Side * now = &qpro_state.sides[index];
+  return qpro_state.enabled && qpro_state.module_alive && !qpro_state.fault &&
+    now->generation == side->generation && now->controller == side->controller && now->hand == side->hand;
+}
+guint qpro_state_size(void) { return sizeof(State); }
+void qpro_abi(guint * output) {
+  output[0] = sizeof(DriverPose); output[1] = offsetof(DriverPose, valid);
+  output[2] = offsetof(DriverPose, connected); output[3] = sizeof(SkeletonCall);
+  output[4] = sizeof(PoseCall); output[5] = sizeof(gpointer);
+}
+void qpro_initialize(gpointer table, gpointer input, gsize hand_offset) {
+  memset(&qpro_state, 0, sizeof(State));
+  gum_spinlock_init(&qpro_state.lock);
+  qpro_state.table = table; qpro_state.input = input; qpro_state.hand_offset = hand_offset;
+  qpro_state.module_alive = TRUE;
+}
+void qpro_set_side(guint index, gpointer controller, gpointer hand, guint64 handle,
+    guint device, guint physical, guint active) {
+  Side * side;
+  if (index >= 2) return;
+  gum_spinlock_acquire(&qpro_state.lock);
+  side = &qpro_state.sides[index];
+  if (side->controller != controller || side->hand != hand || side->handle != handle ||
+      side->device != device || side->physical != physical || side->active != active) side->generation++;
+  side->controller = controller; side->hand = hand; side->handle = handle;
+  side->device = device; side->physical = physical; side->active = active;
+  gum_spinlock_release(&qpro_state.lock);
+}
+void qpro_enable(guint enabled) {
+  gum_spinlock_acquire(&qpro_state.lock);
+  qpro_state.enabled = enabled && qpro_state.module_alive && !qpro_state.fault;
+  gum_spinlock_release(&qpro_state.lock);
+}
+void qpro_module_alive(guint alive) {
+  gum_spinlock_acquire(&qpro_state.lock);
+  qpro_state.module_alive = alive;
+  if (!alive) qpro_state.enabled = FALSE;
+  gum_spinlock_release(&qpro_state.lock);
+}
+/* Fixed-width snapshot avoids exposing C struct packing to JavaScript. */
+void qpro_snapshot(guint * output) {
+  guint i;
+  guint64 now = qpro_now(), age;
+  gum_spinlock_acquire(&qpro_state.lock);
+  output[0] = qpro_state.seen; output[1] = qpro_state.owner; output[2] = qpro_state.matched;
+  output[3] = qpro_state.successful; output[4] = qpro_state.invalid; output[5] = qpro_state.copies;
+  output[6] = qpro_state.submissions[0]; output[7] = qpro_state.submissions[1];
+  output[8] = qpro_state.fault; output[9] = qpro_state.poses;
+  for (i = 0; i < 32; i++) output[10 + i] = qpro_state.results[i];
+  output[42] = qpro_state.other_results;
+  for (i = 0; i < 2; i++) {
+    age = qpro_state.last_submission[i] == 0 ? 0xffffffffU : now - qpro_state.last_submission[i];
+    output[43 + i] = age > 0xffffffffU ? 0xffffffffU : (guint) age;
+  }
+  gum_spinlock_release(&qpro_state.lock);
+}
+void qpro_skeleton_enter(GumInvocationContext * ic) {
+  SkeletonCall * call = GUM_IC_GET_INVOCATION_DATA(ic, SkeletonCall);
+  guint i, count;
+  guint64 handle;
+  guint32 values[248];
+  gpointer owner, bones;
+  Side side;
+  if (call == NULL) { fault(1); return; }
+  memset(call, 0, sizeof(*call)); call->side = 2;
+  handle = (guint64) (guintptr) gum_invocation_context_get_nth_argument(ic, 1);
+  owner = gum_invocation_context_get_nth_argument(ic, 0);
+  gum_spinlock_acquire(&qpro_state.lock);
+  if (!qpro_state.enabled || !qpro_state.module_alive || qpro_state.fault) {
+    gum_spinlock_release(&qpro_state.lock); return;
+  }
+  qpro_state.seen++;
+  if (owner == qpro_state.input) qpro_state.owner++;
+  for (i = 0; i < 2; i++) if (qpro_state.sides[i].controller != NULL && qpro_state.sides[i].handle == handle) break;
+  if (i == 2) { gum_spinlock_release(&qpro_state.lock); return; }
+  side = qpro_state.sides[i];
+  gum_spinlock_release(&qpro_state.lock);
+  if (!identity(&side, i)) return;
+  count = GPOINTER_TO_UINT(gum_invocation_context_get_nth_argument(ic, 4));
+  bones = gum_invocation_context_get_nth_argument(ic, 3);
+  call->valid = count == 31 && read_exact(bones, values, sizeof(values));
+  /* IEEE-754 exponent 255 covers both infinities and every NaN, including
+   * values TinyCC might otherwise optimize under floating point assumptions. */
+  if (call->valid) for (count = 0; count < 248; count++) if ((values[count] & 0x7f800000U) == 0x7f800000U) {
+    call->valid = FALSE; break;
+  }
+  gum_spinlock_acquire(&qpro_state.lock);
+  if (current(&side, i)) {
+    qpro_state.matched++;
+    if (!call->valid) qpro_state.invalid++;
+    call->side = i; call->generation = side.generation; call->record = side;
+  }
+  gum_spinlock_release(&qpro_state.lock);
+}
+void qpro_skeleton_leave(GumInvocationContext * ic) {
+  SkeletonCall * call = GUM_IC_GET_INVOCATION_DATA(ic, SkeletonCall);
+  gint result = GPOINTER_TO_INT(gum_invocation_context_get_return_value(ic));
+  gboolean unchanged = call != NULL && call->side < 2 && identity(&call->record, call->side);
+  guint64 now = qpro_now();
+  gum_spinlock_acquire(&qpro_state.lock);
+  if (qpro_state.enabled && qpro_state.module_alive && !qpro_state.fault) {
+    if (result >= 0 && result < 32) qpro_state.results[result]++; else qpro_state.other_results++;
+    if (result == 0) qpro_state.successful++;
+    if (unchanged && result == 0 && call->valid && call->record.active &&
+        current(&call->record, call->side) && qpro_state.sides[call->side].active) {
+      qpro_state.submissions[call->side]++; qpro_state.last_submission[call->side] = now;
+    }
+  }
+  gum_spinlock_release(&qpro_state.lock);
+}
+void qpro_pose_enter(GumInvocationContext * ic) {
+  PoseCall * call = GUM_IC_GET_INVOCATION_DATA(ic, PoseCall);
+  guint i, device = GPOINTER_TO_UINT(gum_invocation_context_get_nth_argument(ic, 1));
+  guint size;
+  Side side;
+  DriverPose * copy;
+  gpointer pose;
+  gsize count = 0;
+  if (call == NULL) { fault(1); return; }
+  call->copy = NULL;
+  gum_spinlock_acquire(&qpro_state.lock);
+  if (!qpro_state.enabled || !qpro_state.module_alive || qpro_state.fault) {
+    gum_spinlock_release(&qpro_state.lock); return;
+  }
+  for (i = 0; i < 2; i++) if (qpro_state.sides[i].controller != NULL && qpro_state.sides[i].device == device) break;
+  if (i == 2) { gum_spinlock_release(&qpro_state.lock); return; }
+  side = qpro_state.sides[i];
+  gum_spinlock_release(&qpro_state.lock);
+  if (!side.physical || !side.active || !identity(&side, i)) return;
+  size = GPOINTER_TO_UINT(gum_invocation_context_get_nth_argument(ic, 3));
+  pose = gum_invocation_context_get_nth_argument(ic, 2);
+  if (size != sizeof(DriverPose)) { fault(2); return; }
+  copy = (DriverPose *) gum_memory_read(pose, sizeof(DriverPose), &count);
+  if (copy == NULL || count != sizeof(DriverPose)) { g_free(copy); fault(2); return; }
+  copy->valid = FALSE; copy->connected = FALSE;
+  gum_spinlock_acquire(&qpro_state.lock);
+  if (!current(&side, i) || !qpro_state.sides[i].physical || !qpro_state.sides[i].active) {
+    gum_spinlock_release(&qpro_state.lock); g_free(copy); return;
+  }
+  /* Disable and accepting a redirected call use the same lock. Cleanup waits
+   * for these paired calls while the leave listener is still attached. */
+  qpro_state.poses++; qpro_state.copies++; call->copy = copy;
+  gum_spinlock_release(&qpro_state.lock);
+  gum_invocation_context_replace_nth_argument(ic, 2, copy);
+}
+void qpro_pose_leave(GumInvocationContext * ic) {
+  PoseCall * call = GUM_IC_GET_INVOCATION_DATA(ic, PoseCall);
+  DriverPose * copy;
+  if (call == NULL || call->copy == NULL) return;
+  /* A separate heap allocation is stable across nested native calls. Gum's
+   * invocation-data array itself may move when its call stack grows. */
+  copy = call->copy; call->copy = NULL; g_free(copy);
+  gum_spinlock_acquire(&qpro_state.lock);
+  qpro_state.poses--;
+  gum_spinlock_release(&qpro_state.lock);
+}
+`;
+
+function prepareNative() {
+    if (native !== null) return;
+    if (typeof CModule !== 'function' || Process.arch !== 'x64' || Process.pointerSize !== 8 || configuration.boneCount !== 31)
+        throw new Error('Native SteamVR listeners require the admitted 64-bit Frida runtime and 31-bone ABI');
+    const storage = Memory.alloc(4096), abi = Memory.alloc(24), snapshot = Memory.alloc(45 * 4);
+    let module = null;
+    try {
+        const clock = Process.getModuleByName('kernel32.dll').getExportByName('GetTickCount64');
+        if (!executable(clock)) throw new Error('The native monotonic clock is unavailable');
+        module = new CModule(nativeSource, {qpro_state: storage, qpro_now: clock}, {toolchain: 'internal'});
+        const fn = (name, result, args) => new NativeFunction(module[name], result, args,
+            {scheduling: 'cooperative', traps: 'none'});
+        const size = fn('qpro_state_size', 'uint', [])();
+        fn('qpro_abi', 'void', ['pointer'])(abi);
+        const sizes = Array.from({length: 6}, (_, index) => abi.add(index * 4).readU32());
+        if (size > 4096 || size === 0 || sizes[0] !== 280 || sizes[1] !== 276 || sizes[2] !== 279 ||
+            sizes[3] === 0 || sizes[3] > 1024 || sizes[4] === 0 || sizes[4] > 1024 || sizes[5] !== 8)
+            throw new Error('Native SteamVR listener ABI validation failed');
+        const prepared = {module, storage, snapshot, attached: false,
+            initialize: fn('qpro_initialize', 'void', ['pointer', 'pointer', 'size_t']),
+            setSide: fn('qpro_set_side', 'void', ['uint', 'pointer', 'pointer', 'uint64', 'uint', 'uint', 'uint']),
+            enable: fn('qpro_enable', 'void', ['uint']), moduleAlive: fn('qpro_module_alive', 'void', ['uint']),
+            readSnapshot: fn('qpro_snapshot', 'void', ['pointer'])};
+        prepared.initialize(driver.base.add(layout.controllerTable), input, layout.handPointer);
+        native = prepared;
+    } catch (failure) {
+        if (module !== null) module.dispose(); // No listener was attached yet.
+        throw new Error('Native SteamVR listeners could not be prepared: ' + failure);
+    }
+}
+function syncSide(side) {
+    const record = sides[side];
+    native.setSide(side, record?.controller || ptr(0), record?.hand || ptr(0), record?.handle || uint64(0),
+        record?.handDevice || 0, record?.physical ? 1 : 0, record?.routeActive ? 1 : 0);
+}
+function refreshNative() {
+    if (native === null) return {fault: 0, poses: 0};
+    native.readSnapshot(native.snapshot);
+    const values = Array.from({length: 45}, (_, index) => native.snapshot.add(index * 4).readU32());
+    [calls.seen, calls.inputOwner, calls.matched, calls.successful, calls.invalidBones, calls.poseCopies] = values;
+    calls.sources['vd-original'] = calls.seen;
+    for (let side = 0; side < 2; side++) {
+        submissions[side] = values[6 + side];
+        submissionAge[side] = values[43 + side];
+    }
+    for (let index = 0; index < 32; index++) if (values[10 + index]) resultCounts[index] = values[10 + index];
+    if (values[42]) resultCounts.other = values[42];
+    return {fault: values[8], poses: values[9]};
+}
 
 function readable(address, bytes) {
     if (address.isNull()) return false;
@@ -63,18 +336,6 @@ function resolveSide(side) {
             handMode: hand.add(layout.multiModal).readU8(), handle: hand.add(layout.skeleton).readU64()},
         handle: skeletonHandle(controller, side), physical: false};
 }
-function validateBones(bones, count) {
-    if (count !== configuration.boneCount || !readable(bones, count * 32)) return false;
-    // Copy once across Frida's memory bridge, then inspect the same 248 values
-    // in JavaScript. Individual readFloat calls block the native driver thread.
-    const buffer = bones.readByteArray(count * 32);
-    if (buffer === null || buffer.byteLength !== count * 32) return false;
-    const values = new Float32Array(buffer);
-    for (const value of values) {
-        if (!Number.isFinite(value)) return false;
-    }
-    return true;
-}
 function restore(record) {
     if (record === null || !sameObjects(record)) return;
     record.hand.add(layout.skeleton).writeU64(record.original.handle);
@@ -87,28 +348,51 @@ function restore(record) {
     restored++; record.routeActive = false;
 }
 function deactivate() {
-    if (state === 'stopped') return;
+    if (state === 'stopped') return Promise.resolve();
+    if (cleanupPromise !== null) return cleanupPromise;
     state = 'restoring';
     const failures = [];
     if (poll !== null) { clearInterval(poll); poll = null; }
     if (lease !== null) { clearTimeout(lease); lease = null; }
-    const remainingHooks = [];
-    for (const hook of updateHooks) {
-        try { hook.detach(); } catch (failure) { failures.push(String(failure)); remainingHooks.push(hook); }
-    }
-    updateHooks = remainingHooks;
-    if (poseHook !== null) {
-        try { poseHook.detach(); poseHook = null; } catch (failure) { failures.push(String(failure)); }
-    }
-    if (observer !== null) {
-        try { observer.detach(); observer = null; } catch (failure) { failures.push(String(failure)); }
-    }
-    for (const record of sides) {
-        try { restore(record); } catch (failure) { failures.push(String(failure)); }
-    }
+    if (native !== null) native.enable(0);
     activeSides.fill(false);
-    if (failures.length) { error = failures.join('; '); state = 'restore-failed'; }
-    else state = 'stopped';
+    let complete;
+    cleanupPromise = new Promise(resolve => { complete = resolve; });
+    const deadline = Date.now() + 2000;
+    function drain() {
+        try {
+            // Leave listeners remain attached until redirected original calls
+            // return and free their private poses. Detach can skip onLeave.
+            if (refreshNative().poses !== 0) {
+                if (Date.now() < deadline) { setTimeout(drain, 10); return; }
+                error = 'Native pose calls did not finish; disabled listeners and native memory are retained.';
+                state = 'restore-failed'; complete(); return;
+            }
+            const remainingHooks = [];
+            for (const hook of updateHooks) {
+                try { hook.detach(); } catch (failure) { failures.push(String(failure)); remainingHooks.push(hook); }
+            }
+            updateHooks = remainingHooks;
+            if (poseHook !== null) {
+                try { poseHook.detach(); poseHook = null; } catch (failure) { failures.push(String(failure)); }
+            }
+            Interceptor.flush();
+            if (observer !== null) {
+                try { observer.detach(); observer = null; } catch (failure) { failures.push(String(failure)); }
+            }
+            for (const record of sides) {
+                try { restore(record); } catch (failure) { failures.push(String(failure)); }
+            }
+            // flush() commits detach but does not prove native quiescence.
+            // Retain the CModule, state and functions until Frida script unload,
+            // whose native interceptor drain precedes CModule destruction.
+            if (failures.length) { error = failures.join('; '); state = 'restore-failed'; }
+            else state = 'stopped';
+        } catch (failure) { error = String(failure); state = 'restore-failed'; }
+        complete();
+    }
+    drain();
+    return cleanupPromise;
 }
 function fail(failure) {
     error = String(failure);
@@ -116,6 +400,7 @@ function fail(failure) {
     // Native callbacks must return before their listeners are detached or
     // shared driver fields are restored. Stop new routing writes immediately.
     state = 'failing'; cleanupScheduled = true;
+    if (native !== null) native.enable(0);
     setImmediate(() => { cleanupScheduled = false; deactivate(); });
 }
 function heartbeat(seconds) {
@@ -162,23 +447,29 @@ function resolveInterfaces() {
 function updateRoutes() {
     if (state !== 'running') return;
     try {
+        if (Process.findModuleByName('driver_VirtualDesktop.dll')?.base.toString() !== driver.base.toString()) {
+            native.moduleAlive(0); throw new Error('VD driver identity changed');
+        }
+        const snapshot = refreshNative();
+        if (snapshot.fault) throw new Error(snapshot.fault === 2 ? 'DriverPose_t ABI mismatch or incomplete native read' :
+            'Native listener invocation storage is unavailable');
         for (let side = 0; side < 2; side++) {
             let record = sides[side];
             if (record === null || !sameObjects(record)) record = sides[side] = resolveSide(side);
             if (record === null) {
                 routes[side] = {reason: 'controller-unavailable', physical: false, optical: false, handle: false};
-                activeSides[side] = false; continue;
+                activeSides[side] = false; syncSide(side); continue;
             }
             const data = record.controller.add(layout.dataPointer).readPointer();
             if (data.isNull()) {
                 routes[side] = {reason: 'controller-data-unavailable', physical: false, optical: false, handle: false};
-                restore(record); record.physical = false; activeSides[side] = false; continue;
+                restore(record); record.physical = false; activeSides[side] = false; syncSide(side); continue;
             }
             requireObject(data, layout.opticalFlags + 2, 'VD controller frame');
             const frame = data.readPointer();
             if (frame.isNull()) {
                 routes[side] = {reason: 'tracking-frame-unavailable', physical: false, optical: false, handle: false};
-                restore(record); record.physical = false; activeSides[side] = false; continue;
+                restore(record); record.physical = false; activeSides[side] = false; syncSide(side); continue;
             }
             requireObject(frame, layout.frameFlags + layout.frameSideStride * side + 1, 'VD tracking frame');
             const physical = (frame.add(layout.frameFlags + layout.frameSideStride * side).readU8() & 3) === 1;
@@ -190,7 +481,8 @@ function updateRoutes() {
             record.hand.add(layout.multiModal).writeU8(physical ? 1 : record.original.handMode);
             record.controller.add(layout.multiModal).writeU8(enabled ? 1 : record.original.controllerMode);
             record.handle = handle; record.routeActive = enabled; record.physical = physical;
-            activeSides[side] = enabled && Date.now() - lastSubmission[side] < 500;
+            syncSide(side);
+            activeSides[side] = enabled && submissionAge[side] < 500;
             routes[side] = {reason: !physical ? 'controller-not-held' : optical !== 1 ? 'optical-hand-unavailable' :
                 handle.equals(0) ? 'skeleton-handle-unavailable' : activeSides[side] ? 'active' : 'waiting-for-skeleton',
                 physical, optical: optical === 1, handle: !handle.equals(0)};
@@ -200,71 +492,41 @@ function updateRoutes() {
 rpc.exports = {
     validate() {
         resolveInterfaces(); sides[0] = resolveSide(0); sides[1] = resolveSide(1);
+        prepareNative();
         return {compatible: true, interfaceVersion, boneCount: configuration.boneCount,
-            controllersPresent: sides.map(record => record !== null), skeletonObservers: updateTargets.length};
+            controllersPresent: sides.map(record => record !== null), skeletonObservers: updateTargets.length,
+            callbackBackend: 'native'};
     },
     activate(seconds) {
         if (state !== 'idle') throw new Error('Skeleton adapter is already used');
-        const poseAddress = resolveInterfaces(); state = 'running';
+        const poseAddress = resolveInterfaces();
+        sides[0] = resolveSide(0); sides[1] = resolveSide(1);
+        prepareNative(); state = 'running';
         try {
+            native.initialize(driver.base.add(layout.controllerTable), input, layout.handPointer);
             // Observe the saved public API implementation without replacing it;
             // every driver's input arguments and result pass through unchanged.
+            native.attached = true;
             for (const target of updateTargets) updateHooks.push(Interceptor.attach(target.address, {
-                onEnter(args) {
-                    this.record = null; this.valid = false;
-                    if (state !== 'running') return;
-                    calls.seen++;
-                    calls.sources[target.source]++;
-                    try {
-                        if (args[0].equals(input)) calls.inputOwner++;
-                        const handle = uint64(args[1].toString());
-                        const record = sides.find(candidate => candidate !== null && candidate.handle.equals(handle) &&
-                            sameObjects(candidate));
-                        if (record === undefined) return;
-                        calls.matched++;
-                        this.record = record;
-                        this.valid = validateBones(args[3], args[4].toUInt32());
-                        if (!this.valid) calls.invalidBones++;
-                    } catch (failure) { fail(failure); }
-                },
-                onLeave(result) {
-                    if (state !== 'running') return;
-                    try {
-                        const code = result.toInt32();
-                        resultCounts[code] = (resultCounts[code] || 0) + 1;
-                        if (code === 0) calls.successful++;
-                        if (target.source === 'vd-original' && code === 0 && this.record?.routeActive && this.valid && sameObjects(this.record)) {
-                            submissions[this.record.side]++; lastSubmission[this.record.side] = Date.now();
-                        }
-                    } catch (failure) { fail(failure); }
-                }
-            }));
-            poseHook = Interceptor.attach(poseAddress, {onEnter(args) {
-                if (state !== 'running') return;
-                try {
-                    const device = args[1].toUInt32();
-                    const record = sides.find(candidate => candidate !== null && candidate.handDevice === device && sameObjects(candidate));
-                    if (record === undefined || !record.physical || !record.routeActive) return;
-                    // Public DriverPose_t validity bytes for the admitted win64 ABI.
-                    const pose = args[2];
-                    if (args[3].toUInt32() !== 280 || !readable(pose, 280)) throw new Error('DriverPose_t ABI mismatch');
-                    // OpenVR takes a const reference. Redirect this invocation
-                    // to a retained copy rather than editing VD's own pose.
-                    this.poseCopy = Memory.alloc(280);
-                    Memory.copy(this.poseCopy, pose, 280);
-                    this.poseCopy.add(276).writeU8(0); this.poseCopy.add(279).writeU8(0);
-                    args[2] = this.poseCopy; calls.poseCopies++;
-                } catch (failure) { fail(failure); }
-            }, onLeave() { this.poseCopy = null; }});
+                onEnter: native.module.qpro_skeleton_enter, onLeave: native.module.qpro_skeleton_leave}));
+            poseHook = Interceptor.attach(poseAddress, {
+                onEnter: native.module.qpro_pose_enter, onLeave: native.module.qpro_pose_leave});
             observer = Process.attachModuleObserver({onRemoved(module) {
-                if (module.base.equals(driver.base)) fail('VD driver unloaded');
+                if (module.base.equals(driver.base)) { native.moduleAlive(0); fail('VD driver unloaded'); }
             }});
+            updateRoutes();
+            if (state !== 'running') throw new Error(error || 'SteamVR routing could not start');
+            native.enable(1);
             poll = setInterval(updateRoutes, 16);
             heartbeat(seconds);
         } catch (failure) { error = String(failure); deactivate(); throw failure; }
     },
     heartbeat, deactivate,
-    status() { return {state, error, interfaceVersion, activeSides, skeletonSubmissions: submissions,
+    status() { const snapshot = refreshNative();
+        for (let side = 0; side < 2; side++) activeSides[side] = state === 'running' && snapshot.fault === 0 &&
+            Boolean(sides[side]?.routeActive) && submissionAge[side] < 500;
+        return {state, error, interfaceVersion, activeSides, skeletonSubmissions: submissions,
+        callbackBackend: 'native', nativeFault: snapshot.fault, nativePoseCalls: snapshot.poses,
         callbacks: calls, results: resultCounts, routes, restored}; },
     dispose: deactivate
 };

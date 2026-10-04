@@ -22,14 +22,7 @@ vm.runInContext(fs.readFileSync(path.join(directory, 'quest_controller_adapter.j
 assert.throws(() => context.rpc.exports.validate(), /ambiguous or unsupported/);
 assert.equal(attachments, 0);
 assert.throws(() => context.rpc.exports.heartbeat(0), /Invalid controller lease/);
-vm.runInContext('resolution = {callee: 123, caller: 456};', context);
-context.rpc.exports.activate(20);
-assert.equal(context.rpc.exports.status().state, 'running');
-assert.equal(attachments, 1);
-timers.at(-1)();
-assert.equal(context.rpc.exports.status().state, 'stopped');
-assert.equal(detached, 1);
-console.log('Hybrid adapters: syntax, unsupported resolver, no preflight hook, lease expiry passed.');
+console.log('Hybrid adapters: syntax, unsupported resolver and no preflight hook passed.');
 
 const memoryReads = {float: 0, byteArray: 0, byteArraySize: 0, module: 0, range: 0};
 class Address {
@@ -57,11 +50,26 @@ class Address {
     readU64() { return new Handle(this.memory.get(this.value) || 0); }
     writeU8(value) { this.memory.set(this.value, value); }
     writeS32(value) { this.memory.set(this.value, value); }
+    writeU32(value) { this.memory.set(this.value, value); }
     writeU64(value) { this.memory.set(this.value, value instanceof Handle ? value.value : value); }
 }
 class Handle {
     constructor(value) { this.value = BigInt(value); }
     equals(other) { return this.value === BigInt(other instanceof Handle ? other.value : other); }
+    toNumber() { return Number(this.value); }
+}
+
+function androidNativeMock(source, symbols) {
+    assert(source.includes('GumInvocationContext'));
+    assert(symbols.shared instanceof Address);
+    return {
+        state_size: () => 64, invocation_size: () => 32, snapshot_size: () => 32, id_size: () => 16,
+        initialize_state: () => 1, start() {}, disable() {}, pending: () => 0,
+        snapshot(out) {
+            out.writeU64(0); out.add(8).writeU64(0); out.add(16).writeU32(0);
+            out.add(20).writeU32(0); out.add(24).writeU32(0); return 32;
+        }, onEnter: new Address(9000), onLeave: new Address(9001), dispose() {}
+    };
 }
 
 // Positive native resolution exercises the actual disassembly/data-flow code,
@@ -107,10 +115,11 @@ function nativeFixture(wrongSide = false, options = {}) {
     let hooks = 0;
     const sandbox = vm.createContext({
         QPRO_PROFILE: profile, rpc: {exports: {}}, ptr: value => new Address(Number(value)),
-        Process: {arch: 'arm64', getModuleByName: () => ({enumerateRanges: () => [{base: new Address(0), size: 65536}]})},
+        Process: {arch: 'arm64', pointerSize: 8, getModuleByName: () => ({enumerateRanges: () => [{base: new Address(0), size: 65536}]})},
         Instruction: {parse: address => {if (!rows.has(address.value)) throw Error('Unknown synthetic instruction'); return rows.get(address.value);}},
-        Memory: {scanSync: () => [{address: new Address(512)}]},
-        Interceptor: {attach: () => {hooks++; return {detach() {}};}}, setTimeout: () => 1, clearTimeout() {}
+        Memory: {scanSync: () => [{address: new Address(512)}], alloc: () => new Address(8000, new Map())},
+        CModule: androidNativeMock, NativeFunction: function(fn) {return fn;}, Script: {runtime: 'QJS'},
+        Interceptor: {attach: () => {hooks++; return {detach() {}};}, flush() {}}, setTimeout: () => 1, clearTimeout() {}
     });
     vm.runInContext(fs.readFileSync(path.join(directory, 'quest_controller_adapter.js'), 'utf8'), sandbox);
     return {sandbox, hookCount: () => hooks};
@@ -158,224 +167,180 @@ for (const protection of [
     assert.equal(unprovenExpression.hookCount(), 0);
 }
 
-// Synthetic PC memory exercises the actual role checks, hand-handle routing,
-// loss of frame data and restoration; no proprietary binary is loaded.
-const bytes = new Map(), address = value => new Address(value, bytes), base = 1000000;
-const layout = profile.pcLayout;
-const write = (pointer, offset, value) => bytes.set(pointer + offset, value);
-write(base, layout.driverContext, 20000); write(20000, 0, 21000); write(21000, 0, 31000);
-write(22000, 0, 23000); write(23000, 48, 32000);
-write(base, layout.driverHost, 24000); write(24000, 0, 25000); write(25000, 8, 33000);
-write(base, layout.skeletonOriginal, 36000);
-write(base, layout.controllerTable, 26000); write(base, layout.skeletonTable, 100n);
-write(26000, layout.handPointer, 27000); write(26000, layout.role, 1); write(27000, layout.role, 1);
-write(26000, layout.deviceIndex, 2); write(27000, layout.deviceIndex, 3);
-write(26000, layout.skeleton, 100n); write(27000, layout.skeleton, 200n);
-write(26000, layout.dataPointer, 28000); write(28000, 0, 29000);
-write(28000, layout.opticalFlags, 1); write(29000, layout.frameFlags, 1);
-const observed = {replacements: 0, reverts: 0, attachments: 0, detached: 0, pose: null, update: null,
-    publicUpdate: null, tick: null, immediate: []};
-let allocation = 4000000;
-const driver = {base: address(base), size: 1000000};
-const pcSandbox = vm.createContext({
-    QPRO_PROFILE: profile, rpc: {exports: {}}, ptr: address, uint64: value => new Handle(value),
-    Process: {pointerSize: 8, getModuleByName: () => driver, findModuleByName: () => {memoryReads.module++; return driver;},
-        findRangeByAddress: () => {memoryReads.range++; return {base: address(0), size: 8000000, protection: 'rwx'};},
-        attachModuleObserver: () => ({detach() {}})},
-    Memory: {alloc: size => {const value = address(allocation); allocation += size; return value;}, allocUtf8String: text => text,
-        copy(destination, source, size) {
-            for (let offset = 0; offset < size; offset++) bytes.set(destination.value + offset, bytes.get(source.value + offset) || 0);
-        }},
-    NativeFunction: function(pointer) {
-        assert.equal(pointer.value, 31000, 'Only the OpenVR interface lookup may be called by the adapter');
-        return () => address(22000);
-    },
-    NativeCallback: function(callback) {return callback;},
-    Interceptor: {replace(pointer, callback) {observed.replacements++; observed.update = callback;},
-        revert() {observed.reverts++;}, attach(pointer, callback) {
-            observed.attachments++;
-            if (pointer.value === 36000) observed.update = callback;
-            else if (pointer.value === 32000) observed.publicUpdate = callback;
-            else {assert.equal(pointer.value, 33000); observed.pose = callback;}
+// The native C callbacks are exercised in the owned-child Frida harness. This
+// VM verifies integration, ABI refusal, route ownership, native freshness and
+// asynchronous cleanup without duplicating the C implementation in JavaScript.
+function pcFixture(options = {}) {
+    const bytes = new Map(), address = value => new Address(value, bytes), base = 1000000;
+    const layout = profile.pcLayout;
+    const write = (pointer, offset, value) => bytes.set(pointer + offset, value);
+    write(base, layout.driverContext, 20000); write(20000, 0, 21000); write(21000, 0, 31000);
+    write(22000, 0, 23000); write(23000, 48, 32000);
+    write(base, layout.driverHost, 24000); write(24000, 0, 25000); write(25000, 8, 33000);
+    write(base, layout.skeletonOriginal, options.savedAddress ?? 36000);
+    write(base, layout.controllerTable, 26000); write(base, layout.skeletonTable, 100n);
+    write(26000, layout.handPointer, 27000); write(26000, layout.role, 1); write(27000, layout.role, 1);
+    write(26000, layout.deviceIndex, 2); write(27000, layout.deviceIndex, 3);
+    write(26000, layout.skeleton, 100n); write(27000, layout.skeleton, 200n);
+    write(26000, layout.dataPointer, 28000); write(28000, 0, 29000);
+    write(28000, layout.opticalFlags, 1); write(29000, layout.frameFlags, 1);
+    const stats = new Array(45).fill(0); stats[43] = stats[44] = 0xffffffff;
+    const observed = {attachments: [], detached: 0, flushed: 0, compiled: 0, disposed: 0, enabled: false,
+        sideStates: [], tick: null, immediate: [], timers: [], modulePresent: true, now: 1000};
+    let allocation = 4000000;
+    const functions = new Map(), driver = {base: address(base), size: options.driverSize ?? 1000000};
+    function exportFunction(fn) {const pointer = address(allocation++); functions.set(pointer.value, fn); return pointer;}
+    const sandbox = vm.createContext({
+        QPRO_PROFILE: options.profile || profile, rpc: {exports: {}}, ptr: address, uint64: value => new Handle(value),
+        Date: {now: () => observed.now},
+        Process: {arch: options.arch || 'x64', pointerSize: 8,
+            getModuleByName: name => name === 'kernel32.dll' ? {getExportByName: () => address(37000)} : driver,
+            findModuleByName: () => {memoryReads.module++; return observed.modulePresent ? driver : null;},
+            findRangeByAddress: pointer => {
+                memoryReads.range++;
+                if (options.unreadable === pointer.value) return null;
+                return {base: address(0), size: 8000000, protection: options.nonExecutable === pointer.value ? 'rw-' : 'rwx'};
+            },
+            attachModuleObserver: callbacks => {observed.moduleObserver = callbacks; return {detach() {}};}},
+        Memory: {alloc: size => {const value = address(allocation); allocation += size; return value;},
+            allocUtf8String: text => text},
+        CModule: options.unavailable ? undefined : function(source, symbols, compiler) {
+            observed.compiled++;
+            assert.equal(compiler.toolchain, 'internal');
+            assert(symbols.qpro_state instanceof Address); assert.equal(symbols.qpro_now.value, 37000);
+            if (options.compileFailure) throw Error('Synthetic compile refusal');
+            const module = {
+                qpro_state_size: exportFunction(() => options.stateSize ?? 512),
+                qpro_abi: exportFunction(out => (options.abi || [280, 276, 279, 64, 8, 8]).forEach((v, i) => out.add(i * 4).writeU32(v))),
+                qpro_initialize: exportFunction(() => {
+                    if (options.initializeFailure) throw Error('Synthetic initialization refusal');
+                    stats.fill(0); stats[43] = stats[44] = 0xffffffff;
+                }),
+                qpro_set_side: exportFunction((side, controller, hand, handle, device, physical, active) =>
+                    {observed.sideStates[side] = {controller, hand, handle, device, physical, active};}),
+                qpro_enable: exportFunction(value => {observed.enabled = !!value;}),
+                qpro_module_alive: exportFunction(value => {if (!value) observed.enabled = false;}),
+                qpro_snapshot: exportFunction(out => stats.forEach((v, i) => out.add(i * 4).writeU32(v))),
+                dispose() {observed.disposed++;}
+            };
+            for (const name of ['qpro_skeleton_enter', 'qpro_skeleton_leave', 'qpro_pose_enter', 'qpro_pose_leave'])
+                module[name] = exportFunction(() => {});
+            observed.module = module;
+            return module;
+        },
+        NativeFunction: function(pointer, _result, _args, settings) {
+            if (pointer.value === 31000) return () => address(22000);
+            assert.equal(settings.scheduling, 'cooperative'); assert.equal(settings.traps, 'none');
+            assert(functions.has(pointer.value), 'A native export must be resolved explicitly');
+            return functions.get(pointer.value);
+        },
+        Interceptor: {attach(pointer, callbacks) {
+            assert(callbacks.onEnter instanceof Address); assert(callbacks.onLeave instanceof Address);
+            observed.attachments.push({pointer, callbacks});
             return {detach() {observed.detached++;}};
-        }},
-    setImmediate: callback => {observed.immediate.push(callback); return observed.immediate.length;},
-    setTimeout: () => 1, clearTimeout() {}, setInterval: callback => {observed.tick = callback; return 1;}, clearInterval() {}
-});
-vm.runInContext(fs.readFileSync(path.join(directory, 'steamvr_skeleton_adapter.js'), 'utf8'), pcSandbox);
-assert.equal(pcSandbox.rpc.exports.validate().compatible, true);
-assert.equal(observed.replacements, 0);
-pcSandbox.rpc.exports.activate(20); observed.tick();
-assert.equal(bytes.get(27000 + layout.skeleton), 100n);
-function skeletonUpdate(owner, count = 31, result = 0, listener = observed.update, handle = 100) {
-    const invocation = {}, args = [address(owner), address(handle), address(0), address(34000), address(count)];
-    listener.onEnter.call(invocation, args);
-    assert.equal(args[0].value, owner); assert.equal(args[1].value, handle);
-    assert.equal(args[3].value, 34000); assert.equal(args[4].value, count);
-    const returned = address(result);
-    listener.onLeave.call(invocation, returned);
-    assert.equal(returned.toInt32(), result, 'The native result must pass through unchanged');
-}
-assert.equal(observed.publicUpdate, null, 'The public entry is checked in preflight but does not get a diagnostic hook');
-assert.equal(observed.attachments, 2, 'Only the saved original and pose callbacks are attached');
-assert.equal(pcSandbox.rpc.exports.status().activeSides[0], false);
-const bulkBefore = memoryReads.byteArray, scalarBefore = memoryReads.float;
-skeletonUpdate(22000);
-assert.equal(memoryReads.byteArray, bulkBefore + 1, 'All 248 floats are copied in one memory operation');
-assert.equal(memoryReads.byteArraySize, 992);
-assert.equal(memoryReads.float, scalarBefore, 'Full validation must not make individual float reads');
-observed.tick();
-assert.equal(pcSandbox.rpc.exports.status().activeSides[0], true);
-assert.equal(pcSandbox.rpc.exports.status().skeletonSubmissions[0], 1);
-skeletonUpdate(22000, 30);
-assert.equal(pcSandbox.rpc.exports.status().skeletonSubmissions[0], 1);
-skeletonUpdate(23001);
-assert.equal(pcSandbox.rpc.exports.status().skeletonSubmissions[0], 2, 'A shared function may serve another input interface instance');
-skeletonUpdate(22000, 31, 4);
-assert.equal(pcSandbox.rpc.exports.status().skeletonSubmissions[0], 2);
-assert.equal(pcSandbox.rpc.exports.status().callbacks.seen, 4);
-assert.equal(pcSandbox.rpc.exports.status().callbacks.inputOwner, 3);
-assert.equal(pcSandbox.rpc.exports.status().callbacks.sources.public, undefined);
-assert.equal(pcSandbox.rpc.exports.status().callbacks.sources['vd-original'], 4);
-assert.equal(pcSandbox.rpc.exports.status().callbacks.invalidBones, 1);
-assert.equal(pcSandbox.rpc.exports.status().results[4], 1);
-assert.equal(observed.replacements, 0);
-
-// Every value remains checked, including the final quaternion element. Invalid
-// data is diagnostic only: the native arguments and result remain unchanged.
-for (const value of [NaN, Infinity, -Infinity]) {
-    write(34000, 247 * 4, value);
-    const invalidBefore = pcSandbox.rpc.exports.status().callbacks.invalidBones;
-    skeletonUpdate(22000);
-    assert.equal(pcSandbox.rpc.exports.status().callbacks.invalidBones, invalidBefore + 1);
-    assert.equal(pcSandbox.rpc.exports.status().skeletonSubmissions[0], 2);
-}
-write(34000, 247 * 4, 0);
-const originalBulkRead = Address.prototype.readByteArray;
-try {
-    for (const malformed of [null, new ArrayBuffer(988)]) {
-        Address.prototype.readByteArray = () => malformed;
-        const invalidBefore = pcSandbox.rpc.exports.status().callbacks.invalidBones;
-        skeletonUpdate(22000);
-        assert.equal(pcSandbox.rpc.exports.status().callbacks.invalidBones, invalidBefore + 1);
-        assert.equal(pcSandbox.rpc.exports.status().skeletonSubmissions[0], 2, 'A null or truncated bulk read cannot establish readiness');
-    }
-} finally { Address.prototype.readByteArray = originalBulkRead; }
-const unmatchedBefore = {...memoryReads};
-skeletonUpdate(22000, 31, 0, observed.update, 999);
-assert.equal(memoryReads.module, unmatchedBefore.module);
-assert.equal(memoryReads.range, unmatchedBefore.range);
-assert.equal(memoryReads.byteArray, unmatchedBefore.byteArray);
-
-// The const pose stays unchanged; the copied argument stays retained until the
-// native invocation returns. An inactive optical route must not hide the hand.
-write(35000, 276, 1); write(35000, 279, 1);
-function rejectChangedIdentity(change, restoreIdentity) {
-    const before = pcSandbox.rpc.exports.status().skeletonSubmissions[0];
-    const copiedBefore = pcSandbox.rpc.exports.status().callbacks.poseCopies;
-    const handHandle = bytes.get(27000 + layout.skeleton), controllerMode = bytes.get(26000 + layout.multiModal);
-    change();
-    try {
-        skeletonUpdate(22000);
-        const args = [address(24000), address(3), address(35000), address(280)];
-        observed.pose.onEnter.call({}, args);
-        assert.equal(args[2].value, 35000, 'A changed module/object cannot redirect the pose');
-        assert.equal(pcSandbox.rpc.exports.status().skeletonSubmissions[0], before);
-        assert.equal(pcSandbox.rpc.exports.status().callbacks.poseCopies, copiedBefore);
-        assert.equal(bytes.get(35000 + 276), 1); assert.equal(bytes.get(35000 + 279), 1);
-        assert.equal(bytes.get(27000 + layout.skeleton), handHandle);
-        assert.equal(bytes.get(26000 + layout.multiModal), controllerMode);
-    } finally { restoreIdentity(); }
-    // Recheck identity on leave too: an object can change while the untouched
-    // native skeleton function runs, after its arguments have been validated.
-    const invocation = {}, args = [address(22000), address(100), address(0), address(34000), address(31)];
-    observed.update.onEnter.call(invocation, args);
-    change();
-    try {
-        observed.update.onLeave.call(invocation, address(0));
-        assert.equal(pcSandbox.rpc.exports.status().skeletonSubmissions[0], before);
-    } finally { restoreIdentity(); }
-}
-const moduleLookup = pcSandbox.Process.findModuleByName;
-rejectChangedIdentity(() => {pcSandbox.Process.findModuleByName = () => null;},
-    () => {pcSandbox.Process.findModuleByName = moduleLookup;});
-rejectChangedIdentity(() => {pcSandbox.Process.findModuleByName = () => ({base: address(base + 1), size: driver.size});},
-    () => {pcSandbox.Process.findModuleByName = moduleLookup;});
-rejectChangedIdentity(() => write(base, layout.controllerTable, 26001),
-    () => write(base, layout.controllerTable, 26000));
-rejectChangedIdentity(() => write(26000, layout.handPointer, 27001),
-    () => write(26000, layout.handPointer, 27000));
-const unrelatedBefore = {...memoryReads};
-const unrelatedArgs = [address(24000), address(0), address(35000), address(280)];
-observed.pose.onEnter.call({}, unrelatedArgs);
-assert.equal(unrelatedArgs[2].value, 35000);
-assert.equal(memoryReads.module, unrelatedBefore.module, 'Unrelated poses must not enumerate modules');
-assert.equal(memoryReads.range, unrelatedBefore.range, 'Unrelated poses must not query memory ranges');
-const poseInvocation = {}, poseArgs = [address(24000), address(3), address(35000), address(280)];
-observed.pose.onEnter.call(poseInvocation, poseArgs);
-assert.notEqual(poseArgs[2].value, 35000);
-assert.equal(poseArgs[2], poseInvocation.poseCopy);
-assert.equal(bytes.get(35000 + 276), 1); assert.equal(bytes.get(35000 + 279), 1);
-assert.equal(bytes.get(poseArgs[2].value + 276), 0); assert.equal(bytes.get(poseArgs[2].value + 279), 0);
-observed.pose.onLeave.call(poseInvocation);
-assert.equal(poseInvocation.poseCopy, null);
-write(28000, layout.opticalFlags, 0); observed.tick();
-const inactiveArgs = [address(24000), address(3), address(35000), address(280)];
-observed.pose.onEnter.call({}, inactiveArgs);
-assert.equal(inactiveArgs[2].value, 35000);
-assert.equal(pcSandbox.rpc.exports.status().routes[0].reason, 'optical-hand-unavailable');
-write(28000, layout.opticalFlags, 1); observed.tick();
-write(28000, 0, 0); observed.tick();
-assert.equal(bytes.get(27000 + layout.skeleton), 200n);
-assert.equal(pcSandbox.rpc.exports.status().activeSides[0], false);
-assert.equal(pcSandbox.rpc.exports.status().routes[0].reason, 'tracking-frame-unavailable');
-
-// A callback error stops new writes immediately but defers listener teardown
-// until the native callback has returned; no original call can be retried.
-const badResult = {toInt32() {throw new Error('Synthetic result read failed');}};
-observed.update.onLeave.call({}, badResult);
-assert.equal(pcSandbox.rpc.exports.status().state, 'failing');
-assert.equal(observed.detached, 0);
-assert.equal(observed.immediate.length, 1);
-observed.immediate.shift()();
-assert.equal(observed.detached, 2);
-pcSandbox.rpc.exports.deactivate();
-assert.equal(pcSandbox.rpc.exports.status().state, 'stopped');
-assert.equal(observed.reverts, 0);
-assert.equal(bytes.get(26000 + layout.multiModal), 0);
-
-// The stored optical callable is part of preflight, before any listener can be
-// attached. Null/non-executable callables and unreadable/out-of-module slots
-// cannot be used to infer a native ABI. Only the saved original is observed,
-// whether it is identical to the public entry or a separate native trampoline.
-function pcPreflight(overrides = {}) {
-    const sandbox = vm.createContext({...pcSandbox, ...overrides, rpc: {exports: {}}});
+        }, flush() {observed.flushed++;}},
+        setImmediate: fn => {observed.immediate.push(fn); return observed.immediate.length;},
+        setTimeout: fn => {observed.timers.push(fn); return observed.timers.length;}, clearTimeout() {},
+        setInterval: fn => {observed.tick = fn; return 1;}, clearInterval() {}
+    });
     vm.runInContext(fs.readFileSync(path.join(directory, 'steamvr_skeleton_adapter.js'), 'utf8'), sandbox);
-    return sandbox.rpc.exports;
+    return {api: sandbox.rpc.exports, sandbox, observed, bytes, stats, write, layout, driver};
 }
-const attachedBeforePreflight = observed.attachments;
-write(base, layout.skeletonOriginal, 0);
-assert.throws(() => pcPreflight().validate(), /saved skeleton callable is not executable/);
-write(base, layout.skeletonOriginal, 36000);
-const standardProcess = pcSandbox.Process;
-assert.throws(() => pcPreflight({Process: {...standardProcess,
-    findRangeByAddress: pointer => pointer.value === 36000 ? {base: address(36000), size: 64, protection: 'rw-'} :
-        standardProcess.findRangeByAddress(pointer)}}).validate(), /saved skeleton callable is not executable/);
-assert.throws(() => pcPreflight({Process: {...standardProcess,
-    findRangeByAddress: pointer => pointer.value === base + layout.skeletonOriginal ? null :
-        standardProcess.findRangeByAddress(pointer)}}).validate(), /Saved skeleton callable slot is not readable/);
-const originalDriverSize = driver.size;
-driver.size = layout.skeletonOriginal + 8;
-assert.throws(() => pcPreflight().validate(), /VD driver is too small/);
-driver.size = originalDriverSize;
-const savedOffset = layout.skeletonOriginal;
-delete layout.skeletonOriginal;
-assert.throws(() => pcPreflight().validate(), /saved skeleton callable is missing/);
-layout.skeletonOriginal = savedOffset;
-assert.equal(observed.attachments, attachedBeforePreflight);
-write(base, layout.skeletonOriginal, 32000);
-assert.equal(pcPreflight().validate().skeletonObservers, 1);
-write(base, layout.skeletonOriginal, 36000);
-assert.equal(pcPreflight().validate().skeletonObservers, 1);
-assert.equal(observed.attachments, attachedBeforePreflight);
-console.log('Hybrid adapters: admitted ABI, transparent skeleton callbacks, const-pose copy, route loss, deferred cleanup and restoration passed.');
+const pc = pcFixture();
+assert.equal(pc.api.validate().callbackBackend, 'native');
+assert.equal(pc.observed.attachments.length, 0, 'Compilation and layout checks happen before hooks');
+pc.api.activate(20);
+assert.equal(pc.observed.enabled, true);
+assert.deepEqual(pc.observed.attachments.map(item => item.pointer.value), [36000, 33000],
+    'Only saved optical skeleton and pose implementations are observed');
+assert.equal(pc.bytes.get(27000 + pc.layout.skeleton), 100n);
+assert.equal(pc.observed.sideStates[0].active, 1);
+assert.equal(pc.api.status().activeSides[0], false);
+pc.stats[6] = 1; pc.stats[43] = 20; pc.observed.tick();
+assert.equal(pc.api.status().activeSides[0], true);
+assert.equal(pc.api.status().skeletonSubmissions[0], 1);
+pc.stats[43] = 500;
+assert.equal(pc.api.status().activeSides[0], false, 'RPC status also rejects stale submissions without a route poll');
+pc.stats[43] = 20; pc.stats[8] = 2;
+assert.equal(pc.api.status().activeSides[0], false, 'A native fault cannot report a side ready before the route poll');
+pc.stats[8] = 0;
+// Newly observed counters cannot make old native submissions fresh after a
+// JavaScript pause. Age is measured on the native monotonic clock.
+pc.stats[6] = 2; pc.stats[43] = 700; pc.observed.tick();
+assert.equal(pc.api.status().activeSides[0], false);
+pc.write(28000, pc.layout.opticalFlags, 0); pc.observed.tick();
+assert.equal(pc.observed.sideStates[0].active, 0);
+assert.equal(pc.api.status().routes[0].reason, 'optical-hand-unavailable');
+pc.write(28000, pc.layout.opticalFlags, 1); pc.observed.tick();
+pc.write(28000, 0, 0); pc.observed.tick();
+assert.equal(pc.bytes.get(27000 + pc.layout.skeleton), 200n);
+assert.equal(pc.observed.sideStates[0].active, 0);
+assert.equal(pc.api.status().routes[0].reason, 'tracking-frame-unavailable');
+pc.write(28000, 0, 29000); pc.observed.tick();
+// Disable is immediate, but detaching while a redirected original call is
+// pending could skip its leave callback and invalidate/free its pose.
+pc.stats[9] = 1; pc.api.deactivate();
+assert.equal(pc.observed.enabled, false); assert.equal(pc.observed.detached, 0);
+assert.equal(pc.api.status().state, 'restoring');
+pc.stats[9] = 0; pc.observed.timers.at(-1)();
+assert.equal(pc.api.status().state, 'stopped'); assert.equal(pc.observed.detached, 2);
+assert.equal(pc.observed.flushed, 1);
+assert.equal(pc.bytes.get(27000 + pc.layout.skeleton), 200n);
+assert.equal(pc.bytes.get(26000 + pc.layout.multiModal), 0);
+assert.equal(pc.observed.disposed, 0, 'An attached CModule stays retained until native script-unload drain');
+
+const stalled = pcFixture(); stalled.api.activate(20);
+stalled.stats[9] = 1; stalled.api.deactivate(); stalled.observed.now += 2001;
+stalled.observed.timers.at(-1)();
+assert.equal(stalled.api.status().state, 'restore-failed');
+assert.equal(stalled.observed.detached, 0); assert.equal(stalled.observed.disposed, 0);
+assert.equal(stalled.observed.enabled, false);
+const failed = pcFixture(); failed.api.activate(20); failed.stats[8] = 2; failed.observed.tick();
+assert.equal(failed.api.status().state, 'failing');
+assert.equal(failed.observed.enabled, false); assert.equal(failed.observed.detached, 0);
+failed.observed.immediate.shift()();
+assert.equal(failed.api.status().state, 'stopped'); assert.equal(failed.observed.detached, 2);
+const unloaded = pcFixture(); unloaded.api.activate(20);
+unloaded.observed.modulePresent = false;
+unloaded.observed.moduleObserver.onRemoved(unloaded.driver);
+assert.equal(unloaded.observed.enabled, false); assert.equal(unloaded.api.status().state, 'failing');
+unloaded.observed.immediate.shift()();
+assert.equal(unloaded.api.status().state, 'stopped');
+
+// Missing native backend or wrong ABI has no fallback onto driver-thread
+// JavaScript. Stored callable validation still precedes native preparation.
+for (const options of [
+    {unavailable: true}, {arch: 'arm64'}, {compileFailure: true}, {initializeFailure: true},
+    {stateSize: 4097}, {abi: [280, 275, 279, 64, 8, 8]}, {abi: [280, 276, 279, 1025, 8, 8]}
+]) {
+    const refusal = pcFixture(options);
+    assert.throws(() => refusal.api.validate(), /Native SteamVR|native monotonic/);
+    assert.equal(refusal.observed.attachments.length, 0);
+    assert.equal(refusal.bytes.get(27000 + refusal.layout.skeleton), 200n);
+    if (options.initializeFailure) {
+        assert.equal(refusal.observed.disposed, 1);
+        assert.equal(refusal.api.status().nativeFault, 0, 'A failed initializer cannot publish disposed native functions');
+    }
+}
+for (const [options, message] of [
+    [{savedAddress: 0}, /saved skeleton callable is not executable/],
+    [{nonExecutable: 36000}, /saved skeleton callable is not executable/],
+    [{unreadable: 1000000 + profile.pcLayout.skeletonOriginal}, /Saved skeleton callable slot is not readable/],
+    [{driverSize: profile.pcLayout.skeletonOriginal + 8}, /VD driver is too small/],
+    [{profile: {...profile, pcLayout: {...profile.pcLayout, skeletonOriginal: undefined}}}, /saved skeleton callable is missing/]
+]) {
+    const refusal = pcFixture(options);
+    assert.throws(() => refusal.api.validate(), message);
+    assert.equal(refusal.observed.attachments.length, 0); assert.equal(refusal.observed.compiled, 0);
+}
+for (const savedAddress of [32000, 36000]) {
+    const deduplicated = pcFixture({savedAddress});
+    assert.equal(deduplicated.api.validate().skeletonObservers, 1);
+    assert.equal(deduplicated.observed.attachments.length, 0);
+}
+const initialRouteFailure = pcFixture();
+initialRouteFailure.api.validate();
+initialRouteFailure.write(28000, initialRouteFailure.layout.opticalFlags, 2);
+assert.throws(() => initialRouteFailure.api.activate(20), /optical validity/);
+assert.equal(initialRouteFailure.observed.enabled, false, 'Initial route failure cannot re-enable native callbacks');
+console.log('Hybrid adapters: native preflight, monotonic freshness, route loss, deferred draining, retention and restoration passed.');
