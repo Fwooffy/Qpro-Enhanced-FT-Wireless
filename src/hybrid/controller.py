@@ -182,6 +182,8 @@ class Supervisor:
         self.sessions, self.adapters = [], []
         self.active_scripts = set()
         self.forward_owned = self.helper_owned = False
+        self.forward_port = None
+        self.forward_uncertain = False
         self.helper_pid = None
         self.detached = False
         self.progress = time.monotonic()
@@ -224,10 +226,6 @@ class Supervisor:
         existing = self.root.command("pidof qpro-hands-frida quest-hybrid-frida frida-server || true").strip()
         if existing:
             raise CompatibilityError("A Frida server is already running. Close the other Qpro Hub or turn off Singularity's Frida Server first.")
-        # No foreign forwarding rule is removed or rebound.
-        rules = self.adb.run("forward", "--list")
-        if any(line.split()[1:2] == ["tcp:" + str(PORT)] for line in rules.splitlines()):
-            raise CompatibilityError("The hand forwarding port is already in use.")
         listening = self.root.command("awk 'NR > 1 && $2 ~ /:69B6$/ && $4 == \"0A\" {print}' /proc/net/tcp /proc/net/tcp6").strip()
         if listening:
             raise CompatibilityError("The headset hand-helper port is already used by another process.")
@@ -249,9 +247,20 @@ class Supervisor:
         self.helper_pid = self.root.command("echo $qpro_hands_pid").strip()
         if not self.helper_pid.isdigit():
             raise RuntimeError("The owned hand helper did not return a valid PID.")
-        self.adb.run("forward", "--no-rebind", "tcp:" + str(PORT), "tcp:" + str(PORT))
+        # Let ADB reserve a free PC port atomically. The headset helper keeps
+        # its checked port; existing PC listeners and forwards are untouched.
+        try:
+            allocated = self.adb.run("forward", "--no-rebind", "tcp:0", "tcp:" + str(PORT))
+        except subprocess.TimeoutExpired:
+            self.forward_uncertain = True
+            raise
+        if not re.fullmatch(r"[0-9]{1,5}", allocated) or not 1 <= int(allocated) <= 65535:
+            self.forward_uncertain = True
+            raise RuntimeError("ADB did not report a valid allocated hand port; no unknown forward was removed.")
+        self.forward_port = int(allocated)
         self.forward_owned = True
-        device = self.frida.get_device_manager().add_remote_device("127.0.0.1:" + str(PORT))
+        emit("TRANSPORT", localPort=self.forward_port, headsetPort=PORT)
+        device = self.frida.get_device_manager().add_remote_device("127.0.0.1:" + str(self.forward_port))
         for attempt in range(24):
             self._ensure_running()
             try:
@@ -303,6 +312,8 @@ class Supervisor:
 
     def cleanup(self):
         failures = []
+        if self.forward_uncertain:
+            failures.append("ADB hand-forward allocation was ambiguous; no unidentified forward was removed.")
         for name, script in reversed(self.adapters):
             try:
                 self.progress = time.monotonic()
@@ -346,9 +357,9 @@ class Supervisor:
         if self.forward_owned:
             try:
                 current = self.adb.run("forward", "--list")
-                expected = [self.adb.target, "tcp:" + str(PORT), "tcp:" + str(PORT)]
+                expected = [self.adb.target, "tcp:" + str(self.forward_port), "tcp:" + str(PORT)]
                 if any(line.split() == expected for line in current.splitlines()):
-                    self.adb.run("forward", "--remove", "tcp:" + str(PORT))
+                    self.adb.run("forward", "--remove", "tcp:" + str(self.forward_port))
             except Exception as error:
                 failures.append("Forward cleanup: " + str(error))
         emit("CLEANUP", confirmed=not failures, problems=failures)
@@ -389,6 +400,7 @@ def main(argv=None):
         frida = None
     profile = load_profile()
     adb = Adb(args.adb, args.target)
+    supervisor = None
     try:
         if not args.check and args.stop_file is not None and args.stop_file.exists():
             raise RuntimeError("The stop file already exists; start a fresh Hub session before enabling hands.")
@@ -404,7 +416,8 @@ def main(argv=None):
         signal.signal(signal.SIGTERM, lambda *_: stop.set())
         start_stop_watchers(stop, args.stop_file,
                             sys.stdin if args.stop_file is None or args.parent_stdin else None)
-        run_supervised(Supervisor(adb, frida, profile, args.frida_server, stop))
+        supervisor = Supervisor(adb, frida, profile, args.frida_server, stop)
+        run_supervised(supervisor)
         return 0
     except InterruptedError:
         return 0
@@ -417,6 +430,9 @@ def main(argv=None):
     except Exception as error:
         emit("FAILED", error=str(error))
         return 1
+    finally:
+        if not args.check and supervisor is None:
+            emit("CLEANUP", confirmed=True, problems=[], phase="not-started")
 
 
 if __name__ == "__main__":

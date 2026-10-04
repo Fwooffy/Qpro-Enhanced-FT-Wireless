@@ -19,6 +19,7 @@ class FakeAdb:
     def __init__(self, profile, rules=""):
         self.profile, self.rules, self.calls = profile, rules, []
         self.target = "serial"
+        self.allocated_port = "43817"
 
     def run(self, *args, **kwargs):
         self.calls.append(args)
@@ -29,7 +30,10 @@ class FakeAdb:
         if args == ("forward", "--list"):
             return self.rules
         if args[:2] == ("forward", "--no-rebind"):
-            self.rules = self.target + " " + " ".join(args[2:])
+            if args[2] != "tcp:0":
+                raise AssertionError("A fixed PC port must not be requested")
+            self.rules += "\n" + self.target + " tcp:" + self.allocated_port + " " + args[3]
+            return self.allocated_port
         if args[:2] == ("shell", "pidof"):
             return "100"
         return ""
@@ -134,8 +138,11 @@ class HybridTests(unittest.TestCase):
         adb = FakeAdb(self.profile, rules)
         root = FakeRoot(adb, self.server, existing, listener)
         device = FakeDevice(events)
+        def remote(address):
+            events.append(("remote", address))
+            return device
         frida = SimpleNamespace(get_local_device=lambda: device,
-                                get_device_manager=lambda: SimpleNamespace(add_remote_device=lambda address: device))
+                                get_device_manager=lambda: SimpleNamespace(add_remote_device=remote))
         return controller.Supervisor(adb, frida, self.profile, self.server, stop,
                                      root_factory=lambda _: root), events, adb, root
 
@@ -150,11 +157,12 @@ class HybridTests(unittest.TestCase):
         self.assertIn("READY", records)
         self.assertEqual([kind for action, *rest in events if action == "stop" for kind in rest], ["pc", "optical", "native"])
         self.assertTrue(root.closed)
-        self.assertIn(("forward", "--remove", "tcp:27062"), adb.calls)
+        self.assertIn(("remote", "127.0.0.1:43817"), events)
+        self.assertIn(("forward", "--remove", "tcp:43817"), adb.calls)
         self.assertTrue(any("readlink /proc/$qpro_hands_pid/exe" in text for text in root.calls))
 
-    def test_foreign_helper_forward_and_listener_are_not_removed(self):
-        cases = [dict(existing="99"), dict(rules="other tcp:27062 tcp:1234"), dict(listener="existing listener")]
+    def test_foreign_helper_and_headset_listener_are_not_removed(self):
+        cases = [dict(existing="99"), dict(listener="existing listener")]
         for values in cases:
             supervisor, _, adb, root = self.make_supervisor(**values)
             with patch.object(controller, "emit", lambda *_args, **_kwargs: None):
@@ -163,6 +171,52 @@ class HybridTests(unittest.TestCase):
             self.assertFalse(any(call[0] == "push" for call in adb.calls))
             self.assertNotIn(("forward", "--remove", "tcp:27062"), adb.calls)
             self.assertFalse(any("kill " in text for text in root.calls))
+
+    def test_busy_fixed_pc_port_does_not_replace_foreign_forward(self):
+        foreign = "other tcp:27062 tcp:1234"
+        supervisor, events, adb, root = self.make_supervisor(rules=foreign)
+        def record(event, **values):
+            if event == "READY": supervisor.stop_requested.set()
+        with patch.object(controller, "emit", record):
+            with self.assertRaises(InterruptedError): controller.run_supervised(supervisor)
+        self.assertIn(foreign, adb.rules)
+        self.assertIn(("remote", "127.0.0.1:43817"), events)
+        self.assertIn(("forward", "--remove", "tcp:43817"), adb.calls)
+        self.assertNotIn(("forward", "--remove", "tcp:27062"), adb.calls)
+        self.assertTrue(root.closed)
+
+    def test_port_allocation_failure_still_cleans_the_owned_helper(self):
+        supervisor, events, adb, root = self.make_supervisor()
+        run = adb.run
+        def fail_allocation(*args, **kwargs):
+            if args[:2] == ("forward", "--no-rebind"):
+                raise RuntimeError("cannot bind listener (10048)")
+            return run(*args, **kwargs)
+        records = []
+        with patch.object(adb, "run", side_effect=fail_allocation), patch.object(controller, "emit", lambda event, **values: records.append((event, values))):
+            with self.assertRaisesRegex(RuntimeError, "cannot bind listener"):
+                controller.run_supervised(supervisor)
+        self.assertTrue(root.closed)
+        self.assertTrue(supervisor.helper_owned)
+        self.assertFalse(supervisor.forward_owned)
+        self.assertFalse(any(call[:2] == ("forward", "--remove") for call in adb.calls))
+        self.assertFalse(any(event[0] == "attach" for event in events))
+        self.assertIn(("CLEANUP", {"confirmed": True, "problems": []}), records)
+
+    def test_ambiguous_allocation_does_not_claim_confirmed_cleanup(self):
+        for response in ("", "port=43817", "0", "65536", "43817\n43818"):
+            with self.subTest(response=response):
+                supervisor, events, adb, root = self.make_supervisor()
+                run = adb.run
+                def malformed(*args, **kwargs):
+                    result = run(*args, **kwargs)
+                    return response if args[:2] == ("forward", "--no-rebind") else result
+                with patch.object(adb, "run", side_effect=malformed), patch.object(controller, "emit"):
+                    with self.assertRaisesRegex(controller.CleanupError, "allocation was ambiguous"):
+                        controller.run_supervised(supervisor)
+                self.assertTrue(root.closed)
+                self.assertFalse(any(call[:2] == ("forward", "--remove") for call in adb.calls))
+                self.assertFalse(any(event[0] == "attach" for event in events))
 
     def test_cleanup_failure_is_propagated(self):
         supervisor, _, _, root = self.make_supervisor()
@@ -180,10 +234,23 @@ class HybridTests(unittest.TestCase):
 
     def test_preexisting_stop_file_prevents_even_diagnostic_adb_reads(self):
         stop = self.home / "stop"; stop.write_text("already stopped")
+        output = io.StringIO()
         with patch.object(controller, "inspect", side_effect=AssertionError("No ADB call expected")):
-            with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stdout(output):
                 code = controller.main(["--target", "serial", "--adb", "fixture", "--stop-file", str(stop), "--parent-stdin"])
         self.assertEqual(code, 1)
+        self.assertIn('HANDS_CLEANUP {"confirmed": true, "problems": [], "phase": "not-started"}', output.getvalue())
+
+    def test_incompatible_preflight_proves_no_adapters_started(self):
+        for check in (False, True):
+            with self.subTest(check=check):
+                output = io.StringIO()
+                arguments = ["--target", "serial", "--adb", "fixture"]
+                if check: arguments.append("--check")
+                with patch.object(controller, "inspect", return_value={"compatible": False}), contextlib.redirect_stdout(output):
+                    code = controller.main(arguments)
+                self.assertEqual(code, 4)
+                self.assertEqual("HANDS_CLEANUP " in output.getvalue(), not check)
 
     def test_parent_eof_requests_stop_even_with_a_stop_file(self):
         stop = threading.Event()
@@ -200,12 +267,12 @@ class HybridTests(unittest.TestCase):
         supervisor, _, adb, root = self.make_supervisor()
         def record(event, **values):
             if event == "READY":
-                adb.rules = "foreign tcp:27062 tcp:9000"
+                adb.rules = "foreign tcp:43817 tcp:9000"
                 supervisor.stop_requested.set()
         with patch.object(controller, "emit", record):
             with self.assertRaises(InterruptedError): controller.run_supervised(supervisor)
         self.assertTrue(root.closed)
-        self.assertNotIn(("forward", "--remove", "tcp:27062"), adb.calls)
+        self.assertNotIn(("forward", "--remove", "tcp:43817"), adb.calls)
 
 
 if __name__ == "__main__": unittest.main()

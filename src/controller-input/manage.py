@@ -35,10 +35,12 @@ REMOTE_STOP = READER_PATH + '.stop'
 OWNER_FORMAT = 'qpro-controller-addon-v1'
 PACKET = struct.Struct('<4sHHQQIffffIffff')
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+OUTPUT_LOCK = threading.Lock()
 
 
 def report(stage: str, **values):
-    print(stage + ' ' + json.dumps(values, sort_keys=True), flush=True)
+    with OUTPUT_LOCK:
+        print(stage + ' ' + json.dumps(values, sort_keys=True), flush=True)
 
 
 def command(args, timeout=20, capture=True):
@@ -335,6 +337,72 @@ def relay(root: Path, local: Path, adb: Path, target: str, stop_file: Path, mode
         report('CONTROLLER_CLEANUP', reader='stopped', inputs='disabled')
 
 
+class WorkerOutput:
+    """Forward Activity lines and retain explicit restoration evidence."""
+    def __init__(self, process, name):
+        self.process, self.name = process, name
+        self.cleanup_confirmed = None
+        self.output_error = None
+        self.reader = None
+        self.reader_started = False
+
+    def start(self):
+        try:
+            self.reader = threading.Thread(target=self._read, daemon=True)
+            self.reader.start()
+            self.reader_started = True
+        except (OSError, RuntimeError) as error:
+            self.cleanup_confirmed = False
+            self.output_error = 'Could not start worker output reader: ' + str(error)
+            self.reader_started = self.reader is not None and self.reader.ident is not None
+            raise
+
+    def _observe(self, line):
+        stage, _, payload = line.partition(' ')
+        if self.name == 'hands' and stage == 'HANDS_CLEANUP_FAILED':
+            self.cleanup_confirmed = False
+            return
+        expected = 'HANDS_CLEANUP' if self.name == 'hands' else 'CONTROLLER_CLEANUP'
+        if stage != expected:
+            return
+        try:
+            result = json.loads(payload)
+            if not isinstance(result, dict):
+                confirmed = False
+            elif self.name == 'hands':
+                confirmed = result.get('confirmed') is True and result.get('problems') == []
+            else:
+                confirmed = (result.get('reader') == 'stopped' and result.get('inputs') == 'disabled'
+                             and result.get('problems', []) == [] and result.get('confirmed', True) is True)
+        except ValueError:
+            confirmed = False
+        # A later success line cannot erase failed or malformed restoration evidence.
+        if self.cleanup_confirmed is not False:
+            self.cleanup_confirmed = confirmed
+
+    def _read(self):
+        try:
+            for raw in self.process.stdout:
+                line = raw.rstrip('\r\n')
+                self._observe(line)
+                with OUTPUT_LOCK:
+                    print(line, flush=True)
+        except (OSError, ValueError) as error:
+            self.cleanup_confirmed = False
+            self.output_error = str(error)
+        finally:
+            self.process.stdout.close()
+
+    def finish(self):
+        if not self.reader_started:
+            return
+        # Process exit can precede the reader consuming its final cleanup line.
+        self.reader.join(timeout=10)
+        if self.reader.is_alive():
+            self.cleanup_confirmed = False
+            self.output_error = 'Worker output did not close after exit.'
+
+
 def run(args, local: Path, adb: Path, target: str):
     if not args.hands and not args.touchpad:
         raise RuntimeError('Select Hands + controllers or Touch Pro thumb-rest input first.')
@@ -357,30 +425,47 @@ def run(args, local: Path, adb: Path, target: str):
             python = hands / '.venv' / 'Scripts' / 'python.exe'
             if not (hands / 'ready.json').is_file() or not python.is_file():
                 raise RuntimeError('Install hand/controller components first.')
-            children.append(subprocess.Popen([str(python), '-u', str(root / 'hybrid' / 'controller.py'),
+            child = subprocess.Popen([str(python), '-u', str(root / 'hybrid' / 'controller.py'),
                 '--target', target, '--adb', str(adb), '--stop-file', str(stop),
                 '--frida-server', str(hands / 'frida-server'), '--parent-stdin'],
-                stdin=subprocess.PIPE, creationflags=NO_WINDOW))
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, creationflags=NO_WINDOW)
+            worker = WorkerOutput(child, 'hands')
+            children.append(worker)
+            worker.start()
         if args.touchpad:
-            children.append(subprocess.Popen([sys.executable, '-u', __file__, 'relay', '--root', str(root),
+            child = subprocess.Popen([sys.executable, '-u', __file__, 'relay', '--root', str(root),
                 '--adb', str(adb), '--target', target, '--stop-file', str(stop), '--mode', args.mode, '--parent-stdin'],
-                stdin=subprocess.PIPE, creationflags=NO_WINDOW))
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, creationflags=NO_WINDOW)
+            worker = WorkerOutput(child, 'touchpad')
+            children.append(worker)
+            worker.start()
         while not stop.exists() and not parent_closed.is_set():
-            exited = [child for child in children if child.poll() is not None]
+            exited = [worker for worker in children if worker.process.poll() is not None]
             if exited:
                 raise RuntimeError('A controller worker exited before Stop. See its Activity lines for the compatibility or cleanup result.')
             time.sleep(.1)
     finally:
-        cleanup_failed = False
+        failures = []
         try:
             stop.write_text('controller stop requested\n', encoding='utf-8')
         except OSError as error:
-            cleanup_failed = True
+            failures.append('Stop file: ' + str(error))
             report('CONTROLLER_CLEANUP', restoration='stop-file-failed', message=str(error))
-        for child in children:
+        for worker in children:
+            child = worker.process
             if child.stdin:
-                child.stdin.close()
-        for child in children:
+                try:
+                    child.stdin.close()
+                except OSError as error:
+                    failures.append(worker.name + ' stop pipe: ' + str(error))
+        for worker in children:
+            child = worker.process
+            if not worker.reader_started:
+                # After Stop/EOF, drain in this thread so an unmonitored worker
+                # cannot block its restoration writes on a full output pipe.
+                worker._read()
             while child.poll() is None:
                 try:
                     child.wait(timeout=10)
@@ -388,9 +473,19 @@ def run(args, local: Path, adb: Path, target: str):
                     # Remain the process supervised by the Hub until all owned
                     # workers finish; never orphan a still-restoring adapter.
                     report('CONTROLLER_CLEANUP', workerPid=child.pid, restoration='still-running')
-            cleanup_failed |= child.returncode != 0
-        if cleanup_failed:
+            worker.finish()
+            if worker.cleanup_confirmed is not True or child.returncode == 5:
+                failures.append(worker.name + ' worker cleanup was not confirmed (exit '
+                                + str(child.returncode) + ').')
+            if worker.output_error:
+                failures.append(worker.name + ' output: ' + worker.output_error)
+        report('CONTROLLER_CLEANUP', confirmed=not failures,
+               restoration='unconfirmed' if failures else 'confirmed',
+               reader='unconfirmed' if failures else 'stopped', problems=failures)
+        if failures:
             raise RuntimeError('Controller cleanup was not confirmed. Keep the Hub open and check Activity.')
+        if sys.exc_info()[0] is None and any(worker.process.returncode != 0 for worker in children):
+            raise RuntimeError('A controller worker failed. See its Activity lines for the startup or runtime error.')
 
 
 def main(argv=None):
