@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(BridgeAssemblyPath)' == ''">
+    <ProjectReference Include="../../vrcft-gaze-bridge/Qpro.GazeBridge.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(BridgeAssemblyPath)' != ''">
+    <Reference Include="Qpro.GazeBridge">
+      <HintPath>$(BridgeAssemblyPath)</HintPath>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="VRCFaceTracking.Core">
+      <HintPath>$(VrcftInstallDir)/VRCFaceTracking.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="VRCFaceTracking.SDK">
+      <HintPath>$(VrcftInstallDir)/VRCFaceTracking.SDK.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.Extensions.Logging.Abstractions">
+      <HintPath>$(VrcftInstallDir)/Microsoft.Extensions.Logging.Abstractions.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>
