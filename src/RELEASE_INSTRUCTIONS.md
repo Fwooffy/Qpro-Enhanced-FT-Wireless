@@ -148,7 +148,7 @@ Quick refinement and Full dataset make a combined tongue-and-cheek model when yo
 
 To try a combined model, open **Live tracking > Lower-face tracking**, choose it under **Lower-face model** and turn on **Camera cheek puff (experimental)**. Selecting the model alone does not enable camera cheeks. The message below that switch explains the selected cheek source. Stop and restart tracking to apply the change; **Activity** reports which camera outputs were requested and the loaded model paths.
 
-The model predicts separate left and right strengths between 0 and 1 from the mouth cameras. It can run with tongue tracking off. Camera cheek output does not use the short native cheek calibration or its response style. Turning it off, stopping Qpro, or losing its live camera feed returns cheek puff to your selected native cheek settings.
+The model predicts separate left and right strengths between 0 and 1 from the mouth cameras. It can run with tongue tracking off. Camera cheek output does not use the short native cheek calibration or its response style. Turning camera cheek output off or losing its live feed returns to your selected cheek style while Qpro tracking runs. **Stop tracking** or closing the Hub restores the streaming app's original cheek values.
 
 The **Experimental tongue + cheeks model** card on **Personalize** lets you add just the 21 cheek cards to a new copy of an existing tongue model. Press **Show advanced cheek training**, choose **Parent tongue model**, then press **1. Record cheek camera poses**, then choose the completed recording and press **2. Train tongue + cheeks copy**. This freezes the tongue model while learning its cheek outputs; the original model stays saved. Test the new copy with fresh poses before relying on it. Camera cheek tracking remains experimental and may need a personal recording for another face or headset fit.
 
@@ -168,12 +168,12 @@ To remove a recording you no longer need, stay on **Personalize**. Under its mat
 
 1. Start your selected **Virtual Desktop** or **Steam Link** app on the Quest, then SteamVR and VRCFaceTracking on the PC. Steam Link users should confirm its OSC and eye/face sharing settings above.
 2. In the Hub, open **Live tracking**. The **Eyes** section contains independent gaze, pupil dilation and eyebrow movement. Independent Eye Gaze starts off. **If you installed Singularity's Independent Eye Gaze Magisk module, leave the Hub's Independent Eye Gaze option off.** In **Lower-face tracking**, choose the **new model you just trained** under **Lower-face model** and enable the camera features you want. Its cheek controls are in the same section. Optional **Hands and controllers** controls are at the bottom. If tracking is already running, press **Stop tracking** first so the new model loads when tracking restarts.
-3. Press **Start tracking**. Open **Activity** if you want to see whether the camera connected and which device is running the tongue model.
+3. Press **Start tracking**. Tracking camera previews default off on a fresh setup; saved preview choices are kept. To show them, open **Your session > Show connection and camera settings** and enable **Preview tracking cameras** before starting. Guided training capture still opens its pose window. Open **Activity** if you want to see whether the camera connected and which device is running the tongue model.
 4. When you finish, press **Stop tracking**. Wait until Activity confirms that the live processes have stopped. If you used the Hub's gaze method, also wait for its gaze recovery result: it restores the headset eye-model state recorded before that Qpro session.
 
 Closing the Hub stops tracking cleanly, then stops the configured PC ADB server. Other Android tools using the same ADB server will disconnect and may restart it. Finish setup, capture, training, or eye-model recovery before closing.
 
-**Stopping is different from uninstalling.** Tongue, camera cheek and pupil output stop when Qpro tracking stops. The PC tongue model is not installed on the headset. **Individual cheek puff**, **Individual cheek suck**, their styles and **Adjust eyebrow movement** apply immediately through the installed Qpro VRCFaceTracking module and stay saved after **Stop tracking**, including with the Hub closed. Turn those switches off to use the streaming app's original cheek and eyebrow values. The module's built-in smirk adjustment also remains active until you uninstall the Qpro module. Magisk gaze modules remain active until you disable them in Magisk and reboot.
+**Stopping is different from uninstalling.** Tongue, camera cheek and pupil output stop when Qpro tracking stops. The PC tongue model is not installed on the headset. **Individual cheek puff** and **Individual cheek suck** apply only while Qpro tracking runs; **Stop tracking** or closing the Hub restores the streaming app's original cheek values. Your selected styles and personal calibration stay saved for the next session. You can start a session with just these cheek adjustments selected; no camera or Python process is needed. **Adjust eyebrow movement** and the module's built-in smirk adjustment remain active through the installed module. Turn the eyebrow switch off for native eyebrows, or uninstall the Qpro module for the official module's complete mapping. Magisk gaze modules remain active until you disable them in Magisk and reboot.
 
 ### Returning to ordinary tracking
 
@@ -196,13 +196,13 @@ Qpro processes the latest eye pair instead of queuing old frames. Activity repor
 
 ### Choose your cheek puff response
 
-On **Live tracking**, find the cheek controls in **Lower-face tracking**. **Individual cheek puff** starts on with **1/0** selected. These controls adjust cheek puff from your streaming app when **Camera cheek puff (experimental)** is off or its output stops. Choose a **Cheek puff style**:
+On **Live tracking**, find the cheek controls in **Lower-face tracking**. **Individual cheek puff** starts on with **1/0** selected. These controls adjust cheek puff from your streaming app only while Companion tracking runs, when **Camera cheek puff (experimental)** is off or its output stops. Choose a **Cheek puff style**:
 
 - **Calibrated:** a smooth strength from relaxed to full puff, including values between 0 and 1. It uses your personal calibration for the selected streaming app, or the bundled developer cheek baseline until you make one. Separate developer baselines were measured on one Quest Pro through Virtual Desktop and Steam Link. They are a starting point; calibrate for your own face if the response is too weak or too strong.
 - **1/0:** a clear one-cheek puff becomes full strength on that side and zero on the other. Puffing both cheeks still moves both.
 - **Balanced:** gentler separation that keeps changes in cheek strength without using a calibration profile.
 
-With camera cheek output off, turn **Individual cheek puff** off to use the original cheek values from Virtual Desktop or Steam Link. The toggle and style take effect while tracking is running. If the VRCFaceTracking preview separates the cheeks but the avatar does not, check the avatar's parameters and blendshapes.
+With camera cheek output off, turn **Individual cheek puff** off to use the original cheek values from Virtual Desktop or Steam Link. Press **Start tracking** in the Companion to apply your selected cheek style. **Stop tracking**, closing the Companion, or a Companion crash restores native cheeks; your selections and calibration stay saved for the next start. If the VRCFaceTracking preview separates the cheeks but the avatar does not, check the avatar's parameters and blendshapes.
 
 ### Calibrate cheek puff for your face
 
