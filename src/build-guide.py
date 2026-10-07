@@ -166,7 +166,7 @@ def story_from_guide(markdown: str):
     story = [
         Spacer(1, 5),
         Paragraph("Quest Pro enhanced face tracking", TITLE),
-        Paragraph("V2.1.2 release candidate  |  USB or wireless ADB  |  3 October 2026", SUBTITLE),
+        Paragraph("V2.1.2 release candidate  |  USB or wireless ADB  |  7 October 2026", SUBTITLE),
         callout("**A rooted Meta Quest Pro and the latest VRCFaceTracking from Steam are required.** "
                 "If you used a version before V2.0, record and train a new tongue model. "
                 "Working V2.0 through V2.0.2 models can be exported and imported into V2.1.2. "
@@ -229,7 +229,7 @@ def story_from_guide(markdown: str):
         elif line.startswith(("The Hub's gaze method can fail", "**Preview tracking cameras**",
                               "Eyebrows use the selected source's live face values",
                               "The window saves your profile after all three poses pass",
-                              "Qpro installs [AMD TheRock ROCm 10.0 packages]")):
+                              "Qpro installs [AMD TheRock ROCm ")):
             story.append(KeepTogether([Paragraph(inline(line), BODY)]))
         else:
             style = SECTION_LEAD if line.startswith((
