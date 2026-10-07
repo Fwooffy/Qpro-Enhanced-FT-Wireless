@@ -47,7 +47,7 @@ internal sealed partial class HubForm
     {
         if (_previewOnly) return "Preview mode does not install components.";
         if (_closingInProgress || UtilityActionIsBusy()) return "Finish the current Qpro action first.";
-        if (_trackingProcesses.Any(process => !process.HasExited)) return "Stop live tracking before updating components.";
+        if (LiveTrackingRunning) return "Stop live tracking before updating components.";
         if (item.Kind == HubComponentKind.Module && VrcftModuleProcessRunning())
             return "Close VRCFaceTracking and wait for its ModuleProcess helper to exit, then retry.";
         // The plan is only a preview. Re-read environment ownership and recipes

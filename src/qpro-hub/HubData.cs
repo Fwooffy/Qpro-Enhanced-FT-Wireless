@@ -132,7 +132,7 @@ internal sealed partial class HubForm
             MessageBox.Show(this, "There is no recorded dataset to delete in this folder.", "No dataset selected", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
-        if (_datasetOperationBusy || _trackingProcesses.Any(process => !process.HasExited))
+        if (_datasetOperationBusy || LiveTrackingRunning)
         {
             MessageBox.Show(this, "Finish capture or training and stop live tracking before deleting a dataset.", "Dataset is in use", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
@@ -301,7 +301,7 @@ internal sealed partial class HubForm
     private void DeleteSelectedModel()
     {
         if (_modelList.SelectedItem is not FileChoice model) { MessageBox.Show(this, "Select a tongue model first."); return; }
-        if (_trackingProcesses.Any(process => !process.HasExited)) { MessageBox.Show(this, "Stop live tracking before deleting a model."); return; }
+        if (LiveTrackingRunning) { MessageBox.Show(this, "Stop live tracking before deleting a model."); return; }
         var version = VersionFromPath(model.Primary);
         if (version == 8)
         {
@@ -347,7 +347,7 @@ internal sealed partial class HubForm
 
     private void ImportModel()
     {
-        if (_trackingProcesses.Any(process => !process.HasExited)) { MessageBox.Show(this, "Stop live tracking before importing a model."); return; }
+        if (LiveTrackingRunning) { MessageBox.Show(this, "Stop live tracking before importing a model."); return; }
         using var dialog = new OpenFileDialog { Title = "Import tongue model", Filter = "Qpro tongue model (*.qptonguemodel)|*.qptonguemodel", CheckFileExists = true };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         if (MessageBox.Show(this, "Only import model files from someone you trust. PyTorch model files are executable data when loaded.\n\nContinue?", "Trust this model?", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;

@@ -11,6 +11,7 @@
     <Version>2.1.2</Version>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../shared/CheekTrackingSession.cs" Link="CheekTrackingSession.cs" />
     <Compile Include="../shared/EyebrowPreference.cs" Link="EyebrowPreference.cs" />
     <Compile Include="../shared/CheekPuffCalibrationProfile.cs" Link="CheekPuffCalibrationProfile.cs" />
     <Compile Include="../shared/CheekPuffTelemetry.cs" Link="CheekPuffTelemetry.cs" />

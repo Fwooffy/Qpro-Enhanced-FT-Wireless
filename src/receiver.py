@@ -27,6 +27,7 @@ from tongue_still_capture import (
     TongueStillCaptureSession,
 )
 from label_capture import LabelSidecarRecorder
+from companion_lifecycle import CompanionLifetime
 
 
 HEADER = struct.Struct("<8sIIQQIIIIIIQ")
@@ -43,27 +44,35 @@ CAMERA_NAMES = {
 
 
 class StopRequested(Exception):
-    """The Hub asked this receiver to exit between socket reads."""
+    """The session was stopped, or its owning Companion process exited."""
+
+
+def check_stop_requested(stop_file: Path | None, companion: CompanionLifetime | None = None) -> None:
+    if companion is not None and not companion.alive():
+        raise StopRequested("Companion closed; camera preview closing")
+    if stop_file is not None and stop_file.exists():
+        raise StopRequested("camera preview closing")
 
 
 def receive_exact(
-    connection: socket.socket, size: int, stop_file: Path | None = None
+    connection: socket.socket, size: int, stop_file: Path | None = None,
+    companion: CompanionLifetime | None = None,
 ) -> bytes:
     output = bytearray(size)
     view = memoryview(output)
     received = 0
     while received < size:
-        if stop_file is not None and stop_file.exists():
-            raise StopRequested
+        check_stop_requested(stop_file, companion)
         try:
             amount = connection.recv_into(view[received:])
         except socket.timeout:
-            if stop_file is None:
+            if stop_file is None and (companion is None or not companion.enabled):
                 raise
             continue
         if amount == 0:
             raise ConnectionError("The headset streamer disconnected")
         received += amount
+    check_stop_requested(stop_file, companion)
     return bytes(output)
 
 
@@ -479,6 +488,8 @@ def main() -> int:
         "--stop-file",
         help="exit cleanly when this supervisor-owned file appears",
     )
+    parser.add_argument("--companion-pid", type=int, help="owning Windows Companion process")
+    parser.add_argument("--companion-start-filetime", type=int, help="owner creation time as a Windows UTC FILETIME")
     parser.add_argument("--open-source-preview", action="store_true")
     parser.add_argument("--hybrid-preview", action="store_true")
     parser.add_argument(
@@ -496,6 +507,13 @@ def main() -> int:
     parser.add_argument("--gaze-calibration-seconds", type=int, default=60)
     parser.add_argument("--convergence-calibration-seconds", type=int, default=40)
     arguments = parser.parse_args()
+    if (arguments.companion_pid is None) != (arguments.companion_start_filetime is None):
+        parser.error("--companion-pid and --companion-start-filetime must be supplied together")
+    if arguments.companion_pid is not None and (
+        not 0 < arguments.companion_pid <= 0xFFFFFFFF
+        or not 0 < arguments.companion_start_filetime <= 0x7FFFFFFFFFFFFFFF
+    ):
+        parser.error("Companion PID and creation FILETIME must be positive integers")
     if not 1.0 <= arguments.pupil_sensitivity <= 3.0:
         parser.error("--pupil-sensitivity must be between 1.0 and 3.0")
     stop_file = Path(arguments.stop_file).resolve() if arguments.stop_file else None
@@ -646,6 +664,7 @@ def main() -> int:
     open_source_preview = None
     hybrid_preview = None
     stereo_eye_calibration = None
+    companion = None
 
     def mouse_callback(event: int, x: int, _y: int, _flags: int, _data: object) -> None:
         if event != cv2.EVENT_LBUTTONDOWN or not current_ids:
@@ -655,6 +674,8 @@ def main() -> int:
         shared.select(current_ids[panel])
 
     try:
+        companion = CompanionLifetime(arguments.companion_pid, arguments.companion_start_filetime)
+        check_stop_requested(stop_file, companion)
         if arguments.record is not None:
             if arguments.record == "auto":
                 stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -882,11 +903,10 @@ def main() -> int:
         print("Connecting to headset streamer (up to 20 seconds)...")
         deadline = time.monotonic() + 20.0
         while connection is None:
-            if stop_file is not None and stop_file.exists():
-                return 0
+            check_stop_requested(stop_file, companion)
             try:
                 connection = socket.create_connection(
-                    (arguments.host, arguments.port), timeout=2
+                    (arguments.host, arguments.port), timeout=0.25 if companion.enabled else 2
                 )
             except OSError:
                 if time.monotonic() >= deadline:
@@ -896,14 +916,12 @@ def main() -> int:
                     )
                 time.sleep(0.25)
         # A stalled camera relay must not keep the preview open after Stop.
-        connection.settimeout(0.25 if stop_file is not None else None)
+        connection.settimeout(0.25 if stop_file is not None or companion.enabled else None)
         connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         print("Connected. Keys 0-4 select cameras; S selects strip; Q quits.")
         while shared.running:
-            if stop_file is not None and stop_file.exists():
-                shared.running = False
-                break
-            raw_header = receive_exact(connection, HEADER.size, stop_file)
+            check_stop_requested(stop_file, companion)
+            raw_header = receive_exact(connection, HEADER.size, stop_file, companion)
             (magic, version, header_size, sequence, timestamp_ns, width, height,
              stride, pixel_format, payload_size, camera_mask,
              rejected_torn) = HEADER.unpack(raw_header)
@@ -923,7 +941,7 @@ def main() -> int:
                 )
             if payload_size != width * height:
                 raise ValueError("Invalid payload size")
-            payload = receive_exact(connection, payload_size, stop_file)
+            payload = receive_exact(connection, payload_size, stop_file, companion)
             pc_monotonic_ns = time.monotonic_ns()
             stream_gap_stats.add(timestamp_ns, pc_monotonic_ns)
             frame_replay_stats.add(payload)
@@ -1246,10 +1264,12 @@ def main() -> int:
                     >= arguments.record_seconds):
                 shared.running = False
         capture_completed = True
-    except StopRequested:
+    except StopRequested as stop:
         capture_completed = True
-        print("STOP_REQUESTED camera preview closing", flush=True)
+        print(f"STOP_REQUESTED {stop or 'camera preview closing'}", flush=True)
     finally:
+        if companion is not None:
+            companion.close()
         shared.running = False
         with shared.lock:
             shared.lock.notify_all()

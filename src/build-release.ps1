@@ -147,6 +147,7 @@ $runtimeFiles = @(
     "train-latest-tongue-refinement.ps1",
     "requirements-runtime.txt",
     "receiver.py",
+    "companion_lifecycle.py",
     "qpro_gpu.py",
     "pupil_dilation.py",
     "pupil_gpu.py",

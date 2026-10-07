@@ -10,7 +10,7 @@ internal sealed partial class HubForm
 
     private void UpdateCameraCheekAvailability()
     {
-        bool running = _trackingProcesses.Any(process => !process.HasExited);
+        bool running = LiveTrackingRunning;
         bool editable = !running && !_starting && !_stopping;
         bool available = SelectedModelHasCameraCheeks();
         // A stale checked choice stays editable so it can be turned off after
@@ -67,7 +67,7 @@ internal sealed partial class HubForm
     private bool CameraCheekActionReady()
     {
         if (UtilityActionIsBusy()) return false;
-        if (_trackingProcesses.Any(process => !process.HasExited))
+        if (LiveTrackingRunning)
         {
             MessageBox.Show(this, "Stop Qpro tracking before recording or training cheek camera poses.",
                 "Stop tracking first", MessageBoxButtons.OK, MessageBoxIcon.Information);

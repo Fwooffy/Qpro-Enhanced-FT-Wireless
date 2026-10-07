@@ -223,8 +223,8 @@ internal sealed partial class HubForm : Form
                 _cheekPuffStyle.Enabled = _individualCheekPuff.Checked;
                 UpdateToggleStyle(_individualCheekPuff);
                 AppendLog(_individualCheekPuff.Checked
-                    ? $"Individual cheek puff on: {_cheekPuffStyle.SelectedItem}. The Qpro module updates while tracking is running."
-                    : "Individual cheek puff off: using the streaming app's original cheek values. The Qpro module updates while tracking is running.");
+                    ? $"Individual cheek puff selected: {_cheekPuffStyle.SelectedItem}. Applies while Qpro tracking runs; Stop restores native cheeks."
+                    : "Individual cheek puff off: using the streaming app's original cheek values when camera cheek output is off.");
             }
             catch (Exception error) { AppendLog("Could not save cheek puff choice: " + error.Message); }
         }
@@ -256,8 +256,8 @@ internal sealed partial class HubForm : Form
                 _cheekSuckStyle.Enabled = _individualCheekSuck.Checked;
                 UpdateToggleStyle(_individualCheekSuck);
                 AppendLog(_individualCheekSuck.Checked
-                    ? $"Individual cheek suck on: {_cheekSuckStyle.SelectedItem}. The Qpro module updates while tracking is running."
-                    : "Individual cheek suck off: using the streaming app's original cheek values. The Qpro module updates while tracking is running.");
+                    ? $"Individual cheek suck selected: {_cheekSuckStyle.SelectedItem}. Applies while Qpro tracking runs; Stop restores native cheeks."
+                    : "Individual cheek suck off: using the streaming app's original cheek values.");
             }
             catch (Exception error) { AppendLog("Could not save cheek suck choice: " + error.Message); }
         }
@@ -332,15 +332,17 @@ internal sealed partial class HubForm : Form
         if (!previewOnly) setupProgressTimer.Start();
         FormClosed += (_, _) =>
         {
+            EndCheekTrackingSession();
             timer.Stop(); timer.Dispose();
             pulseTimer.Stop(); pulseTimer.Dispose();
             setupProgressTimer.Stop(); setupProgressTimer.Dispose();
             _soundPlayer?.Dispose();
             foreach (var process in _trackingProcesses) process.Dispose();
         };
+        Disposed += (_, _) => EndCheekTrackingSession();
         RestoreLiveOptions();
         WireUpdates();
-        AppendLog("Hub ready. Qpro live overrides start when you press Start tracking. An installed Qpro module can already apply its saved face adjustments.");
+        AppendLog("Hub ready. Cheek adjustments and Qpro live overrides start when you press Start tracking. Eyebrow and smirk adjustments can already apply through the installed module.");
     }
 
     private void InitializeTrackingSourceUi()
@@ -359,7 +361,7 @@ internal sealed partial class HubForm : Form
     {
         if (_previewOnly || _trackingSourceSelectionUpdating || steamLink == _environment.SteamLinkSelected) return;
         if (_setupActionRunning || _utilityActionRunning || _datasetOperationBusy ||
-            _starting || _stopping || _trackingProcesses.Any(process => !process.HasExited))
+            _starting || _stopping || LiveTrackingRunning)
         {
             SyncTrackingSourceControls();
             return;

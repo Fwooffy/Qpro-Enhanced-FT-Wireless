@@ -293,7 +293,7 @@ internal sealed partial class HubForm
         sessionCameraSettings.Margin = new Padding(0, 4, 0, 8);
         LiveField(sessionCameraSettings, 0, "Camera FPS cap", _fps);
         Span(sessionCameraSettings, _cameraPreview, 1);
-        Span(sessionCameraSettings, Info("Shared by tongue, camera cheeks and pupils. A higher FPS cap uses more PC resources. Hiding the preview keeps tracking active. These options apply the next time tracking starts."), 2);
+        Span(sessionCameraSettings, Info("Camera preview is off by default. Shared by tongue, camera cheeks and pupils. A higher FPS cap uses more PC resources. Hiding the preview keeps tracking active. These options apply the next time tracking starts."), 2);
         connectionDetails.Controls.Add(sessionCameraSettings);
         _trackingSourceLiveNote.Margin = new Padding(0, 2, 0, 8);
         connectionDetails.Controls.Add(_trackingSourceLiveNote);
@@ -302,7 +302,7 @@ internal sealed partial class HubForm
         connectionActions.Controls.Add(ActionButton("Refresh connection status", (_, _) => { ReloadProfiles(); _ = RefreshStatusAsync(); }));
         connectionActions.Controls.Add(ActionButton("Open setup", (_, _) => setupTab.PerformClick()));
         connectionDetails.Controls.Add(connectionActions);
-        Span(liveSource, Info("Eyebrow and native cheek adjustments apply immediately and stay enabled after Stop tracking or closing Hub. Turn them off for the streaming app's original values."), 3);
+        Span(liveSource, Info("Cheek adjustments apply while Qpro tracking runs. Stop tracking or close the Hub to restore native cheek values. Eyebrow adjustments apply immediately; turn them off for native eyebrows."), 3);
         Details(liveSource, connectionDetails, "connection and camera settings", 4);
         liveLayout.Controls.Add(liveSource);
 
@@ -379,7 +379,7 @@ internal sealed partial class HubForm
         cheekHelp.Controls.Add(Info("Cheek puff: Calibrated gives a smooth relaxed-to-full response, using the developer baseline until you calibrate. Calibrate with the current streaming app's Qpro module running. 1/0 selects a full-strength cheek; Balanced is gentler."));
         cheekHelp.Controls.Add(Info("Cheek suck: Strong selects the leading side; Balanced is gentler. These controls adjust the existing streaming-app values; camera cheek training uses its own recorded poses."));
         cheekHelp.Controls.Add(Info("Camera cheek puff uses the selected camera model. Cheek puff style and Calibrate cheek puff apply only when camera cheek output is off or stops."));
-        Span(lowerFace, Info("These cheek adjustments stay active in VRCFaceTracking after Stop or closing Hub. Turn their switches off to use native values when camera cheek tracking is off."), 13);
+        Span(lowerFace, Info("Start tracking to apply cheek adjustments. Stop tracking or close the Hub to restore native cheeks; your selected style and calibration stay saved."), 13);
         Details(lowerFace, cheekHelp, "cheek adjustment details", 14);
         liveLayout.Controls.Add(lowerFace);
 

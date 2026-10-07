@@ -76,6 +76,7 @@ public sealed class TrackingModule : ExtTrackingModule
     private UdpClient? _pupilSocket;
     private UdpClient? _cheekCameraSocket;
     private readonly CheekCameraReceiver _cheekCamera = new();
+    private bool _cheekCameraTransportReady = true;
     private UdpClient? _steamLabelSocket;
     private UdpClient? _cheekTelemetrySocket;
     private static readonly IPEndPoint CheekTelemetryEndpoint = new(IPAddress.Loopback, CheekPuffTelemetry.Port);
@@ -99,6 +100,11 @@ public sealed class TrackingModule : ExtTrackingModule
     private CheekSuckMode _cheekSuckMode = CheekSuckMode.Strong;
     private readonly CheekSuckTracker _cheekSuckTracker = new();
     private long _nextCheekSuckModeCheckTick;
+    private readonly Func<bool> _cheekSessionProbe = () => CheekTrackingSession.IsActive();
+    private bool _cheekSessionActive;
+    private long _nextCheekSessionCheckTick;
+    private bool _cheekPuffNativeOutputApplied;
+    private bool _cheekSuckOutputApplied;
     private readonly SmirkTracker _smirkTracker = new();
     private EyebrowSettings _eyebrowSettings = EyebrowPreference.Default;
     private long _nextEyebrowSettingsCheckTick;
@@ -141,6 +147,8 @@ public sealed class TrackingModule : ExtTrackingModule
         _wasActive = false;
         _useSteamLink = ReadSteamLinkSelection();
         _cheekPuffTracker.Reset();
+        _cheekSessionActive = false;
+        _nextCheekSessionCheckTick = 0;
         _nextCheekPuffModeCheckTick = 0;
         _cheekPuffCalibration = null;
         _cheekPuffCalibrationOrigin = null;
@@ -249,6 +257,7 @@ public sealed class TrackingModule : ExtTrackingModule
                 return;
             }
         }
+        RefreshCheekSession();
         ReceiveGaze();
         ReceiveTongue();
         ReceivePupil();
@@ -287,6 +296,7 @@ public sealed class TrackingModule : ExtTrackingModule
             {
                 UpdateTongueOutput(expressions, faceFlags, NativeFaceSource.VirtualDesktop, nativeAvailable: false);
                 UpdateCheekOutput(default, nativeAvailable: false);
+                UpdateCheekSuckOutput(default, nativeAvailable: false);
             }
         }
         Thread.Sleep(5);
@@ -544,8 +554,15 @@ public sealed class TrackingModule : ExtTrackingModule
 
     private void ReceiveCameraCheeks()
     {
+        if (!_cheekCameraTransportReady)
+        {
+            // A large queue may need several bounded drains. Do not retime
+            // packets from an earlier inactive session as new camera output.
+            _cheekCameraTransportReady = LocalDatagrams.DiscardPending(_cheekCameraSocket);
+            return;
+        }
         foreach (byte[] packet in LocalDatagrams.ReadPending(_cheekCameraSocket))
-            _cheekCamera.Receive(packet, _tickClock());
+            if (_cheekSessionActive) _cheekCamera.Receive(packet, _tickClock());
     }
 
     private void UpdateCheekOutput(ReadOnlySpan<float> values, bool nativeAvailable)
@@ -553,11 +570,20 @@ public sealed class TrackingModule : ExtTrackingModule
         CheekPuffWeights native = default;
         if (nativeAvailable)
         {
-            RefreshCheekPuffMode();
-            native = _cheekPuffTracker.Update(values, _cheekPuffMode,
+            if (_cheekSessionActive) RefreshCheekPuffMode();
+            native = _cheekPuffTracker.Update(values,
+                _cheekSessionActive ? _cheekPuffMode : CheekPuffMode.Off,
                 _tickClock(), _cheekPuffCalibration);
+            // Native passthrough is still a write owned by this module. Clear
+            // it once if its source disappears, just like adjusted output.
+            _cheekPuffNativeOutputApplied = true;
         }
         CheekPuffWeights? resolved = _cheekCamera.Resolve(_tickClock(), nativeAvailable, native);
+        if (!nativeAvailable && _cheekPuffNativeOutputApplied)
+        {
+            resolved ??= new CheekPuffWeights(0, 0);
+            _cheekPuffNativeOutputApplied = false;
+        }
         if (resolved is not CheekPuffWeights cheeks) return;
         Set((int)UnifiedExpressions.CheekPuffLeft, cheeks.Left);
         Set((int)UnifiedExpressions.CheekPuffRight, cheeks.Right);
@@ -693,10 +719,7 @@ public sealed class TrackingModule : ExtTrackingModule
         UpdateCheekOutput(values, nativeTongueAvailable);
         Set((int)UnifiedExpressions.CheekSquintLeft, values[4]);
         Set((int)UnifiedExpressions.CheekSquintRight, values[5]);
-        RefreshCheekSuckMode();
-        CheekSuckWeights suck = _cheekSuckTracker.Update(values, _cheekSuckMode, frameTickMs);
-        Set((int)UnifiedExpressions.CheekSuckLeft, suck.Left);
-        Set((int)UnifiedExpressions.CheekSuckRight, suck.Right);
+        UpdateCheekSuckOutput(values, nativeTongueAvailable);
 
         NativeLipWeights lips = NativeLipMapping.FromFaceWeights(values, source);
         Set((int)UnifiedExpressions.MouthUpperUpLeft, lips.UpperUpLeft);
@@ -756,6 +779,7 @@ public sealed class TrackingModule : ExtTrackingModule
         {
             UpdateTongueOutput(default, 0, NativeFaceSource.VirtualDesktop, nativeAvailable: false);
             UpdateCheekOutput(default, nativeAvailable: false);
+            UpdateCheekSuckOutput(default, nativeAvailable: false);
         }
     }
 
@@ -833,7 +857,48 @@ public sealed class TrackingModule : ExtTrackingModule
     {
         foreach (LiveOverlayState overlay in OverlayStates()) overlay.Reset();
         _cheekCamera.Reset();
+        _cheekPuffNativeOutputApplied = false;
+        _cheekSuckOutputApplied = false;
+        _cheekCameraTransportReady = true;
         _tongueDirty = false;
+    }
+
+    private void UpdateCheekSuckOutput(ReadOnlySpan<float> values, bool nativeAvailable)
+    {
+        if (!nativeAvailable)
+        {
+            if (!_cheekSuckOutputApplied) return;
+            Set((int)UnifiedExpressions.CheekSuckLeft, 0);
+            Set((int)UnifiedExpressions.CheekSuckRight, 0);
+            _cheekSuckOutputApplied = false;
+            return;
+        }
+        if (_cheekSessionActive) RefreshCheekSuckMode();
+        CheekSuckWeights suck = _cheekSuckTracker.Update(values,
+            _cheekSessionActive ? _cheekSuckMode : CheekSuckMode.Off, _tickClock());
+        Set((int)UnifiedExpressions.CheekSuckLeft, suck.Left);
+        Set((int)UnifiedExpressions.CheekSuckRight, suck.Right);
+        _cheekSuckOutputApplied = true;
+    }
+
+    private void RefreshCheekSession()
+    {
+        long now = _tickClock();
+        if (now < _nextCheekSessionCheckTick) return;
+        _nextCheekSessionCheckTick = now + 250;
+        bool active = _cheekSessionProbe();
+        if (active == _cheekSessionActive) return;
+        _cheekSessionActive = active;
+        _cheekPuffTracker.Reset();
+        _cheekSuckTracker.Reset();
+        // Keep ownership of the last camera write until it is restored or
+        // cleared, including when the native face feed is unavailable.
+        _cheekCamera.DiscardPackets();
+        _cheekCameraTransportReady = LocalDatagrams.DiscardPending(_cheekCameraSocket);
+        _nextCheekPuffModeCheckTick = _nextCheekSuckModeCheckTick = 0;
+        Logger.LogInformation(active
+            ? "Companion tracking started: saved cheek adjustments enabled."
+            : "Companion tracking stopped: native cheek values restored.");
     }
 
     private void RefreshCheekPuffMode()

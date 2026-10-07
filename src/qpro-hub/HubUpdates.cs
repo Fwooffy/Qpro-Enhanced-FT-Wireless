@@ -90,7 +90,7 @@ internal sealed partial class HubForm
         if (IsDisposed || Disposing || _updateCheck is null) return;
         // An update never interrupts a capture, download or tracking recovery.
         if (UtilityActionIsBusy()) return;
-        var live = _starting || _stopping || _trackingProcesses.Any(process => !process.HasExited);
+        var live = _starting || _stopping || LiveTrackingRunning;
         var packaged = HubUpdateRunner.IsPackagedInstall(_root);
         string? blocked = live ? "Stop tracking before installing an update. You can read the release notes now."
             : !packaged ? "This is a source or preview build. Download the release ZIP from GitHub to update."

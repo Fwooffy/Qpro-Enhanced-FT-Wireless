@@ -148,7 +148,7 @@ internal sealed partial class HubForm
     private async Task CheckHeadsetCompatibilityAsync()
     {
         if (_previewOnly || _compatibilityChecking || UtilityActionIsBusy()) return;
-        if (_starting || _stopping || _trackingProcesses.Any(p => !p.HasExited))
+        if (_starting || _stopping || LiveTrackingRunning)
         {
             SetActionFeedback("Compatibility check is waiting", "Stop Qpro live overrides before checking the headset.", "Press Stop tracking, then retry the compatibility check.");
             return;

@@ -43,6 +43,10 @@ param(
     [ValidateSet("camera", "native", "weighted", "agreement")]
     [string]$TongueVisibilityMode = "weighted",
     [string]$StopFile = "",
+    [ValidateRange(0, 2147483647)]
+    [int]$CompanionPid = 0,
+    [ValidateRange(0, 9223372036854775807)]
+    [long]$CompanionStartFileTime = 0,
     [switch]$OpenSourcePreview,
     [switch]$HybridPreview,
     [string]$HybridCalibrationPath = ".\calibration\qpro-hybrid-eye-calibration.json",
@@ -58,6 +62,9 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
+if (($CompanionPid -gt 0) -ne ($CompanionStartFileTime -gt 0)) {
+    throw 'CompanionPid and CompanionStartFileTime must be supplied together.'
+}
 . (Join-Path $PSScriptRoot 'runtime-python.ps1')
 $relayStarted = $false
 $relayProcess = $null
@@ -519,6 +526,9 @@ try {
         }
     }
     $receiverArguments = @(".\receiver.py", "--port", "$StreamPort")
+    if ($CompanionPid -gt 0) {
+        $receiverArguments += @("--companion-pid", "$CompanionPid", "--companion-start-filetime", "$CompanionStartFileTime")
+    }
     if ($NoWindow) { $receiverArguments += "--no-window" }
     if ($recordEnabled) {
         $receiverArguments += "--record"

@@ -4,6 +4,7 @@
     <UseWindowsForms>true</UseWindowsForms><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../shared/CheekTrackingSession.cs" Link="Shared/CheekTrackingSession.cs" />
     <Compile Include="../../qpro-hub/*.cs" Link="Hub/%(Filename)%(Extension)" />
     <Compile Include="../../shared/EyebrowPreference.cs;../../shared/CheekPuffCalibrationProfile.cs;../../shared/CheekPuffTelemetry.cs;../../shared/DeveloperCheekPuffBaseline.cs" Link="Shared/%(Filename)%(Extension)" />
   </ItemGroup>

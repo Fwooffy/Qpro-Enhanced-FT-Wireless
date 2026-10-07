@@ -13,6 +13,7 @@
     <Error Text="Pass -p:VrcftInstallDir=&lt;your Steam VRCFaceTracking folder&gt; when building the bridge." />
   </Target>
   <ItemGroup>
+    <Compile Include="../shared/CheekTrackingSession.cs" Link="CheekTrackingSession.cs" />
     <Reference Include="VRCFaceTracking.Core">
       <HintPath>$(VrcftInstallDir)\VRCFaceTracking.Core.dll</HintPath>
       <Private>false</Private>

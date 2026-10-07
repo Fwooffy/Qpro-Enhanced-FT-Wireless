@@ -285,6 +285,8 @@ sealed class Fixture : IDisposable
         }
         Set("_gazeSocket", _gaze); Set("_tongueSocket", _tongue); Set("_pupilSocket", _pupil);
         Set("_cheekCameraSocket", _cameraCheeks);
+        Set("_cheekSessionActive", true);
+        Set("_nextCheekSessionCheckTick", long.MaxValue);
         Set("_wasActive", true);
         SetSlotOwnership(eyes: true, mouth: true);
         Module.Status = ModuleState.Active;

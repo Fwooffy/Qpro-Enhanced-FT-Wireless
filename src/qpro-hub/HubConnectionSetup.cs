@@ -52,7 +52,7 @@ internal sealed partial class HubForm
             if (_previewOnly) return;
             if (_connectionSelectionUpdating) return;
             if (_setupActionRunning || _utilityActionRunning || _datasetOperationBusy ||
-                _starting || _stopping || _trackingProcesses.Any(process => !process.HasExited))
+                _starting || _stopping || LiveTrackingRunning)
             {
                 _connectionSelectionUpdating = true;
                 try { _connectionMode.SelectedIndex = _environment.WirelessSelected ? 1 : 0; }

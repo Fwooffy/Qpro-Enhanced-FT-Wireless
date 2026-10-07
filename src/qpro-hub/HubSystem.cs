@@ -143,7 +143,7 @@ internal sealed partial class HubForm
 
     private void UpdateControlState()
     {
-        var running = _trackingCleanupPending || _trackingProcesses.Any(p => !p.HasExited);
+        var running = _trackingCleanupPending || LiveTrackingRunning;
         // These values are passed once to the child process. Keep the controls
         // locked until Stop, rather than implying that a live model was reloaded.
         var sessionEditable = !running && !_stopping && !_starting;
@@ -184,7 +184,7 @@ internal sealed partial class HubForm
         SetSetupButtonsEnabled(true);
     }
 
-    private bool TrackingShutdownPending => _starting || _stopping || _trackingCleanupPending || _trackingProcesses.Any(p => !p.HasExited);
+    private bool TrackingShutdownPending => _starting || _stopping || _trackingCleanupPending || LiveTrackingRunning;
 
     private async void OnClosing(object? sender, FormClosingEventArgs e)
     {
@@ -197,7 +197,7 @@ internal sealed partial class HubForm
             try { SaveLiveOptions(); }
             catch (Exception error) { AppendLog("Could not save Live tracking choices: " + error.Message); }
             await _environment.SuspendAdbProbesAsync();
-            if (_starting || _trackingProcesses.Any(p => !p.HasExited))
+            if (_starting || LiveTrackingRunning)
                 await StopTrackingAsync();
             // Startup may still be returning from its canceled ADB check.
             // Do not stop ADB until the tracking scripts have restored headset overrides.

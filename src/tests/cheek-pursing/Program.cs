@@ -56,6 +56,7 @@ try
     Near(native.Left, .09f, "native mode retains that small left signal");
     Near(native.Right, .09f, "native mode retains that small right signal");
     Console.WriteLine("Synthetic 0.09/0.09 cheek input: Strong=1/1; native passthrough=0.09/0.09.");
+    CheekSessionModuleChecks.Run(Near);
     if (args.Contains("--inspect-saved-preference"))
     {
         using var fixture = new Fixture("Off");
@@ -119,6 +120,8 @@ sealed class Fixture : IDisposable
         Set("_view", _view);
         Set("_wasActive", true);
         Set("_needsExpression", true);
+        Set("_cheekSessionActive", true);
+        Set("_nextCheekSessionCheckTick", long.MaxValue);
         Assembly assembly = typeof(TrackingModule).Assembly;
         Set("_cheekPuffMode", Enum.Parse(assembly.GetType("Qpro.GazeBridge.CheekPuffMode")!, style));
         Set("_cheekSuckMode", Enum.Parse(assembly.GetType("Qpro.GazeBridge.CheekSuckMode")!, "Off"));

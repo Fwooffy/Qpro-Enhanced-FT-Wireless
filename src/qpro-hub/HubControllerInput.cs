@@ -66,7 +66,7 @@ internal sealed partial class HubForm
     {
         bool idle = !_closingInProgress && !_trackingCleanupPending && !_gazeRecoveryRunning &&
             !_starting && !_stopping && !_utilityActionRunning && !_setupActionRunning &&
-            !_datasetOperationBusy && !_trackingProcesses.Any(process => !process.HasExited);
+            !_datasetOperationBusy && !LiveTrackingRunning;
         bool supportedSource = !_environment.SteamLinkSelected;
         _hybridHands.Enabled = _controllerTouchpad.Enabled = idle && supportedSource;
         _touchpadMode.Enabled = idle && supportedSource && _controllerTouchpad.Checked;
