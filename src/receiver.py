@@ -640,6 +640,8 @@ def main() -> int:
     cheek_broadcaster = None
     last_pupil_status = 0.0
     last_cheek_status = 0.0
+    last_tongue_status = None
+    last_tongue_completed = 0
     open_source_window_name = "Quest Pro open-source model preview"
     open_source_preview = None
     hybrid_preview = None
@@ -1013,7 +1015,6 @@ def main() -> int:
                 )
                 transport_report_at = now
 
-            shared.update(strip, camera_ids)
             model_image = None
             tongue_model_image = None
             open_source_image = None
@@ -1043,6 +1044,24 @@ def main() -> int:
                     label_recorder.schema_names if label_recorder else [],
                 )
                 tongue_prediction, tongue_model_image = tongue_inference_worker.latest()
+                if tongue_prediction is not None and last_tongue_status is None:
+                    last_tongue_status = now
+                    last_tongue_completed = tongue_prediction.completed_frames
+                elif tongue_prediction is not None and now - last_tongue_status >= 5.0:
+                    inference_fps = (
+                        (tongue_prediction.completed_frames - last_tongue_completed)
+                        / (now - last_tongue_status)
+                    )
+                    print(
+                        f"TONGUE_STATUS camera_fps={fps:.1f} inference_fps={inference_fps:.1f} "
+                        f"inference_ms={tongue_prediction.inference_ms:.1f} "
+                        f"pipeline_ms={tongue_prediction.pipeline_ms:.1f} "
+                        f"result_age_ms={tongue_prediction.age_ms:.1f} "
+                        f"dropped_frames={tongue_prediction.dropped_frames} "
+                        f"requested_output={'on' if tongue_broadcaster.enabled else 'off'}", flush=True,
+                    )
+                    last_tongue_status = now
+                    last_tongue_completed = tongue_prediction.completed_frames
                 if (cheek_broadcaster is not None and tongue_prediction is not None
                         and now - last_cheek_status >= 2.0):
                     names = tongue_model_preview.target_names
@@ -1055,6 +1074,9 @@ def main() -> int:
                         f"dropped_frames={tongue_prediction.dropped_frames}", flush=True,
                     )
                     last_cheek_status = now
+            # Queue tongue inference before optional MJPEG encoding. A browser
+            # preview subscriber must not delay the current avatar prediction.
+            shared.update(strip, camera_ids)
             if open_source_preview is not None:
                 open_source_prediction = open_source_preview.predict(strip)
                 factory_sample = (

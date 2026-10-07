@@ -26,6 +26,44 @@ from tongue_image_processing import preprocess_stereo_images, resolve_input_prep
 TONGUE_PACKET = struct.Struct("<4sBBH12f")
 TONGUE_MAGIC = b"QPTO"
 TONGUE_VERSION = 1
+# Match TongueTimeoutMs in the VRCFT bridge. A late frame must not reacquire
+# the tongue override after the bridge has already restored native tracking.
+TONGUE_MAX_PIPELINE_MS = 300.0
+
+
+def _prepare_inference_model(model: torch.nn.Module, device: torch.device) -> torch.nn.Module:
+    """Fold fixed normalization into convolutions on this loaded eval copy.
+
+    The training architecture and checkpoint bytes retain their original
+    layers. Inference uses full float32 precision and the same learned running
+    statistics, with fewer kernels and intermediate image tensors per frame.
+    """
+    model.eval()
+
+    def fold(module: torch.nn.Module) -> None:
+        for child in module.children():
+            fold(child)
+        if isinstance(module, torch.nn.Sequential):
+            for index in range(len(module) - 1):
+                convolution, normalization = module[index], module[index + 1]
+                if (
+                    isinstance(convolution, torch.nn.Conv2d)
+                    and isinstance(normalization, torch.nn.BatchNorm2d)
+                    and normalization.running_mean is not None
+                    and normalization.running_var is not None
+                ):
+                    module[index] = torch.nn.utils.fuse_conv_bn_eval(
+                        convolution, normalization
+                    )
+                    module[index + 1] = torch.nn.Identity()
+
+    fold(model)
+    model.to(device)
+    if device.type == "cpu":
+        # This layout speeds up the CPU convolution backend without changing
+        # the stereo input contract or global thread settings used by pupils.
+        model.to(memory_format=torch.channels_last)
+    return model
 
 
 def vrcft_tongue_values(
@@ -82,9 +120,10 @@ def smooth_tongue_output(
     analog expression. A short hold protects isolated misses; this slew limit
     makes genuine entry and retraction gradual after that hold expires.
     """
-    elapsed = min(max(elapsed_seconds, 0.0), 1.0 / 20.0)
-    maximum_rise = elapsed / 0.18
-    maximum_fall = elapsed / 0.20
+    # Limit a stalled frame's jump without adding another long motion filter.
+    elapsed = min(max(elapsed_seconds, 0.0), 0.04)
+    maximum_rise = elapsed / 0.10
+    maximum_fall = elapsed / 0.12
     return np.clip(
         previous + np.clip(target - previous, -maximum_fall, maximum_rise),
         0.0, 1.0,
@@ -98,29 +137,58 @@ class TongueBroadcaster:
         self.enabled = bool(enabled)
         self._address = ("127.0.0.1", int(port))
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._lock = threading.Lock()
+        self._closed = False
+        self._stale = False
         self._last_values: np.ndarray | None = None
         self._last_sent = 0.0
-        self._minimum_interval = 1.0 / 24.0
+        # The camera can supply up to 72 FPS. Leave enough scheduling margin
+        # to publish each new prediction instead of halving faster sessions.
+        self._minimum_interval = 1.0 / 90.0
+        self._first_interval = 1.0 / 24.0
         self._keepalive_interval = 0.20
 
     def toggle(self) -> bool:
-        self.enabled = not self.enabled
-        if not self.enabled:
-            self._send(np.zeros(12, dtype=np.float32), enabled=False)
-            self._last_values = None
-            self._last_sent = 0.0
-        return self.enabled
+        # The preview key and inference thread can run concurrently. The OFF
+        # packet must follow any prediction already being published.
+        with self._lock:
+            if self._closed:
+                return False
+            self.enabled = not self.enabled
+            if not self.enabled:
+                self._send(np.zeros(12, dtype=np.float32), enabled=False)
+                self._last_values = None
+                self._last_sent = 0.0
+                self._stale = False
+            return self.enabled
 
     def send_prediction(
         self, prediction: "TonguePrediction", target_names: list[str]
     ) -> None:
-        if not self.enabled:
-            return
+        with self._lock:
+            if not self.enabled or self._closed:
+                return
+            # A delayed frame must not renew an override after VRCFT has
+            # already restored the native source.
+            age = prediction.pipeline_ms
+            if not np.isfinite(age) or not 0.0 <= age <= TONGUE_MAX_PIPELINE_MS:
+                if not self._stale:
+                    self._send(np.zeros(12, dtype=np.float32), enabled=False)
+                self._stale = True
+                self._last_values = None
+                self._last_sent = 0.0
+                return
+            self._stale = False
+            self._publish_prediction(prediction, target_names)
+
+    def _publish_prediction(
+        self, prediction: "TonguePrediction", target_names: list[str]
+    ) -> None:
         target = vrcft_tongue_values(prediction, target_names)
         now = time.perf_counter()
         elapsed = (
             now - self._last_sent
-            if self._last_values is not None else self._minimum_interval
+            if self._last_values is not None else self._first_interval
         )
         if self._last_values is not None and elapsed < self._minimum_interval:
             return
@@ -131,7 +199,7 @@ class TongueBroadcaster:
         values = smooth_tongue_output(previous, target, elapsed)
         changed = (
             self._last_values is None
-            or float(np.max(np.abs(values - self._last_values))) >= 0.015
+            or float(np.max(np.abs(values - self._last_values))) >= 0.002
         )
         if not changed and elapsed < self._keepalive_interval:
             return
@@ -143,10 +211,15 @@ class TongueBroadcaster:
         self._socket.sendto(encode_tongue_packet(values, enabled), self._address)
 
     def close(self) -> None:
-        try:
-            self._send(np.zeros(12, dtype=np.float32), enabled=False)
-        finally:
-            self._socket.close()
+        with self._lock:
+            if self._closed:
+                return
+            self.enabled = False
+            self._closed = True
+            try:
+                self._send(np.zeros(12, dtype=np.float32), enabled=False)
+            finally:
+                self._socket.close()
 
 
 @dataclass(frozen=True)
@@ -158,6 +231,8 @@ class TonguePrediction:
     inference_ms: float
     pipeline_ms: float = 0.0
     dropped_frames: int = 0
+    age_ms: float = 0.0
+    completed_frames: int = 0
 
 
 class TongueVisibilityHold:
@@ -190,6 +265,42 @@ class TongueVisibilityHold:
         return False, strength, values
 
 
+class TongueMotionFilter:
+    """Steady small fluctuations while letting deliberate movements catch up.
+
+    The slider defines smoothing at 24 FPS. Converting that response to elapsed
+    time keeps faster camera sessions from changing its feel. Visibility and
+    cheek heads retain ordinary smoothing; the movement boost is tongue-only.
+    """
+
+    def __init__(self, smoothing: float, target_names: list[str]) -> None:
+        self.smoothing = float(np.clip(smoothing, 0.05, 1.0))
+        self._motion = np.asarray([
+            name not in {"visibility", "cheekPuffLeft", "cheekPuffRight"}
+            for name in target_names
+        ])
+        self._values: np.ndarray | None = None
+        self._updated_at: float | None = None
+
+    def update(self, values: np.ndarray, now: float) -> np.ndarray:
+        values = np.asarray(values, dtype=np.float32)
+        if values.shape != self._motion.shape or not np.all(np.isfinite(values)):
+            raise ValueError("Tongue model returned invalid expression values")
+        if self._values is None or self.smoothing == 1.0:
+            self._values = values.copy()
+        else:
+            # Ignore sub-6% jitter when adapting. A large pose change uses a
+            # faster response, then returns to the user's steady-pose setting.
+            movement = np.clip((np.abs(values - self._values) - 0.06) / 0.30, 0.0, 1.0)
+            fast_alpha = max(self.smoothing, 0.90)
+            alpha = self.smoothing + (fast_alpha - self.smoothing) * movement * self._motion
+            elapsed = min(max(now - self._updated_at, 0.001), 0.10)
+            alpha = 1.0 - np.power(1.0 - alpha, elapsed * 24.0)
+            self._values += alpha * (values - self._values)
+        self._updated_at = now
+        return self._values.copy()
+
+
 class LiveTongueModelPreview:
     def __init__(
         self,
@@ -210,7 +321,7 @@ class LiveTongueModelPreview:
         self.architecture = str(checkpoint.get("architecture", "legacy-late-fusion-v1"))
         self.model = create_model(self.architecture, self.target_names)
         self.model.load_state_dict(checkpoint["modelState"])
-        self.model.to(self.device).eval()
+        self.model = _prepare_inference_model(self.model, self.device)
         self.direction_checkpoint_path: Path | None = None
         self.direction_model = None
         self.direction_image_size = self.image_size
@@ -237,7 +348,7 @@ class LiveTongueModelPreview:
                 direction_architecture, direction_names
             )
             self.direction_model.load_state_dict(direction_checkpoint["modelState"])
-            self.direction_model.to(self.device).eval()
+            self.direction_model = _prepare_inference_model(self.direction_model, self.device)
             self.target_names = direction_names
         gate = checkpoint.get("visibilityGate", {})
         self.camera_weight = float(
@@ -248,8 +359,13 @@ class LiveTongueModelPreview:
         if visibility_mode not in {"camera", "native", "weighted", "agreement"}:
             raise ValueError(f"Unsupported tongue visibility mode: {visibility_mode}")
         self.visibility_mode = visibility_mode
-        self._smoothed: np.ndarray | None = None
+        self._motion_filter = TongueMotionFilter(self.smoothing, self.target_names)
         self._visibility_hold = TongueVisibilityHold()
+
+    def reset_temporal_state(self) -> None:
+        """Discard rejected frame history before accepting another camera pose."""
+        self._motion_filter = TongueMotionFilter(self.smoothing, self.target_names)
+        self._visibility_hold = TongueVisibilityHold(self._visibility_hold.hold_seconds)
 
     def _inputs(
         self, strip: np.ndarray, image_size: int, preprocessing: str = "raw-v1"
@@ -277,16 +393,11 @@ class LiveTongueModelPreview:
                 "Tongue preview requires cameras 2 and 3 in a 400x800 mouth "
                 f"or 400x1200 face strip, got {strip.shape}"
             )
-        inputs = self._inputs(strip, self.image_size, self.input_preprocessing)
-        if self.device.type == "cuda":
-            torch.cuda.synchronize(self.device)
         started = time.perf_counter()
+        inputs = self._inputs(strip, self.image_size, self.input_preprocessing)
         with torch.inference_mode():
-            values = self.model(inputs)[0].float().cpu().numpy()
+            model_values = self.model(inputs)[0]
             if self.direction_model is not None:
-                gate_visibility = float(
-                    values[self.target_names.index("visibility")]
-                )
                 if (
                     self.direction_image_size == self.image_size
                     and self.direction_input_preprocessing == self.input_preprocessing
@@ -297,24 +408,20 @@ class LiveTongueModelPreview:
                         strip, self.direction_image_size,
                         self.direction_input_preprocessing,
                     )
-                direction_values = (
-                    self.direction_model(direction_inputs)[0].float().cpu().numpy()
-                )
+                direction_values = self.direction_model(direction_inputs)[0].clone()
                 visibility_index = self.target_names.index("visibility")
-                values = direction_values
-                values[visibility_index] = gate_visibility
-        if self.device.type == "cuda":
-            torch.cuda.synchronize(self.device)
-        inference_ms = (time.perf_counter() - started) * 1000.0
-        self._smoothed = (
-            values
-            if self._smoothed is None
-            else self.smoothing * values + (1.0 - self.smoothing) * self._smoothed
-        )
+                direction_values[visibility_index] = model_values[visibility_index]
+                model_values = direction_values
+            # One CPU copy waits for these results. Device-wide barriers and
+            # a separate gate copy also waited on unrelated pupil GPU work.
+            values = model_values.float().cpu().numpy()
+        completed_at = time.perf_counter()
+        inference_ms = (completed_at - started) * 1000.0
+        smoothed = self._motion_filter.update(values, completed_at)
         native = 0.0
         if factory_sample is not None and "TongueOut" in factory_names:
             native = float(factory_sample["values"][factory_names.index("TongueOut")])
-        visibility = float(self._smoothed[self.target_names.index("visibility")])
+        visibility = float(smoothed[self.target_names.index("visibility")])
         if self.visibility_mode == "camera":
             fused = visibility
         elif self.visibility_mode == "native":
@@ -324,14 +431,14 @@ class LiveTongueModelPreview:
         else:
             fused = self.camera_weight * visibility + (1.0 - self.camera_weight) * native
         visible, fused, output_values = self._visibility_hold.update(
-            fused, self.threshold, self._smoothed, time.perf_counter()
+            fused, self.threshold, smoothed, completed_at
         )
         output_values = output_values.copy()
         # A tongue visibility hold must not freeze an unrelated cheek pose.
         for name in ("cheekPuffLeft", "cheekPuffRight"):
             if name in self.target_names:
                 index = self.target_names.index(name)
-                output_values[index] = self._smoothed[index]
+                output_values[index] = smoothed[index]
         return TonguePrediction(
             values=output_values.copy(),
             native_tongue_out=native,
@@ -425,6 +532,11 @@ class TongueInferenceWorker:
         self._error: BaseException | None = None
         self._running = True
         self._dropped_frames = 0
+        self._completed_frames = 0
+        self._completed_at = 0.0
+        self._preview_image: np.ndarray | None = None
+        self._preview_rendered_at = 0.0
+        self._preview_interval = 1.0 / 12.0
         self._thread = threading.Thread(
             target=self._run, name="tongue-inference", daemon=True
         )
@@ -454,7 +566,10 @@ class TongueInferenceWorker:
                 raise RuntimeError("Tongue inference worker failed") from self._error
             if self._latest is None:
                 return None, None
-            return self._latest
+            prediction, image = self._latest
+            return replace(
+                prediction, age_ms=max(0.0, time.perf_counter() - self._completed_at) * 1000.0
+            ), image
 
     def close(self) -> None:
         with self._condition:
@@ -492,21 +607,38 @@ class TongueInferenceWorker:
                 with self._condition:
                     if not self._running:
                         return
+                    if (
+                        not np.isfinite(prediction.pipeline_ms)
+                        or not 0.0 <= prediction.pipeline_ms <= TONGUE_MAX_PIPELINE_MS
+                    ):
+                        # predict() updates smoothing and the visibility hold.
+                        # A rejected slow pose must not reappear in a subsequent
+                        # fresh hidden frame through either of those histories.
+                        self.preview.reset_temporal_state()
                     self.broadcaster.send_prediction(
                         prediction, self.preview.target_names
                     )
                     if self.cheek_broadcaster is not None:
                         self.cheek_broadcaster.send_prediction(prediction, self.preview.target_names)
-                image = (
-                    self.preview.render(
+                    self._completed_frames += 1
+                    self._completed_at = time.perf_counter()
+                    prediction = replace(prediction, completed_frames=self._completed_frames)
+                    self._latest = (prediction, self._preview_image)
+                # Avatar output follows every prediction; rendering diagnostic
+                # bars only needs 12 FPS and must not consume the camera rate.
+                now = time.perf_counter()
+                if self.render_preview and (
+                    self._preview_image is None
+                    or now - self._preview_rendered_at >= self._preview_interval
+                ):
+                    self._preview_image = self.preview.render(
                         prediction, output_enabled=self.broadcaster.enabled
                     )
-                    if self.render_preview else None
-                )
+                    self._preview_rendered_at = now
                 with self._condition:
                     if not self._running:
                         return
-                    self._latest = (prediction, image)
+                    self._latest = (prediction, self._preview_image)
         except BaseException as error:
             with self._condition:
                 self._error = error
