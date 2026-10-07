@@ -14,7 +14,9 @@ from train_tongue_model import (
     TongueFrames,
     balanced_step_weights,
     blocked_train_validation_split,
+    checkpoint_score,
     classification_at_threshold,
+    evaluate,
     heldout_pose_metrics,
     shade_local_mouth_area,
     target_loss,
@@ -23,6 +25,66 @@ from tongue_image_processing import preprocess_stereo_images
 
 
 class TongueTrainingTests(unittest.TestCase):
+    @staticmethod
+    def evaluate_predictions(prediction, target, names):
+        loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(
+            prediction, target, target[:, names.index("visibility")],
+        ), batch_size=len(target))
+        return evaluate(torch.nn.Identity(), loader, torch.device("cpu"), names)
+
+    def test_checkpoint_selection_ignores_unsupervised_hidden_tongue_details(self):
+        names = ["visibility", "extension", "horizontal", "vertical", "curl_up",
+                 "bend_down", "roll", "flat", "squish", "twist"]
+        target = torch.zeros(10, len(names))
+        target[:2, 0] = 1
+        target[:2, 1] = .75
+        target[0, 2] = .75
+        target[1, 3] = .75
+        correct = target.clone()
+        correct[:, 0] = .02
+        correct[:2, 0] = .98
+        correct[2:, 1:] = .9
+        worse = target.clone()
+        worse[:, 0] = correct[:, 0]
+        worse[0, 2] = worse[1, 3] = .65
+        good_metrics = self.evaluate_predictions(correct, target, names)
+        bad_metrics = self.evaluate_predictions(worse, target, names)
+        self.assertGreater(good_metrics["rawMae"], bad_metrics["rawMae"])
+        for focus in ("direction", "balanced"):
+            self.assertLess(checkpoint_score(good_metrics, focus)[0],
+                            checkpoint_score(bad_metrics, focus)[0])
+        changed_hidden = correct.clone()
+        changed_hidden[2:, 1:] = 0
+        changed = self.evaluate_predictions(changed_hidden, target, names)
+        self.assertEqual(good_metrics["mae"], changed["mae"])
+        self.assertEqual(good_metrics["activeMae"], changed["activeMae"])
+        self.assertEqual(good_metrics["perTarget"]["horizontal"]["scoredSamples"], 2)
+        self.assertEqual(good_metrics["perTarget"]["visibility"]["scoredSamples"], 10)
+
+    def test_hidden_only_validation_does_not_claim_perfect_direction(self):
+        names = ["visibility", "extension", "horizontal", "vertical"]
+        target = torch.zeros(4, len(names))
+        metrics = self.evaluate_predictions(torch.full_like(target, .1), target, names)
+        self.assertEqual(metrics["visibleSamples"], 0)
+        self.assertIsNone(metrics["perTarget"]["horizontal"]["mae"])
+        self.assertEqual(metrics["perTarget"]["horizontal"]["scoredSamples"], 0)
+        for focus in ("direction", "balanced"):
+            with self.assertRaisesRegex(ValueError, "visible tongue validation"):
+                checkpoint_score(metrics, focus)
+        self.assertTrue(np.isfinite(checkpoint_score(metrics, "visibility")[0]))
+
+    def test_centered_only_validation_scores_visible_direction_drift(self):
+        names = ["visibility", "extension", "horizontal", "vertical"]
+        target = torch.tensor([[1., .5, 0., 0.], [0., 0., 0., 0.]])
+        prediction = target.clone()
+        prediction[0, 2] = .4
+        metrics = self.evaluate_predictions(prediction, target, names)
+        centered = self.evaluate_predictions(target, target, names)
+        self.assertIsNone(metrics["perTarget"]["horizontal"]["activeMae"])
+        self.assertAlmostEqual(metrics["perTarget"]["horizontal"]["mae"], .4)
+        self.assertGreater(checkpoint_score(metrics, "direction")[0],
+                           checkpoint_score(centered, "direction")[0] + .19)
+
     @staticmethod
     def make_preprocessing_cache(root):
         pixels = np.tile(np.arange(128, dtype=np.uint8), (128, 1))

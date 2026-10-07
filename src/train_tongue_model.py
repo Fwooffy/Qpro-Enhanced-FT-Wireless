@@ -587,16 +587,25 @@ def evaluate(
     target = np.concatenate(targets)
     native = np.concatenate(natives)
     absolute = np.abs(prediction - target)
-    active = np.abs(target) > 0.10
+    visibility_index = target_names.index("visibility")
+    expected_visible = target[:, visibility_index] >= 0.5
+    # Match target_loss: hidden tongue detail is unsupervised and the live
+    # tracker gates it out. Including those arbitrary outputs in checkpoint
+    # selection can prefer worse visible poses merely for zeroing hidden ones.
+    scored = np.broadcast_to(expected_visible[:, None], target.shape).copy()
+    scored[:, visibility_index] = True
+    active = (np.abs(target) > 0.10) & scored
     per_target = {}
     for index, name in enumerate(target_names):
         mask = active[:, index]
+        samples = scored[:, index]
         per_target[name] = {
-            "mae": float(np.mean(absolute[:, index])),
+            "mae": float(np.mean(absolute[samples, index])) if np.any(samples) else None,
+            "rawMae": float(np.mean(absolute[:, index])),
+            "scoredSamples": int(np.count_nonzero(samples)),
             "activeMae": float(np.mean(absolute[mask, index])) if np.any(mask) else None,
             "activeSamples": int(np.count_nonzero(mask)),
         }
-    visibility_index = target_names.index("visibility")
     camera_visibility = prediction[:, visibility_index]
     expected_visibility = target[:, visibility_index]
     thresholds = np.linspace(0.15, 0.85, 71)
@@ -607,8 +616,13 @@ def evaluate(
         camera_visibility, native, expected_visibility
     )
     metrics = {
-        "mae": float(np.mean(absolute)),
+        "mae": float(np.mean(absolute[scored])),
+        "rawMae": float(np.mean(absolute)),
+        "metricMask": "visibility on every frame; tongue details on expected-visible frames only",
+        "visibleSamples": int(np.count_nonzero(expected_visible)),
+        "scoredValues": int(np.count_nonzero(scored)),
         "activeMae": float(np.mean(absolute[active])) if np.any(active) else 0.0,
+        "activeValues": int(np.count_nonzero(active)),
         "perTarget": per_target,
         "cameraVisibilityF1AtHalf": f1_at_threshold(camera_visibility, expected_visibility, 0.5),
         "nativeVisibilityF1AtHalf": f1_at_threshold(native, expected_visibility, 0.5),
@@ -637,20 +651,27 @@ def evaluate(
 
 
 def checkpoint_score(metrics: dict[str, object], focus: str) -> tuple[float, str]:
+    if focus in {"direction", "balanced"} and metrics.get("visibleSamples") == 0:
+        raise ValueError("Direction/balanced checkpoint selection requires visible tongue validation samples")
     if focus == "direction":
+        # A centered-only holdout still tests neutral-axis drift. An absent
+        # active direction must not be scored as a perfectly predicted zero.
         direction_values = [
-            metrics["perTarget"][name]["activeMae"]
+            (metrics["perTarget"][name]["activeMae"]
+             if metrics["perTarget"][name]["activeMae"] is not None
+             else metrics["perTarget"][name]["mae"])
             for name in ("horizontal", "vertical")
-            if metrics["perTarget"][name]["activeMae"] is not None
         ]
-        direction_active_mae = float(np.mean(direction_values)) if direction_values else 0.0
+        if any(value is None for value in direction_values):
+            raise ValueError("Direction checkpoint selection requires visible X/Y validation samples")
+        direction_active_mae = float(np.mean(direction_values))
         return (
             0.25 * float(metrics["mae"])
             + 0.25 * float(metrics["activeMae"])
             + direction_active_mae
             + 0.15 * (1.0 - float(metrics["fusedVisibilityF1"])),
             "0.25*mae + 0.25*active_mae + mean(horizontal,vertical)_active_mae "
-            "+ 0.15*(1-visibility_f1)",
+            "(visible_mae for axes without active samples) + 0.15*(1-visibility_f1)",
         )
     if focus == "visibility":
         return (
