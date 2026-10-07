@@ -37,7 +37,7 @@ internal sealed class HubEnvironment
     private static string TrackingSourcePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "QproFaceTracking", "config", "tracking-source.txt");
-    internal bool CameraPreviewEnabled { get; private set; } = true;
+    internal bool CameraPreviewEnabled { get; private set; }
     internal bool IndependentGazeEnabled { get; private set; }
     internal bool HasOpenedBefore => File.Exists(Path.Combine(_root, "config", "hub-opened.txt"));
 
@@ -58,8 +58,8 @@ internal sealed class HubEnvironment
         var previewPath = Path.Combine(_root, "config", "camera-preview.txt");
         if (File.Exists(previewPath))
         {
-            try { CameraPreviewEnabled = !File.ReadAllText(previewPath).Trim().Equals("off", StringComparison.OrdinalIgnoreCase); }
-            catch { CameraPreviewEnabled = true; }
+            try { CameraPreviewEnabled = File.ReadAllText(previewPath).Trim().Equals("on", StringComparison.OrdinalIgnoreCase); }
+            catch { CameraPreviewEnabled = false; }
         }
         var gazePath = Path.Combine(_root, "config", "independent-gaze.txt");
         if (File.Exists(gazePath))

@@ -23,7 +23,7 @@ internal sealed partial class HubForm : Form
     private readonly CheckBox _gaze = FeatureToggle("Independent eye gaze + convergence", false);
     private readonly CheckBox _tongue = FeatureToggle("Experimental tongue tracking", false);
     private readonly CheckBox _pupil = FeatureToggle("Experimental relative pupil dilation (eye cameras)", false);
-    private readonly CheckBox _cameraPreview = FeatureToggle("Preview tracking cameras", true);
+    private readonly CheckBox _cameraPreview = FeatureToggle("Preview tracking cameras", false);
     private readonly CheckBox _individualCheekPuff = FeatureToggle("Individual cheek puff", true);
     private readonly CheckBox _cameraCheekPuff = FeatureToggle("Camera cheek puff (experimental)", false);
     private readonly Label _cameraCheekSourceNote = new() { AutoSize = true, ForeColor = Muted, Tag = "responsive-info" };

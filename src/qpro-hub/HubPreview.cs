@@ -43,7 +43,7 @@ internal sealed partial class HubForm
         _cheekPuffStyle.Enabled = _cheekSuckStyle.Enabled = true;
         _eyebrowSensitivity.SelectedIndex = 2;
         _eyebrowSensitivity.Enabled = false;
-        _cameraPreview.Checked = true;
+        _cameraPreview.Checked = false;
         foreach (var toggle in new[] { _individualCheekPuff, _individualCheekSuck, _eyebrowBoost, _cameraPreview })
             UpdateToggleStyle(toggle);
         _tongueModelNote.Text = "Sample model list. Your installed models appear here in the app.";
