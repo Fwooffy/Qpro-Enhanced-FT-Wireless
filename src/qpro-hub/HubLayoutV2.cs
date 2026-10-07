@@ -214,8 +214,20 @@ internal sealed partial class HubForm
             try
             {
                 var scale = DeviceDpi / 96F;
-                var columns = statuses.ClientSize.Width >= 700 * scale ? 3
-                    : statuses.ClientSize.Width >= 430 * scale ? 2 : 1;
+                // Choose columns from the full label/value pair, not a fixed
+                // width breakpoint. Each status stays inline when a column can
+                // fit it; smaller windows use fewer columns before wrapping.
+                var cellWidth = readinessItems.Select((item, index) =>
+                {
+                    var name = (Label)item.Controls[0];
+                    var value = statusItems[index].Item2;
+                    const TextFormatFlags flags = TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix;
+                    return TextRenderer.MeasureText(name.Text, name.Font, Size.Empty, flags).Width
+                        + name.Margin.Horizontal
+                        + TextRenderer.MeasureText(value.Text, value.Font, Size.Empty, flags).Width
+                        + value.Margin.Horizontal + item.Margin.Horizontal + (int)Math.Ceiling(4 * scale);
+                }).DefaultIfEmpty((int)Math.Ceiling(240 * scale)).Max();
+                var columns = Math.Clamp(statuses.ClientSize.Width / Math.Max(1, cellWidth), 1, 3);
                 var rows = (int)Math.Ceiling(statusItems.Length / (double)columns);
                 if (statuses.ColumnCount != columns)
                 {
