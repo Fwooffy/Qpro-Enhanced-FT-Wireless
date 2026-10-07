@@ -1,5 +1,7 @@
 """Prompted stereo cheek examples for an experimental tongue-and-cheek model."""
 
+import textwrap
+
 import cv2
 import numpy as np
 
@@ -82,25 +84,38 @@ class CheekStillCaptureSession(TongueStillCaptureSession):
     def _draw_pose_guide(image: np.ndarray, current, origin: tuple[int, int]) -> None:
         x, y = origin
         cv2.ellipse(image, (x + 165, y), (120, 110), 0, 0, 360, (160, 160, 160), 2)
-        # Diagram is a mirror: the wearer's left cheek appears on the right.
-        for key, offset in (("cheekPuffLeft", 250), ("cheekPuffRight", 80)):
+        # Wearer-relative guide: follow the same side as your own hand.
+        for key, label, offset in (("cheekPuffLeft", "YOUR LEFT", 80),
+                                   ("cheekPuffRight", "YOUR RIGHT", 250)):
             value = current.targets[key]
             color = (80, 245, 120) if value > 0 else (130, 130, 130)
+            label_width = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.58, 2)[0][0]
+            cv2.putText(image, label, (x + offset - label_width // 2, y - 125),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.58, (235, 235, 235), 2, cv2.LINE_AA)
             cv2.circle(image, (x + offset, y + 15), round(12 + value * 30), color, 2)
-            cv2.putText(image, f"{value:.2f}", (x + offset - 20, y + 70),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+            strength = f"{value:.2f}"
+            strength_width = cv2.getTextSize(strength, cv2.FONT_HERSHEY_SIMPLEX, 0.58, 2)[0][0]
+            cv2.putText(image, strength, (x + offset - strength_width // 2, y + 135),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.58, color, 2, cv2.LINE_AA)
 
     def render(self, strip, labels_ready=True, *, factory_values_static=False):
         image = super().render(strip, True)
         image[58:88, 750:] = 0
         cv2.putText(image, "POSE CARDS PROVIDE CHEEK LABELS", (760, 80),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.46, (80, 245, 120), 1, cv2.LINE_AA)
+        # Cheek instructions can exceed the base tongue guide's two lines.
+        image[475:574] = 0
+        for line_index, line in enumerate(textwrap.wrap(self.current.instruction, width=100)[:3]):
+            cv2.putText(image, line, (24, 500 + line_index * 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.60, (240, 240, 240), 1, cv2.LINE_AA)
         image[715:755] = 0
         image[675:711] = 0
         cv2.putText(image, "SPACE capture | ENTER next | X undo | B previous | Q stop safely",
                     (24, 700), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (170, 210, 255), 1, cv2.LINE_AA)
-        cv2.putText(image, "Use your own left/right. Relax and repeat each pose; vary fit slightly between stills.",
+        cv2.putText(image, "Follow your own left/right: left cheek = left hand side; right cheek = right hand side.",
                     (24, 740), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (170, 170, 170), 1, cv2.LINE_AA)
+        cv2.putText(image, "Relax and repeat each pose; vary fit slightly between stills.",
+                    (24, 761), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (170, 170, 170), 1, cv2.LINE_AA)
         return image
 
 
