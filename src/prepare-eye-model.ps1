@@ -1,4 +1,4 @@
-param()
+param([switch]$Diagnose)
 
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
@@ -21,5 +21,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $root "research\patch_seacliff_indep
     throw "The local gaze patcher is missing. Reinstall the release package."
 }
 
-& $python $helper --adb $adb
-if ($LASTEXITCODE -ne 0) { throw "Independent gaze preparation failed. Check the error above for the headset or firmware detail." }
+$qproArguments = @($helper, '--adb', $adb)
+if ($Diagnose) { $qproArguments += '--diagnose' }
+& $python @qproArguments
+if ($LASTEXITCODE -ne 0) {
+    if ($Diagnose) { throw "The read-only headset compatibility check did not complete. Check the prerequisite reported above." }
+    throw "Independent gaze preparation failed. Check the error above for the headset or firmware detail."
+}
