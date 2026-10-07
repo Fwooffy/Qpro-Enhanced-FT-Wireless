@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.Json;
 
 namespace QproFaceTracking.Hub;
 
@@ -14,6 +13,9 @@ internal sealed partial class HubForm
     private readonly DarkButton _checkHandsButton = SecondaryButton("Check hand/controller compatibility");
     private bool _handsReady;
     private bool _touchpadReady;
+    private string? _controllerFeedbackText;
+    private bool _controllerFeedbackWarning;
+    private bool _controllerCleanupFailed;
 
     private string ControllerComponentsRoot => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "QproFaceTracking", "hands");
@@ -62,7 +64,8 @@ internal sealed partial class HubForm
 
     private void UpdateControllerInputAvailability()
     {
-        bool idle = !_starting && !_stopping && !_utilityActionRunning && !_setupActionRunning &&
+        bool idle = !_closingInProgress && !_trackingCleanupPending && !_gazeRecoveryRunning &&
+            !_starting && !_stopping && !_utilityActionRunning && !_setupActionRunning &&
             !_datasetOperationBusy && !_trackingProcesses.Any(process => !process.HasExited);
         bool supportedSource = !_environment.SteamLinkSelected;
         _hybridHands.Enabled = _controllerTouchpad.Enabled = idle && supportedSource;
@@ -78,7 +81,10 @@ internal sealed partial class HubForm
                 _handsStatus.Text = "Experimental controller inputs currently require Virtual Desktop. Steam Link compatibility has not been verified.";
             }
             else
-                _handsStatus.Text = "Optional, off by default. Check compatibility before use. Finger routing and thumb-rest input require a rooted Quest Pro; supported runtime versions are listed in the controller guide.";
+            {
+                _handsStatus.Text = _controllerFeedbackText ?? "Optional, off by default. Check compatibility before use. Finger routing and thumb-rest input require a rooted Quest Pro; supported runtime versions are listed in the controller guide.";
+                _handsStatus.ForeColor = _controllerFeedbackWarning ? Warning : Muted;
+            }
         }
     }
 
@@ -100,6 +106,9 @@ internal sealed partial class HubForm
         if (_controllerTouchpad.Checked) arguments.Add("-Touchpad");
         arguments.AddRange(["-Mode", TouchpadModeValue()]);
         _handsStatus.Text = "Checking controller compatibility; waiting for valid input…";
+        _controllerFeedbackText = null;
+        _controllerFeedbackWarning = false;
+        _controllerCleanupFailed = false;
         _handsReady = _touchpadReady = false;
         if (_controllerTouchpad.Checked && TouchpadModeValue() == "mouse")
             AppendLog("Desktop mouse mode selected: thumb-rest gestures can move the Windows pointer. Stop tracking disables this input.");
@@ -108,7 +117,7 @@ internal sealed partial class HubForm
 
     private void ObserveControllerInput(string label, string line)
     {
-        if (label != "Hand/controller input" || IsDisposed || Disposing) return;
+        if (label is not ("Hand/controller input" or "Hand/controller compatibility") || IsDisposed || Disposing) return;
         if (InvokeRequired)
         {
             try { BeginInvoke(() => ObserveControllerInput(label, line)); }
@@ -118,37 +127,48 @@ internal sealed partial class HubForm
             }
             return;
         }
-        if (line.StartsWith("HANDS_READY ", StringComparison.Ordinal))
+        if (line.StartsWith(HubControllerFeedback.CheckPrefix, StringComparison.Ordinal))
+        {
+            if (HubControllerFeedback.TryParseCheckLine(line, out var feedback))
+                ShowControllerFeedback(feedback!);
+            else
+                ShowControllerFeedback(new(ControllerFeedbackState.NeedsAttention,
+                    "Hand/controller compatibility could not be verified",
+                    "The compatibility report was incomplete or malformed. No successful result can be inferred.",
+                    "Check the detailed Activity output and copy the complete report before trying an unverified runtime.", true));
+        }
+        else if (line.StartsWith("HANDS_READY ", StringComparison.Ordinal))
         {
             _handsReady = true;
             _handsStatus.Text = "Valid optical fingers are routed alongside the physical controllers.";
+            _handsStatus.ForeColor = Good;
         }
         else if (line.StartsWith("TOUCHPAD_READY ", StringComparison.Ordinal))
         {
             _touchpadReady = true;
             _handsStatus.Text = "Valid thumb-rest packets are being forwarded to SteamVR. Confirm the controller add-on loaded and check your app's input binding.";
         }
-        else if (line.StartsWith("CONTROLLER_CLEANUP ", StringComparison.Ordinal))
+        else if (line.StartsWith(HubControllerFeedback.CleanupPrefix, StringComparison.Ordinal))
         {
             _handsReady = _touchpadReady = false;
-            try
-            {
-                using var result = JsonDocument.Parse(line["CONTROLLER_CLEANUP ".Length..]);
-                bool pending = result.RootElement.TryGetProperty("restoration", out var restoration) && restoration.GetString() == "still-running";
-                bool failed = restoration.ValueKind == JsonValueKind.String && restoration.GetString() == "stop-file-failed" ||
-                    result.RootElement.TryGetProperty("reader", out var reader) && reader.GetString() == "unconfirmed";
-                _handsStatus.Text = pending ? "Waiting for controller adapters to restore. Keep the Hub open."
-                    : failed ? "Controller cleanup was not confirmed. Check Activity before restarting."
-                    : "Controller input stopped. Reopen SteamVR after uninstalling the add-on to reload the normal profile.";
-                _handsStatus.ForeColor = pending || failed ? Warning : Muted;
-            }
-            catch (JsonException) { _handsStatus.Text = "Controller cleanup needs attention; check Activity."; }
+            var cleanup = HubControllerFeedback.ParseCleanupLine(line);
+            // Keep a failed or malformed restoration visible for this session;
+            // a later progress line cannot erase that evidence.
+            if (!_controllerCleanupFailed || cleanup.State == ControllerFeedbackState.NeedsAttention)
+                ShowControllerFeedback(cleanup);
+            _controllerCleanupFailed |= cleanup.State == ControllerFeedbackState.NeedsAttention;
         }
         bool inputReadyLine = line.StartsWith("HANDS_READY ", StringComparison.Ordinal) || line.StartsWith("TOUCHPAD_READY ", StringComparison.Ordinal);
         if (inputReadyLine && (!_hybridHands.Checked || _handsReady) && (!_controllerTouchpad.Checked || _touchpadReady) && !_stopping)
-        {
-            _runStatus.Text = "● Selected overrides active";
-            _runStatus.ForeColor = Good;
-        }
+            UpdateSessionReadiness();
+    }
+
+    private void ShowControllerFeedback(HubControllerFeedback feedback)
+    {
+        _controllerFeedbackText = feedback.Title + ". " + feedback.NextStep;
+        _controllerFeedbackWarning = feedback.IsError || feedback.State == ControllerFeedbackState.Waiting;
+        _handsStatus.Text = _controllerFeedbackText;
+        _handsStatus.ForeColor = _controllerFeedbackWarning ? Warning : Muted;
+        SetActionFeedback(feedback.Title, feedback.Detail, feedback.NextStep, feedback.IsError);
     }
 }

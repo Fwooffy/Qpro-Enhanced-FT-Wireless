@@ -13,6 +13,52 @@ using System.Text.RegularExpressions;
 
 namespace QproFaceTracking.Hub;
 
+// Keep standard CheckBox keyboard and accessibility behavior. Only the visual
+// treatment changes: a quiet feature row with an explicit on/off switch.
+internal sealed class DarkFeatureToggle : CheckBox
+{
+    public DarkFeatureToggle()
+    {
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+            ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+        Cursor = Cursors.Hand;
+    }
+
+    protected override void OnCheckedChanged(EventArgs e) { base.OnCheckedChanged(e); Invalidate(); }
+    protected override void OnEnabledChanged(EventArgs e) { base.OnEnabledChanged(e); Invalidate(); }
+    protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+    protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        e.Graphics.Clear(BackColor);
+        var scale = DeviceDpi / 96F;
+        int Px(int value) => Math.Max(1, (int)Math.Ceiling(value * scale));
+        var track = new Rectangle(Width - Px(50), (Height - Px(24)) / 2, Px(44), Px(24));
+        var caption = new Rectangle(Px(2), 0, Math.Max(1, track.Left - Px(14)), Height);
+        TextRenderer.DrawText(e.Graphics, Text, Font, caption,
+            Enabled ? Color.White : HubForm.DisabledText,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak |
+            TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var outline = new Pen(Enabled && Checked ? HubForm.Accent : HubForm.Border);
+        using var trackFill = new SolidBrush(Enabled && Checked ? HubForm.Selected : HubForm.Inset);
+        using var path = new GraphicsPath();
+        path.AddArc(track.Left, track.Top, track.Height, track.Height, 90, 180);
+        path.AddArc(track.Right - track.Height, track.Top, track.Height, track.Height, 270, 180);
+        path.CloseFigure();
+        e.Graphics.FillPath(trackFill, path);
+        e.Graphics.DrawPath(outline, path);
+        var diameter = Px(16);
+        var thumbX = Checked ? track.Right - diameter - Px(4) : track.Left + Px(4);
+        using var thumb = new SolidBrush(!Enabled ? HubForm.DisabledText : Checked ? HubForm.Accent : HubForm.Muted);
+        e.Graphics.FillEllipse(thumb, thumbX, track.Top + (track.Height - diameter) / 2, diameter, diameter);
+        if (Focused && ShowFocusCues)
+            ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -2, -2),
+                HubForm.Accent, BackColor);
+    }
+}
+
 internal sealed class DarkProgressBar : Control
 {
     private int _value;
@@ -82,6 +128,9 @@ internal sealed class DarkButton : Button
     private bool _emphasized;
     private Color _outlineColor = Color.Empty;
     private int _outlineWidth = 1;
+    private HubIcon _icon;
+    [DefaultValue(HubIcon.None)]
+    public HubIcon Icon { get => _icon; set { _icon = value; Invalidate(); } }
     [DefaultValue(false)]
     public bool Emphasized { get => _emphasized; set { _emphasized = value; Invalidate(); } }
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden), Browsable(false)]
@@ -98,11 +147,26 @@ internal sealed class DarkButton : Button
 
     protected override void OnMouseEnter(EventArgs e) { _hovered = true; Invalidate(); base.OnMouseEnter(e); }
     protected override void OnMouseLeave(EventArgs e) { _hovered = false; _pressed = false; Invalidate(); base.OnMouseLeave(e); }
-    protected override void OnMouseDown(MouseEventArgs e) { _pressed = true; Invalidate(); base.OnMouseDown(e); }
+    protected override void OnMouseDown(MouseEventArgs e) { _pressed = e.Button == MouseButtons.Left && Enabled; Invalidate(); base.OnMouseDown(e); }
     protected override void OnMouseUp(MouseEventArgs e) { _pressed = false; Invalidate(); base.OnMouseUp(e); }
-    protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
+    protected override void OnEnabledChanged(EventArgs e) { _pressed = false; Invalidate(); base.OnEnabledChanged(e); }
     protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
-    protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+    protected override void OnLostFocus(EventArgs e) { _pressed = false; base.OnLostFocus(e); Invalidate(); }
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (Enabled && e.KeyCode == Keys.Space && e.Modifiers == Keys.None)
+        {
+            _pressed = true;
+            Invalidate();
+        }
+        base.OnKeyDown(e);
+    }
+    protected override void OnKeyUp(KeyEventArgs e)
+    {
+        _pressed = false;
+        Invalidate();
+        base.OnKeyUp(e);
+    }
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -113,7 +177,21 @@ internal sealed class DarkButton : Button
         var inset = borderWidth > 1 ? 1 : 0;
         e.Graphics.DrawRectangle(border, inset, inset, Width - (inset * 2 + 1), Height - (inset * 2 + 1));
         var textColor = !Enabled ? HubForm.DisabledText : _pressed ? HubForm.Background : Color.White;
-        TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, textColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        var textBounds = ClientRectangle;
+        var textAlignment = TextFormatFlags.HorizontalCenter;
+        if (Icon != HubIcon.None)
+        {
+            var scale = DeviceDpi / 96F;
+            var iconSize = 18 * scale;
+            HubIcons.Draw(e.Graphics, Icon,
+                new RectangleF(12 * scale, (Height - iconSize) / 2, iconSize, iconSize),
+                !Enabled || _pressed ? textColor : Emphasized ? HubForm.Accent : HubForm.Muted);
+            var textLeft = (int)Math.Ceiling(40 * scale);
+            textBounds = new Rectangle(textLeft, 0, Math.Max(0, Width - textLeft - (int)Math.Ceiling(10 * scale)), Height);
+            textAlignment = TextFormatFlags.Left;
+        }
+        TextRenderer.DrawText(e.Graphics, Text, Font, textBounds, textColor,
+            textAlignment | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         // User-painted buttons must draw their own keyboard focus cue.
         if (Focused && ShowFocusCues && Width > 12 && Height > 12)
             ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -5, -5), textColor, BackColor);
@@ -169,7 +247,14 @@ internal sealed class DarkSlider : Control
     public int Value
     {
         get => _value;
-        set { _value = Math.Clamp(value, Minimum, Maximum); Invalidate(); }
+        set
+        {
+            var next = Math.Clamp(value, Minimum, Maximum);
+            if (_value == next) return;
+            _value = next;
+            Invalidate();
+            if (IsHandleCreated) AccessibilityNotifyClients(AccessibleEvents.ValueChange, -1);
+        }
     }
 
     public DarkSlider()
@@ -179,22 +264,43 @@ internal sealed class DarkSlider : Control
         TabStop = true;
     }
 
+    // The painted slider needs a value and role for screen readers as well as
+    // arrow-key input. Its accessible value uses the same clamped setting.
+    protected override AccessibleObject CreateAccessibilityInstance() => new SliderAccessibleObject(this);
+
+    private sealed class SliderAccessibleObject(DarkSlider owner) : ControlAccessibleObject(owner)
+    {
+        public override AccessibleRole Role => AccessibleRole.Slider;
+        public override string? Value
+        {
+            get => owner.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            set
+            {
+                if (int.TryParse(value, out var parsed)) owner.Value = parsed;
+            }
+        }
+        public override string? Description => owner.AccessibleDescription
+            ?? $"Range {owner.Minimum} to {owner.Maximum}. Use the arrow keys to adjust.";
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        var left = 8;
-        var right = Math.Max(left + 1, Width - 8);
+        var scale = DeviceDpi / 96F;
+        int Px(int logical) => Math.Max(1, (int)Math.Ceiling(logical * scale));
+        var left = Px(8);
+        var right = Math.Max(left + 1, Width - Px(8));
         var center = Height / 2;
         var range = Math.Max(1, Maximum - Minimum);
         var ratio = (Value - Minimum) / (float)range;
         var thumbX = left + (int)Math.Round((right - left) * ratio);
-        using var track = new Pen(HubForm.Border, 4) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-        using var active = new Pen(HubForm.Accent, 4) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        using var track = new Pen(HubForm.Border, Px(4)) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        using var active = new Pen(HubForm.Accent, Px(4)) { StartCap = LineCap.Round, EndCap = LineCap.Round };
         e.Graphics.DrawLine(track, left, center, right, center);
         e.Graphics.DrawLine(active, left, center, thumbX, center);
         using var thumb = new SolidBrush(Enabled ? Color.White : HubForm.DisabledText);
-        e.Graphics.FillEllipse(thumb, thumbX - 7, center - 7, 14, 14);
+        e.Graphics.FillEllipse(thumb, thumbX - Px(7), center - Px(7), Px(14), Px(14));
         if (Focused && ShowFocusCues && Width > 12 && Height > 12)
             ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -3, -3),
                 HubForm.Accent, BackColor);
@@ -205,7 +311,13 @@ internal sealed class DarkSlider : Control
         || base.IsInputKey(keyData);
     protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
     protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
-    protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); Focus(); SetFromX(e.X); }
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (e.Button != MouseButtons.Left || !Enabled) return;
+        Focus();
+        SetFromX(e.X);
+    }
     protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); if (e.Button == MouseButtons.Left) SetFromX(e.X); }
     protected override void OnKeyDown(KeyEventArgs e)
     {
@@ -224,7 +336,8 @@ internal sealed class DarkSlider : Control
     private void SetFromX(int x)
     {
         if (!Enabled) return;
-        var ratio = Math.Clamp((x - 8f) / Math.Max(1, Width - 16), 0f, 1f);
+        var inset = (int)Math.Ceiling(8 * DeviceDpi / 96F);
+        var ratio = Math.Clamp((x - (float)inset) / Math.Max(1, Width - 2 * inset), 0f, 1f);
         Value = Minimum + (int)Math.Round((Maximum - Minimum) * ratio);
     }
 }

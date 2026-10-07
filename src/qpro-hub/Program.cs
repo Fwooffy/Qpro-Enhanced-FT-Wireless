@@ -16,43 +16,58 @@ namespace QproFaceTracking.Hub;
 internal static class Program
 {
     [STAThread]
-    private static void Main(string[] args)
+    private static int Main(string[] args)
     {
-        var executableRoot = Path.GetFullPath(AppContext.BaseDirectory);
-        var packagedRuntime = Path.Combine(executableRoot, "QproRuntime");
-        var rootArgument = Array.FindIndex(args, value => value.Equals("--root", StringComparison.OrdinalIgnoreCase));
-        var root = rootArgument >= 0 && rootArgument + 1 < args.Length
-            ? Path.GetFullPath(args[rootArgument + 1])
-            : File.Exists(Path.Combine(packagedRuntime, "release-manifest.json"))
-                ? packagedRuntime
-                : File.Exists(Path.Combine(executableRoot, "release-manifest.json"))
-                    ? executableRoot
-                    : Directory.GetCurrentDirectory();
+        var previewRequested = args.Any(value => value.Equals("--render-preview", StringComparison.OrdinalIgnoreCase));
         try
         {
+            if (args.Length == 2 && args[0] == "--apply-update")
+                return HubUpdateRunner.Run(args[1]);
+            var executableRoot = Path.GetFullPath(AppContext.BaseDirectory);
+            var packagedRuntime = Path.Combine(executableRoot, "QproRuntime");
+            var rootArgument = Array.FindIndex(args, value => value.Equals("--root", StringComparison.OrdinalIgnoreCase));
+            if (rootArgument >= 0 && rootArgument + 1 >= args.Length)
+                throw new ArgumentException("--root requires a folder path.");
+            var root = rootArgument >= 0
+                ? Path.GetFullPath(args[rootArgument + 1])
+                : File.Exists(Path.Combine(packagedRuntime, "release-manifest.json"))
+                    ? packagedRuntime
+                    : File.Exists(Path.Combine(executableRoot, "release-manifest.json"))
+                        ? executableRoot
+                        : Directory.GetCurrentDirectory();
             var selfTestArgument = Array.FindIndex(args, value => value.Equals("--self-test", StringComparison.OrdinalIgnoreCase));
             if (selfTestArgument >= 0)
             {
                 if (selfTestArgument + 1 >= args.Length) throw new ArgumentException("--self-test requires an output JSON path.");
                 WriteSelfTest(root, Path.GetFullPath(args[selfTestArgument + 1]));
-                return;
+                return 0;
             }
 
+            if (previewRequested)
+                Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
             ApplicationConfiguration.Initialize();
             Application.SetColorMode(SystemColorMode.Dark);
             var renderArgument = Array.FindIndex(args, value => value.Equals("--render-preview", StringComparison.OrdinalIgnoreCase));
             if (renderArgument >= 0)
             {
                 if (renderArgument + 1 >= args.Length) throw new ArgumentException("--render-preview requires an output PNG path.");
-                using var form = new HubForm(root, rememberLaunch: false);
+                var scenarioArgument = Array.FindIndex(args, value => value.Equals("--preview-scenario", StringComparison.OrdinalIgnoreCase));
+                if (scenarioArgument >= 0 && scenarioArgument + 1 >= args.Length)
+                    throw new ArgumentException("--preview-scenario requires ready, unsupported, or runtime-error.");
+                var scenario = scenarioArgument >= 0 ? args[scenarioArgument + 1] : "ready";
+                var sourceArgument = Array.FindIndex(args, value => value.Equals("--preview-source", StringComparison.OrdinalIgnoreCase));
+                if (sourceArgument >= 0 && sourceArgument + 1 >= args.Length)
+                    throw new ArgumentException("--preview-source requires VirtualDesktop or SteamLink.");
+                var source = sourceArgument >= 0 ? args[sourceArgument + 1] : "VirtualDesktop";
+                using var form = new HubForm(root, rememberLaunch: false, previewOnly: true);
                 if (args.Any(value => value.Equals("--preview-small", StringComparison.OrdinalIgnoreCase)))
                     form.Size = form.MinimumSize;
                 var viewportArgument = Array.FindIndex(args, value => value.Equals("--preview-viewport", StringComparison.OrdinalIgnoreCase));
                 Size? requestedViewport = null;
                 if (viewportArgument >= 0)
                 {
-                    if (viewportArgument + 2 >= args.Length || !int.TryParse(args[viewportArgument + 1], out var width) || !int.TryParse(args[viewportArgument + 2], out var height) || width < 640 || height < 480)
-                        throw new ArgumentException("--preview-viewport requires width and height of at least 640 by 480.");
+                    if (viewportArgument + 2 >= args.Length || !int.TryParse(args[viewportArgument + 1], out var width) || !int.TryParse(args[viewportArgument + 2], out var height) || width < 640 || height < 480 || width > 7680 || height > 4320)
+                        throw new ArgumentException("--preview-viewport requires dimensions between 640 by 480 and 7680 by 4320.");
                     form.MinimumSize = Size.Empty;
                     requestedViewport = new Size(width, height);
                     form.Size = requestedViewport.Value;
@@ -60,17 +75,53 @@ internal static class Program
                 form.Show();
                 Application.DoEvents();
                 var pageArgument = Array.FindIndex(args, value => value.Equals("--preview-page", StringComparison.OrdinalIgnoreCase));
-                if (pageArgument >= 0 && pageArgument + 1 < args.Length)
+                if (pageArgument >= 0)
                 {
+                    if (pageArgument + 1 >= args.Length) throw new ArgumentException("--preview-page requires a page name.");
                     var requested = args[pageArgument + 1];
                     var tab = FindControl(form, control => Equals(control.Tag, "workflow-tab") && control.Text.Contains(requested, StringComparison.OrdinalIgnoreCase)) as Button;
-                    tab?.PerformClick();
+                    if (tab is null) throw new ArgumentException("Unknown preview page: " + requested);
+                    tab.PerformClick();
                     Application.DoEvents();
+                }
+                form.ApplyPreviewScenario(scenario, source);
+                Application.DoEvents();
+                var expandArgument = Array.FindIndex(args, value => value.Equals("--preview-expand", StringComparison.OrdinalIgnoreCase));
+                if (expandArgument >= 0)
+                {
+                    if (expandArgument + 1 >= args.Length) throw new ArgumentException("--preview-expand requires disclosure names separated by commas.");
+                    foreach (var name in args[expandArgument + 1].Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        // Only informational disclosure controls may be clicked
+                        // by preview tooling; installers and tracking actions are excluded.
+                        var disclosure = FindControl(form, control => control is Button button && button.Visible &&
+                            button.Text.Equals("Show " + name, StringComparison.OrdinalIgnoreCase)) as Button;
+                        disclosure ??= FindControl(form, control => control is Button button && button.Visible &&
+                            button.Text.StartsWith("Show ", StringComparison.Ordinal) &&
+                            button.Text.EndsWith(name, StringComparison.OrdinalIgnoreCase)) as Button;
+                        if (disclosure is null) throw new ArgumentException("Unknown preview disclosure: " + name);
+                        disclosure.PerformClick();
+                        Application.DoEvents();
+                    }
                 }
                 if (args.Any(value => value.Equals("--preview-scroll-bottom", StringComparison.OrdinalIgnoreCase)))
                 {
                     var scroll = FindControl(form, control => control is Panel panel && Equals(panel.Tag, "hub-page") && panel.Visible) as Panel;
                     if (scroll is not null) scroll.AutoScrollPosition = new Point(0, scroll.VerticalScroll.Maximum);
+                    Application.DoEvents();
+                }
+                var scrollToArgument = Array.FindIndex(args, value => value.Equals("--preview-scroll-to", StringComparison.OrdinalIgnoreCase));
+                if (scrollToArgument >= 0)
+                {
+                    if (scrollToArgument + 1 >= args.Length) throw new ArgumentException("--preview-scroll-to requires a section title.");
+                    var scroll = FindControl(form, control => control is Panel panel && Equals(panel.Tag, "hub-page") && panel.Visible) as Panel;
+                    var target = scroll is null ? null : FindControl(scroll, control => control.Visible &&
+                        control.Text.Equals(args[scrollToArgument + 1], StringComparison.OrdinalIgnoreCase));
+                    if (scroll is null || target is null) throw new ArgumentException("Unknown preview section: " + args[scrollToArgument + 1]);
+                    // Scrolling exposes a section without invoking its setup action.
+                    var section = target.Parent is TableLayoutPanel ? target.Parent : target;
+                    var offset = scroll.PointToClient(section.PointToScreen(Point.Empty)).Y - scroll.AutoScrollPosition.Y;
+                    scroll.AutoScrollPosition = new Point(0, Math.Max(0, offset - 12));
                     Application.DoEvents();
                 }
                 Control imageSource = form;
@@ -87,14 +138,33 @@ internal static class Program
                 }
                 using var preview = new Bitmap(imageSource.Width, imageSource.Height);
                 imageSource.DrawToBitmap(preview, new Rectangle(Point.Empty, imageSource.Size));
-                preview.Save(Path.GetFullPath(args[renderArgument + 1]), ImageFormat.Png);
+                var output = Path.GetFullPath(args[renderArgument + 1]);
+                Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+                preview.Save(output, ImageFormat.Png);
+                Console.WriteLine($"Preview saved: {output}; scenario={scenario}; source={source}; size={imageSource.Width}x{imageSource.Height}; sample data only.");
                 form.Close();
-                return;
+                return 0;
             }
-            Application.Run(new HubForm(root));
+            if (HubUpdateRunner.StartRecoveryIfNeeded(root)) return 0;
+            IDisposable? installUseLock;
+            try { installUseLock = HubUpdateRunner.AcquireInstallUseLock(root); }
+            catch (IOException error)
+            {
+                MessageBox.Show(error.Message, "Qpro Hub is in use", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return 2;
+            }
+            using (installUseLock) Application.Run(new HubForm(root));
+            return 0;
         }
         catch (Exception error)
         {
+            // Preview tooling must report failures to its caller. A modal dialog
+            // would leave an unattended screenshot check waiting indefinitely.
+            if (previewRequested)
+            {
+                Console.Error.WriteLine("Hub preview failed: " + error);
+                return 1;
+            }
             string? log = null;
             try
             {
@@ -110,6 +180,7 @@ internal static class Program
             }
             MessageBox.Show(error.Message + "\n\n" + (log is null ? error.ToString() : "Details: " + log),
                 "QproFaceTracking Hub could not start", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return 1;
         }
     }
 
@@ -137,7 +208,7 @@ internal static class Program
             : [];
         var requiredFiles = new[]
         {
-            "build-and-run.ps1", "native-eye-local-branch-test.ps1", "prepare-eye-model.ps1", "prepare_eye_model.py", "research\\patch_seacliff_independent_axes.py", "native_raw_eye_probe.py", "install-vrcft-eye-bridge.ps1", "uninstall-vrcft-eye-bridge.ps1", "runtime-python.ps1",
+            "build-and-run.ps1", "native-eye-local-branch-test.ps1", "prepare-eye-model.ps1", "prepare_eye_model.py", "research\\patch_seacliff_independent_axes.py", "native_raw_eye_probe.py", "install-vrcft-eye-bridge.ps1", "uninstall-vrcft-eye-bridge.ps1", "vrcft-module-installation.ps1", "runtime-python.ps1",
             "platform-tools\\adb.exe", "platform-tools\\AdbWinApi.dll", "platform-tools\\AdbWinUsbApi.dll",
             "python-runtime\\python.3.12.10.nupkg", "python-runtime\\LICENSE.txt", "python-runtime\\README.txt",
             "SFX\\succeed.wav", "SFX\\trainingComplete.wav", "SFX\\warning.wav",

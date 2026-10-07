@@ -32,6 +32,8 @@ internal sealed class HubEnvironment
     internal bool WirelessSelected { get; private set; }
     internal bool SteamLinkSelected { get; private set; }
     internal string TrackingSourceArgument => SteamLinkSelected ? "SteamLink" : "VirtualDesktop";
+    // Preview fixtures set only this in-memory value; preferences are untouched.
+    internal void SetPreviewTrackingSource(bool steamLink) => SteamLinkSelected = steamLink;
     private static string TrackingSourcePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "QproFaceTracking", "config", "tracking-source.txt");
@@ -216,29 +218,12 @@ internal sealed class HubEnvironment
     }
 
     private static string CustomLibsPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "VRCFaceTracking", "CustomLibs");
-    internal bool BridgeInstalled() => new[]
-    {
-        "000-Qpro.VirtualDesktop.dll", "000-Qpro.SteamLink.dll", "000-Qpro.IndependentGaze.dll"
-    }.Any(name => File.Exists(Path.Combine(CustomLibsPath, name)));
+    internal bool BridgeInstalled() => HubModuleInstallation.HasInstalled(CustomLibsPath);
 
     internal bool CurrentBridgeInstalled()
     {
         var supplied = Path.Combine(_root, "vrcft-gaze-bridge", "bin", "Release", "net10.0", "Qpro.GazeBridge.dll");
-        var installed = Path.Combine(CustomLibsPath,
-            SteamLinkSelected ? "000-Qpro.SteamLink.dll" : "000-Qpro.VirtualDesktop.dll");
-        var other = Path.Combine(CustomLibsPath,
-            SteamLinkSelected ? "000-Qpro.VirtualDesktop.dll" : "000-Qpro.SteamLink.dll");
-        var legacy = Path.Combine(CustomLibsPath, "000-Qpro.IndependentGaze.dll");
-        if (File.Exists(other) || File.Exists(legacy)) return false;
-        if (!File.Exists(supplied) || !File.Exists(installed)) return false;
-        try
-        {
-            using var suppliedStream = File.OpenRead(supplied);
-            using var installedStream = File.OpenRead(installed);
-            return SHA256.HashData(suppliedStream).AsSpan().SequenceEqual(SHA256.HashData(installedStream));
-        }
-        catch (IOException) { return false; }
-        catch (UnauthorizedAccessException) { return false; }
+        return HubModuleInstallation.IsCurrent(CustomLibsPath, supplied, SteamLinkSelected);
     }
     internal bool BackendReady() => FindPythonRuntime() is not null;
     internal bool EyeModelReady()
@@ -334,20 +319,12 @@ internal sealed class HubEnvironment
             };
             start.ArgumentList.Add("-c");
             start.ArgumentList.Add("import cv2,numpy,torch; assert hasattr(cv2,'namedWindow')");
-            using var process = new Process { StartInfo = start };
-            if (!process.Start()) return false;
-            var output = process.StandardOutput.BaseStream.CopyToAsync(Stream.Null);
-            var errors = process.StandardError.BaseStream.CopyToAsync(Stream.Null);
-            // A damaged import can hang; do not let it stall future status checks.
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-            try { await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false); }
-            catch (OperationCanceledException)
-            {
-                try { process.Kill(entireProcessTree: true); } catch { }
-                return false;
-            }
-            await Task.WhenAll(output, errors).ConfigureAwait(false);
-            return process.ExitCode == 0;
+            // Bound both process execution and pipe draining. An import may
+            // leave a descendant holding stdout/stderr after Python exits.
+            // An incomplete drain is not a verified runtime and must complete
+            // the cached task so a later status refresh can retry.
+            var result = await HubProcessResult.RunAsync(start, TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+            return !result.TimedOut && result.CleanupError is null && result.ExitCode == 0;
         }
         catch { return false; }
     }

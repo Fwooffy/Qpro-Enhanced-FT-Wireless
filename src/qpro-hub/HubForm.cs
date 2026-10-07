@@ -127,15 +127,18 @@ internal sealed partial class HubForm : Form
     internal static readonly Color Bad = Color.FromArgb(243, 141, 133);          // #F38D85
     private static readonly string UiFontName = FontFamily.Families.Any(font => font.Name.Equals("Lexend", StringComparison.OrdinalIgnoreCase)) ? "Lexend" : "Segoe UI";
 
-    public HubForm(string root, bool rememberLaunch = true)
+    private readonly bool _previewOnly;
+
+    public HubForm(string root, bool rememberLaunch = true, bool previewOnly = false)
     {
+        _previewOnly = previewOnly;
         _root = root;
         _environment = new HubEnvironment(root);
         _cameraPreview.Checked = _environment.CameraPreviewEnabled;
         _gaze.Checked = _environment.IndependentGazeEnabled;
         _scripts = new HubScriptFactory(root, _environment);
         _stopFile = Path.Combine(root, ".qpro-hub-stop");
-        Text = "QproFaceTracking V2.1.2 Hub";
+        Text = $"QproFaceTracking V{AppVersion} Hub";
         MinimumSize = new Size(780, 580);
         Size = new Size(1140, 850);
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -157,7 +160,7 @@ internal sealed partial class HubForm : Form
         Controls.Add(BuildLayout());
         InitializeTrackingSourceUi();
         InitializeControllerInputUi();
-        if (rememberLaunch)
+        if (rememberLaunch && !previewOnly)
             Shown += (_, _) =>
             {
                 try { _environment.MarkOpened(); }
@@ -168,6 +171,7 @@ internal sealed partial class HubForm : Form
         _stop.Click += async (_, _) => await StopTrackingAsync();
         _gaze.CheckedChanged += (_, _) =>
         {
+            if (_previewOnly) return;
             try { _environment.SelectIndependentGaze(_gaze.Checked); }
             catch (Exception error) { AppendLog("Could not save independent gaze preference: " + error.Message); }
             UpdateControlState();
@@ -177,6 +181,7 @@ internal sealed partial class HubForm : Form
         _pupil.CheckedChanged += (_, _) => UpdateControlState();
         _cameraPreview.CheckedChanged += (_, _) =>
         {
+            if (_previewOnly) return;
             try { _environment.SelectCameraPreview(_cameraPreview.Checked); }
             catch (Exception error) { AppendLog("Could not save camera preview preference: " + error.Message); }
             UpdateToggleStyle(_cameraPreview);
@@ -205,6 +210,7 @@ internal sealed partial class HubForm : Form
         _cheekPuffStyle.Enabled = _individualCheekPuff.Checked;
         void SaveCheekPuffChoice()
         {
+            if (_previewOnly) return;
             try
             {
                 HubCheekPuffMode style = _cheekPuffStyle.SelectedIndex switch
@@ -243,6 +249,7 @@ internal sealed partial class HubForm : Form
         _cheekSuckStyle.Enabled = _individualCheekSuck.Checked;
         void SaveCheekSuckChoice()
         {
+            if (_previewOnly) return;
             try
             {
                 HubCheekSuckPreference.Save(_individualCheekSuck.Checked, _cheekSuckStyle.SelectedIndex == 1);
@@ -266,6 +273,7 @@ internal sealed partial class HubForm : Form
         _eyebrowSensitivity.Enabled = _eyebrowBoost.Checked;
         void SaveEyebrowChoice()
         {
+            if (_previewOnly) return;
             try
             {
                 float sensitivity = 0.5f + _eyebrowSensitivity.SelectedIndex * 0.25f;
@@ -310,19 +318,18 @@ internal sealed partial class HubForm : Form
         _gaze.CheckedChanged += (_, _) => UpdateToggleStyle(_gaze);
         _tongue.CheckedChanged += (_, _) => UpdateToggleStyle(_tongue);
         _pupil.CheckedChanged += (_, _) => UpdateToggleStyle(_pupil);
-        FormClosing += OnClosing;
+        if (!previewOnly) FormClosing += OnClosing;
 
-        ReloadProfiles();
-        _ = RefreshStatusAsync();
+        if (!previewOnly) { ReloadProfiles(); _ = RefreshStatusAsync(); }
         var timer = new System.Windows.Forms.Timer { Interval = 2500 };
         timer.Tick += async (_, _) => await RefreshStatusAsync();
-        timer.Start();
+        if (!previewOnly) timer.Start();
         var pulseTimer = new System.Windows.Forms.Timer { Interval = 550 };
         pulseTimer.Tick += (_, _) => { _setupPulseOn = !_setupPulseOn; UpdateSetupStepStyles(); };
-        pulseTimer.Start();
+        if (!previewOnly) pulseTimer.Start();
         var setupProgressTimer = new System.Windows.Forms.Timer { Interval = 45 };
         setupProgressTimer.Tick += (_, _) => { if (_setupProgress.IsIndeterminate) _setupProgress.AdvanceAnimation(); };
-        setupProgressTimer.Start();
+        if (!previewOnly) setupProgressTimer.Start();
         FormClosed += (_, _) =>
         {
             timer.Stop(); timer.Dispose();
@@ -331,6 +338,8 @@ internal sealed partial class HubForm : Form
             _soundPlayer?.Dispose();
             foreach (var process in _trackingProcesses) process.Dispose();
         };
+        RestoreLiveOptions();
+        WireUpdates();
         AppendLog("Hub ready. Qpro live overrides start when you press Start tracking. An installed Qpro module can already apply its saved face adjustments.");
     }
 
@@ -348,7 +357,7 @@ internal sealed partial class HubForm : Form
 
     private void SelectTrackingSource(bool steamLink)
     {
-        if (_trackingSourceSelectionUpdating || steamLink == _environment.SteamLinkSelected) return;
+        if (_previewOnly || _trackingSourceSelectionUpdating || steamLink == _environment.SteamLinkSelected) return;
         if (_setupActionRunning || _utilityActionRunning || _datasetOperationBusy ||
             _starting || _stopping || _trackingProcesses.Any(process => !process.HasExited))
         {

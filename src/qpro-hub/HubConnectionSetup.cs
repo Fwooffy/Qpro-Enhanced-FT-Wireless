@@ -18,24 +18,38 @@ internal sealed partial class HubForm
     private readonly DarkButton _disableWirelessButton = SetupButton("Disable Wi-Fi ADB");
     private readonly Label _setupAmdStatus = SetupStatusLabel();
     private readonly Label _amdGpuStatus = new() { AutoSize = true, ForeColor = Muted, Margin = new Padding(5, 3, 5, 8), Tag = "responsive-info" };
-    private readonly DarkButton _setupAmdButton = SetupButton("Install AMD ROCm");
+    private readonly DarkButton _setupAmdButton = SetupButton($"Install ROCm {HubRocmRuntime.InstallVersion}");
+    private readonly CheckBox _experimentalWindows10Rocm = new()
+    {
+        Text = "Try ROCm on Windows 10 (experimental)", AutoSize = true,
+        ForeColor = Muted, Margin = new Padding(5, 6, 5, 6), Checked = false,
+        AccessibleDescription = "Optional Windows 10 22H2 experiment. AMD validates Windows 11. GPU training and inference checks still must pass."
+    };
     private bool _amdGpuSupported;
     private bool _amdGpuLegacyEligible;
     private string? _amdGpuLatestTarget;
+    private string? _amdGpuName;
     private bool _amdGpuDetected;
     private bool _rocmInstallRunning;
     private bool _connectionSelectionUpdating;
-    private bool AmdInstallEligible => Environment.OSVersion.Version.Build >= 22000
-        && _amdGpuSupported;
+    private bool AmdInstallEligible => _amdGpuSupported && HubRocmOsPolicy.CanInstall(
+        Environment.OSVersion.Version.Build, _experimentalWindows10Rocm.Checked);
 
     private void InitializeIntegratedSetup()
     {
         _setupAmdButton.Enabled = false;
+        _experimentalWindows10Rocm.Visible = HubRocmOsPolicy.IsWindows10OptInEligible(Environment.OSVersion.Version.Build);
+        _experimentalWindows10Rocm.CheckedChanged += (_, _) =>
+        {
+            UpdateAmdGpuStatus();
+            UpdateSetupStepStyles();
+        };
         _connectionMode.Items.AddRange(["USB cable", "Wireless ADB (Wi-Fi)"]);
         _connectionMode.SelectedIndex = _environment.WirelessSelected ? 1 : 0;
         _wirelessAddress.Text = _environment.GetSavedWirelessTarget() ?? "";
         _connectionMode.SelectedIndexChanged += async (_, _) =>
         {
+            if (_previewOnly) return;
             if (_connectionSelectionUpdating) return;
             if (_setupActionRunning || _utilityActionRunning || _datasetOperationBusy ||
                 _starting || _stopping || _trackingProcesses.Any(process => !process.HasExited))
@@ -68,7 +82,7 @@ internal sealed partial class HubForm
             _wirelessAddress.Text = target;
             if (await RunConnectionStepAsync("Connect wireless Quest", "Connect-QproWireless.ps1", "-AdbTarget", target))
                 MessageBox.Show(this,
-                    $"Connected to your Quest at {target}.\n\nWireless ADB and Magisk root are ready. You can start tracking; pairing is not needed.",
+                    $"Connected to your Quest at {target}.\n\nWireless ADB and Magisk root are ready. Continue with the next setup card; pairing is not needed.",
                     "Quest connected", MessageBoxButtons.OK, MessageBoxIcon.Information);
         };
         _pairWirelessButton.Click += async (_, _) =>
@@ -114,29 +128,38 @@ internal sealed partial class HubForm
             }
             if (!AmdInstallEligible)
             {
-                MessageBox.Show(this, "AMD ROCm requires an eligible discrete Radeon GPU on Windows 11. On an NVIDIA-only PC, use Install runtime for the NVIDIA/CUDA path.", "AMD GPU needed");
+                var reason = _amdGpuSupported
+                    ? HubRocmOsPolicy.BlockedReason(Environment.OSVersion.Version.Build, _experimentalWindows10Rocm.Checked)
+                    : "AMD ROCm requires an eligible discrete Radeon GPU. On an NVIDIA-only PC, use Install runtime for NVIDIA CUDA; integrated graphics cannot use this ROCm setup.";
+                MessageBox.Show(this, reason, "ROCm setup unavailable", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
+            var windows10Notice = HubRocmOsPolicy.IsWindows10OptInEligible(Environment.OSVersion.Version.Build)
+                ? "Windows 10 support is experimental and is outside AMD's supported Windows configuration. Setup may fail with your card or driver. Your current PC runtime remains available.\n\n"
+                : "";
             if (MessageBox.Show(this,
-                    "ROCm 10.0 is AMD's current stable package series, but this Qpro integration is experimental. The download is large. Setup tests GPU training and model inference before enabling it. If those checks fail, an existing ROCm 7.2.1 installation remains available on eligible cards; Qpro can also use its PC runtime.\n\nInstall ROCm 10.0 on this PC?",
-                    "Install ROCm 10.0", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                    windows10Notice + $"Install ROCm {HubRocmRuntime.InstallVersion} for Qpro's experimental AMD acceleration. The download is large. Setup tests GPU training and model inference before enabling the new runtime. Existing verified ROCm runtimes stay available if those checks fail; Qpro can also use its PC runtime.\n\nInstall ROCm {HubRocmRuntime.InstallVersion} on this PC?",
+                    $"Install ROCm {HubRocmRuntime.InstallVersion}", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
                     MessageBoxDefaultButton.Button2) != DialogResult.Yes)
                 return;
             _rocmInstallRunning = true;
+            _experimentalWindows10Rocm.Enabled = false;
             try
             {
-                await RunSetupStepAsync("AMD ROCm 10.0 setup", "Install-QproRocm.ps1",
-                    "ROCm 10.0 passed its GPU checks. Tongue inference and training will use it automatically.",
-                    "You can now start tracking or train a personal model.");
+                await RunSetupStepAsync($"AMD ROCm {HubRocmRuntime.InstallVersion} setup", "Install-QproRocm.ps1",
+                    $"ROCm {HubRocmRuntime.InstallVersion} passed its GPU checks. Tongue inference and training will use it automatically.",
+                    "You can now start tracking or train a personal model.",
+                    HubRocmOsPolicy.InstallArguments(Environment.OSVersion.Version.Build, _experimentalWindows10Rocm.Checked));
             }
             finally
             {
                 _rocmInstallRunning = false;
+                _experimentalWindows10Rocm.Enabled = !_setupActionRunning;
                 UpdateSetupStepStyles();
             }
         };
         UpdateConnectionModeUi();
-        _ = DetectAmdGpuAsync();
+        if (!_previewOnly) _ = DetectAmdGpuAsync();
     }
 
     private void UpdateConnectionModeUi()
@@ -190,8 +213,11 @@ internal sealed partial class HubForm
         .Any(path => File.Exists(Path.Combine(path, "Scripts", "python.exe")));
     private bool LegacyRocmEnvironmentExists() => HubRocmRuntime.Candidates(_root, legacy: true)
         .Any(path => File.Exists(Path.Combine(path, "Scripts", "python.exe")));
-    private bool LatestRocmInstalled() => HubRocmRuntime.Candidates(_root, legacy: false)
-        .Any(path => HubRocmRuntime.IsReady(path, legacy: false, _amdGpuLatestTarget));
+    private string? LatestRocmInstalledVersion() => HubRocmRuntime.Candidates(_root, legacy: false)
+        .Select(path => HubRocmRuntime.ReadyVersion(path, legacy: false, _amdGpuLatestTarget))
+        .OfType<string>()
+        .OrderByDescending(version => version, StringComparer.Ordinal)
+        .FirstOrDefault();
     private bool LegacyRocmInstalled() => _amdGpuLegacyEligible && HubRocmRuntime.Candidates(_root, legacy: true)
         .Any(path => HubRocmRuntime.IsReady(path, legacy: true, _amdGpuLatestTarget));
 
@@ -233,22 +259,22 @@ internal sealed partial class HubForm
             if (match.Name is null)
                 match = controllers.FirstOrDefault(controller => LatestRocmTarget(controller.Name, controller.PnpId) is not null);
             _amdGpuLatestTarget = match.Name is not null ? LatestRocmTarget(match.Name, match.PnpId) : null;
+            _amdGpuName = match.Name?.Trim();
             _amdGpuLegacyEligible = match.Name is not null && IsLegacyAmdAdapter(match.Name, match.PnpId);
             _amdGpuDetected = controllers.Any(controller => controller.PnpId.Contains("VEN_1002", StringComparison.OrdinalIgnoreCase)
                 || controller.Name.Contains("AMD", StringComparison.OrdinalIgnoreCase)
                 || controller.Name.Contains("Radeon", StringComparison.OrdinalIgnoreCase));
             var nvidiaDetected = controllers.Any(controller => controller.PnpId.Contains("VEN_10DE", StringComparison.OrdinalIgnoreCase)
                 || controller.Name.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase));
-            _amdGpuSupported = _amdGpuLatestTarget is not null && Environment.OSVersion.Version.Build >= 22000;
+            _amdGpuSupported = _amdGpuLatestTarget is not null;
             _amdGpuStatus.Text = match.Name is not null
-                ? _amdGpuSupported
-                    ? $"ROCm 10.0 target: {match.Name.Trim()} ({_amdGpuLatestTarget})"
-                    : "AMD ROCm on Windows requires Windows 11."
+                ? $"ROCm {HubRocmRuntime.InstallVersion} install target: {_amdGpuName} ({_amdGpuLatestTarget})"
                 : nvidiaDetected
                     ? "NVIDIA GPU detected. Use Install runtime for CUDA; an AMD integrated GPU does not support this ROCm setup."
                     : _amdGpuDetected
                         ? "No eligible AMD discrete GPU found. Integrated graphics cannot use this ROCm setup."
                         : "No supported AMD GPU detected. AMD ROCm is unavailable on this PC.";
+            UpdateAmdGpuStatus();
         }
         catch (Exception error)
         {
@@ -257,11 +283,24 @@ internal sealed partial class HubForm
             _amdGpuSupported = false;
             _amdGpuLegacyEligible = false;
             _amdGpuLatestTarget = null;
+            _amdGpuName = null;
             _amdGpuDetected = false;
         }
         if (IsDisposed || Disposing) return;
         UpdateSetupStepStyles();
         SetSetupButtonsEnabled(true);
+    }
+
+    private void UpdateAmdGpuStatus()
+    {
+        if (!_amdGpuSupported || _amdGpuName is null) return;
+        var build = Environment.OSVersion.Version.Build;
+        var reason = HubRocmOsPolicy.BlockedReason(build, _experimentalWindows10Rocm.Checked);
+        _amdGpuStatus.Text = $"ROCm {HubRocmRuntime.InstallVersion} install target: {_amdGpuName} ({_amdGpuLatestTarget})." +
+            (reason is not null ? " " + reason : HubRocmOsPolicy.IsWindows10OptInEligible(build)
+                ? " Windows 10 experiment enabled; GPU training and inference must pass."
+                : " GPU training and inference must pass before Qpro uses this runtime.");
+        _experimentalWindows10Rocm.Enabled = !_setupActionRunning && !_rocmInstallRunning;
     }
 
     private static string NormalizeAmdName(string name)

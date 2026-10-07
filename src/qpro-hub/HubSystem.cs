@@ -20,7 +20,7 @@ internal sealed partial class HubForm
 
     private async Task RefreshStatusAsync()
     {
-        if (_closingInProgress || _statusRefreshBusy || IsDisposed || Disposing) return;
+        if (_previewOnly || _closingInProgress || _statusRefreshBusy || IsDisposed || Disposing) return;
         _statusRefreshBusy = true;
         try
         {
@@ -29,51 +29,57 @@ internal sealed partial class HubForm
             var steam = Process.GetProcessesByName("vrserver").Any();
             var vrcft = Process.GetProcessesByName("VRCFaceTracking").Any();
             SetStatus(_usbStatus, quest ? StatusKind.Good : StatusKind.Bad,
-                quest ? (_environment.WirelessSelected ? "Wi-Fi connected" : "USB connected")
+                quest ? (_environment.WirelessSelected ? "Wi-Fi ADB connected" : "USB ADB connected")
                     : (_environment.WirelessSelected ? "Wi-Fi not connected" : "USB not connected"));
             SetStatus(_steamStatus, steam ? StatusKind.Good : StatusKind.Bad, steam ? "Running" : "Not running");
             SetStatus(_vrcftStatus, vrcft ? StatusKind.Good : StatusKind.Bad, vrcft ? "Running" : "Not running");
             var bridgeReady = CurrentBridgeInstalled();
             SetStatus(_bridgeStatus, bridgeReady ? StatusKind.Good : StatusKind.Warning,
-                bridgeReady ? "Ready" : BridgeInstalled() ? "Update needed" : "Setup needed");
+                bridgeReady ? "Installed · live input unchecked" : BridgeInstalled() ? "Update needed" : "Setup needed");
             SetStatus(_runtimeStatus, BackendReady() ? StatusKind.Good : StatusKind.Warning, BackendReady() ? "Ready" : "Setup needed");
-            SetStatus(_gazeStatus, EyeModelReady() ? StatusKind.Good : StatusKind.Warning, EyeModelReady() ? "Prepared" : "Setup needed");
+            SetStatus(_gazeStatus, StatusKind.Warning, EyeModelReady() ? "Prepared · headset check needed" : "Optional · not prepared");
             UpdateSetupStepStyles();
             UpdateControlState();
         }
+        catch (Exception error) { AppendLog("Status refresh could not complete: " + error.Message); }
         finally { _statusRefreshBusy = false; }
     }
 
     private void UpdateSetupStepStyles()
     {
-        var ready = new[] { BackendReady(), CurrentBridgeInstalled(), EyeModelReady() };
+        if (_previewOnly) return;
+        var ready = new[] { BackendReady(), CurrentBridgeInstalled() };
         var next = Array.FindIndex(ready, value => !value);
         StyleSetupStep(_setupRuntimeButton, _setupRuntimeStatus, "Install runtime", ready[0], next == 0);
         StyleSetupButton(_setupBridgeButton, "Install Virtual Desktop module",
             ready[1] && !_environment.SteamLinkSelected, next == 1 && !_environment.SteamLinkSelected);
         StyleSetupButton(_setupSteamLinkModuleButton, "Install Steam Link module",
             ready[1] && _environment.SteamLinkSelected, next == 1 && _environment.SteamLinkSelected);
-        UpdateModuleInstallButtonState(!_setupActionRunning);
         _setupBridgeStatus.Text = ready[1] ? "● Complete" : next == 1 ? "● Next step" : "○ Waiting";
         _setupBridgeStatus.ForeColor = ready[1] ? Good : next == 1 ? Warning : Muted;
         _uninstallBridgeButton.Enabled = !_setupActionRunning && BridgeUninstallAvailable();
-        StyleSetupStep(_setupGazeButton, _setupGazeStatus, "Prepare gaze", ready[2], next == 2);
-        var latestReady = AmdInstallEligible && LatestRocmInstalled();
-        var legacyReady = AmdInstallEligible && LegacyRocmInstalled();
-        var latestEnvironmentExists = AmdInstallEligible && LatestRocmEnvironmentExists();
-        _setupAmdStatus.Text = _rocmInstallRunning ? "◌ Installing and verifying ROCm 10.0…" :
-            latestReady ? legacyReady ? "● ROCm 10.0 verified; ROCm 7.2.1 fallback ready" : "● ROCm 10.0 verified; GPU tests passed" :
-            legacyReady ? latestEnvironmentExists ? "● ROCm 7.2.1 fallback ready; verify ROCm 10.0" : "● ROCm 7.2.1 fallback ready; ROCm 10.0 available" :
-            latestEnvironmentExists ? "○ ROCm 10.0 environment found; verify or repair setup" :
-            AmdInstallEligible ? "○ ROCm 10.0 available after PC runtime" : "○ Eligible discrete Radeon required";
+        StyleSetupStep(_setupGazeButton, _setupGazeStatus, "Prepare gaze", EyeModelReady(), false);
+        _setupGazeStatus.Text = EyeModelReady() ? "Prepared · checked again at start" : "Optional · prepare only for Hub gaze";
+        var installedVersion = LatestRocmInstalledVersion();
+        var latestReady = installedVersion is not null;
+        var offeredVersionReady = installedVersion?.StartsWith(HubRocmRuntime.InstallVersion + ".", StringComparison.Ordinal) == true;
+        var legacyReady = LegacyRocmInstalled();
+        var latestEnvironmentExists = LatestRocmEnvironmentExists();
+        _setupAmdStatus.Text = _rocmInstallRunning ? $"◌ Installing and verifying ROCm {HubRocmRuntime.InstallVersion}…" :
+            latestReady ? $"● ROCm {installedVersion} verified; " +
+                (offeredVersionReady ? "GPU tests passed" : $"ROCm {HubRocmRuntime.InstallVersion} update available") +
+                (legacyReady ? "; ROCm 7.2.1 fallback ready" : "") :
+            legacyReady ? $"● ROCm 7.2.1 fallback ready; ROCm {HubRocmRuntime.InstallVersion} available" :
+            latestEnvironmentExists ? $"○ Unverified ROCm environment found; install or repair {HubRocmRuntime.InstallVersion}" :
+            AmdInstallEligible ? $"○ ROCm {HubRocmRuntime.InstallVersion} available after PC runtime" : "○ Eligible discrete Radeon required";
         _setupAmdStatus.ForeColor = _rocmInstallRunning || latestEnvironmentExists && !latestReady
             ? Warning : latestReady || legacyReady ? Good : AmdInstallEligible ? Warning : Muted;
-        _setupAmdButton.Text = latestReady ? "Repair ROCm 10.0" :
-            latestEnvironmentExists ? "Verify / repair ROCm 10.0" :
-            legacyReady ? "Upgrade to ROCm 10.0" : "Install ROCm 10.0";
-        _setupAmdButton.OutlineColor = latestReady ? Good : AmdInstallEligible && _setupPulseOn ? Accent : Border;
-        _setupAmdButton.OutlineWidth = latestReady || AmdInstallEligible && _setupPulseOn ? 2 : 1;
-        _setupAmdButton.Enabled = !_setupActionRunning && AmdInstallEligible && BackendReady();
+        _setupAmdButton.Text = offeredVersionReady ? $"Repair ROCm {HubRocmRuntime.InstallVersion}" :
+            latestReady || legacyReady ? $"Upgrade to ROCm {HubRocmRuntime.InstallVersion}" :
+            latestEnvironmentExists ? $"Verify / repair ROCm {HubRocmRuntime.InstallVersion}" : $"Install ROCm {HubRocmRuntime.InstallVersion}";
+        _setupAmdButton.OutlineColor = offeredVersionReady ? Good : AmdInstallEligible && _setupPulseOn ? Accent : Border;
+        _setupAmdButton.OutlineWidth = offeredVersionReady || AmdInstallEligible && _setupPulseOn ? 2 : 1;
+        SetSetupButtonsEnabled(true);
     }
 
     private void StyleSetupStep(DarkButton button, Label status, string label, bool complete, bool attention)
@@ -125,24 +131,19 @@ internal sealed partial class HubForm
             .Any(name => Process.GetProcessesByName(name).Length > 0);
     private bool BridgeUninstallAvailable()
     {
-        if (BridgeInstalled()) return true;
-        var research = Path.Combine(_root, "research");
-        if (!Directory.Exists(research)) return false;
-        if (Directory.Exists(Path.Combine(research, "vrcft-legacy-registry-module-backup")) ||
-            Directory.Exists(Path.Combine(research, "vrcft-official-virtual-desktop-backup"))) return true;
-        return Directory.EnumerateDirectories(research, "vrcft-official-virtual-desktop-backup-*").Any();
+        return BridgeInstalled() || HubModuleInstallation.HasSavedBackups(Path.Combine(_root, "research"));
     }
     private bool CurrentBridgeInstalled() => _environment.CurrentBridgeInstalled();
-    private bool BackendReady() => _environment.BackendReady();
+    private bool BackendReady() => !_previewOnly && _environment.BackendReady();
     private bool EyeModelReady() => _environment.EyeModelReady();
     private string VisibilityModeValue() => _visibilityMode.SelectedIndex switch { 1 => "camera", 2 => "native", 3 => "agreement", _ => "weighted" };
     private string PupilSensitivityValue() => ((10 + 2 * Math.Max(0, _pupilSensitivity.SelectedIndex)) / 10.0)
         .ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
-    private string? FindPythonRuntime() => _environment.FindPythonRuntime();
+    private string? FindPythonRuntime() => _previewOnly ? null : _environment.FindPythonRuntime();
 
     private void UpdateControlState()
     {
-        var running = _trackingProcesses.Any(p => !p.HasExited);
+        var running = _trackingCleanupPending || _trackingProcesses.Any(p => !p.HasExited);
         // These values are passed once to the child process. Keep the controls
         // locked until Stop, rather than implying that a live model was reloaded.
         var sessionEditable = !running && !_stopping && !_starting;
@@ -157,11 +158,9 @@ internal sealed partial class HubForm
         _pupilSensitivity.Enabled = _pupil.Checked && sessionEditable;
         _cameraPreview.Enabled = sessionEditable;
         _connectionMode.Enabled = !_setupActionRunning && !_utilityActionRunning &&
-            !_datasetOperationBusy && !_trackingProcesses.Any(p => !p.HasExited) &&
-            !_stopping && !_starting;
+            !_datasetOperationBusy && !running && !_stopping && !_starting;
         _trackingSourceSetup.Enabled = !_setupActionRunning && !_utilityActionRunning &&
-            !_datasetOperationBusy && !_trackingProcesses.Any(p => !p.HasExited) &&
-            !_stopping && !_starting;
+            !_datasetOperationBusy && !running && !_stopping && !_starting;
         _trackingSourceLive.Enabled = _trackingSourceSetup.Enabled;
         _smoothing.Enabled = _tongue.Checked && sessionEditable;
         _visibilityMode.Enabled = _tongue.Checked && sessionEditable;
@@ -170,6 +169,7 @@ internal sealed partial class HubForm
         _resetLegacyGazeButton.Enabled = _recoverGazeButton.Enabled;
         var canStart = !running && !_stopping && !_starting && !_setupActionRunning &&
             !_utilityActionRunning && !_datasetOperationBusy;
+        if (_checkCompatibility is not null) _checkCompatibility.Enabled = canStart && !_compatibilityChecking;
         _cheekCameraBaseModels.Enabled = canStart;
         _cheekCameraDatasets.Enabled = canStart;
         _recordCameraCheeks.Enabled = canStart;
@@ -181,16 +181,21 @@ internal sealed partial class HubForm
         StyleRunButton(_stop, (running || _starting) && !_stopping);
         UpdateCameraCheekAvailability();
         UpdateControllerInputAvailability();
+        SetSetupButtonsEnabled(true);
     }
+
+    private bool TrackingShutdownPending => _starting || _stopping || _trackingCleanupPending || _trackingProcesses.Any(p => !p.HasExited);
 
     private async void OnClosing(object? sender, FormClosingEventArgs e)
     {
         e.Cancel = true;
-        if (_closingInProgress || UtilityActionIsBusy()) return;
+        if (_closingInProgress || UtilityActionIsBusy(allowTrackingTransition: true)) return;
         _closingInProgress = true;
         Enabled = false;
         try
         {
+            try { SaveLiveOptions(); }
+            catch (Exception error) { AppendLog("Could not save Live tracking choices: " + error.Message); }
             await _environment.SuspendAdbProbesAsync();
             if (_starting || _trackingProcesses.Any(p => !p.HasExited))
                 await StopTrackingAsync();
@@ -198,7 +203,7 @@ internal sealed partial class HubForm
             // Do not stop ADB until the tracking scripts have restored headset overrides.
             for (var attempt = 0; attempt < 200 && _starting; attempt++)
                 await Task.Delay(50);
-            if (_starting || _trackingProcesses.Any(p => !p.HasExited))
+            if (TrackingShutdownPending)
             {
                 AppendLog("Hub shutdown is waiting for tracking cleanup. Stop tracking, then close the Hub again.");
                 return;
@@ -223,6 +228,23 @@ internal sealed partial class HubForm
         }
     }
 
+    private void PostProcessUpdate(string label, Action update)
+    {
+        if (IsDisposed || Disposing || !IsHandleCreated) return;
+        void Apply()
+        {
+            if (IsDisposed || Disposing) return;
+            try { update(); }
+            catch (Exception error) { AppendLog($"[{label}] Progress display could not update: {error.Message}"); }
+        }
+        if (!InvokeRequired) { Apply(); return; }
+        try { BeginInvoke(Apply); }
+        catch (InvalidOperationException) when (IsDisposed || Disposing || !IsHandleCreated)
+        {
+            // Closing can destroy the window between the checks and dispatch.
+        }
+    }
+
     private void AppendLog(string text)
     {
         if (IsDisposed || Disposing) return;
@@ -232,8 +254,14 @@ internal sealed partial class HubForm
             catch (InvalidOperationException) { /* The window closed before the log arrived. */ }
             return;
         }
-        _log.AppendText($"{DateTime.Now:HH:mm:ss}  {text}{Environment.NewLine}");
-        _log.SelectionStart = _log.TextLength; _log.ScrollToCaret();
+        var timestamp = DateTime.Now.ToString("HH:mm:ss");
+        try { _componentUpdateOutput?.Invoke(text); }
+        catch (Exception)
+        {
+            AppendActivityText("Component update progress could not refresh. Its helper output is still shown here.",
+                timestamp, ActivitySeverity.Warning);
+        }
+        AppendActivityText(text, timestamp);
     }
 
     private static int VersionFromPath(string path) => Regex.Match(Path.GetFileName(path), @"-v(\d+)").Success && int.TryParse(Regex.Match(Path.GetFileName(path), @"-v(\d+)").Groups[1].Value, out var v) ? v : 0;

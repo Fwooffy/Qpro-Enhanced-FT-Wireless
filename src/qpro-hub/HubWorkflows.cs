@@ -20,10 +20,22 @@ internal sealed partial class HubForm
     // a virtual environment while a trainer is using it.
     private bool _utilityActionRunning;
     private bool _gazeRecoveryRunning;
+    private bool _trackingCleanupPending;
 
-    private bool UtilityActionIsBusy()
+    private bool UtilityActionIsBusy(bool allowTrackingTransition = false)
     {
         if (_closingInProgress) return true;
+        if (!allowTrackingTransition && (_starting || _stopping))
+        {
+            SetActionFeedback("Tracking is changing state", "Wait for tracking startup or cleanup to finish before starting another action.", "Press Stop tracking to cancel startup, then wait for cleanup.");
+            return true;
+        }
+        if (_trackingCleanupPending)
+        {
+            MessageBox.Show(this, "Tracking cleanup has not finished. Press Stop tracking again and check Activity before starting another action or closing the Hub.",
+                "Tracking cleanup is pending", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return true;
+        }
         if (_gazeRecoveryRunning)
         {
             MessageBox.Show(this, "Wait for the stock eye-model recovery to finish.",
@@ -237,16 +249,21 @@ internal sealed partial class HubForm
             }
             ReloadDatasetQueues();
         }
+        catch (Exception error) { ShowWorkflowFailure("Capture result", error); }
         finally { _datasetOperationBusy = false; UpdateControlState(); }
     }
 
-    private async Task RunSetupStepAsync(string label, string script, string completed, string next)
+    private async Task RunSetupStepAsync(string label, string script, string completed, string next, params string[] args)
     {
         if (!TryBeginSetupProgress(label)) return;
-        var succeeded = await RunUtilityAsync(label, script);
-        if (script.Equals("Install-QproRocm.ps1", StringComparison.OrdinalIgnoreCase))
-            _rocmInstallRunning = false;
-        FinishSetupProgress(succeeded, label);
+        var succeeded = false;
+        try { succeeded = await RunUtilityAsync(label, script, args); }
+        catch (Exception error) { ShowWorkflowFailure(label, error); }
+        finally
+        {
+            if (script.Equals("Install-QproRocm.ps1", StringComparison.OrdinalIgnoreCase)) _rocmInstallRunning = false;
+            FinishSetupProgress(succeeded, label);
+        }
         if (!succeeded) return;
         UpdateSetupStepStyles();
         PlaySfx("succeed.wav");
@@ -266,18 +283,23 @@ internal sealed partial class HubForm
 
         var label = $"Install {sourceName} module";
         if (!TryBeginSetupProgress(label)) return;
-        var succeeded = await RunUtilityAsync(label, "install-vrcft-eye-bridge.ps1",
-            "-TrackingSource", steamLink ? "SteamLink" : "VirtualDesktop");
-        if (succeeded)
+        var succeeded = false;
+        try
         {
-            _environment.ReloadTrackingSource();
-            succeeded = _environment.SteamLinkSelected == steamLink && CurrentBridgeInstalled();
-            if (!succeeded)
-                AppendLog($"{label} did not verify the selected source and installed module. Check Activity and retry with VRCFaceTracking closed.");
-            SyncTrackingSourceControls();
-            UpdateTrackingSourceNotes();
+            succeeded = await RunUtilityAsync(label, "install-vrcft-eye-bridge.ps1",
+                "-TrackingSource", steamLink ? "SteamLink" : "VirtualDesktop");
+            if (succeeded)
+            {
+                _environment.ReloadTrackingSource();
+                succeeded = _environment.SteamLinkSelected == steamLink && CurrentBridgeInstalled();
+                if (!succeeded)
+                    throw new InvalidOperationException("The module helper completed, but the selected source and installed module could not be verified. Retry with VRCFaceTracking closed.");
+                SyncTrackingSourceControls();
+                UpdateTrackingSourceNotes();
+            }
         }
-        FinishSetupProgress(succeeded, label);
+        catch (Exception error) { succeeded = false; ShowWorkflowFailure(label, error); }
+        finally { FinishSetupProgress(succeeded, label); }
         if (!succeeded) return;
         UpdateSetupStepStyles();
         await RefreshStatusAsync();
@@ -350,7 +372,7 @@ internal sealed partial class HubForm
             "Local gaze preparation",
             "prepare-eye-model.ps1",
             "Independent-gaze support is prepared.",
-            $"First-time setup is complete. Start {(_environment.SteamLinkSelected ? "Steam Link" : "Virtual Desktop")}, SteamVR, and VRCFaceTracking before applying tracking.");
+            $"Start {(_environment.SteamLinkSelected ? "Steam Link" : "Virtual Desktop")}, SteamVR, and VRCFaceTracking. Enable Independent Eye Gaze only if you want the Hub method; Start tracking checks the prepared patch again.");
     }
 
     private bool TryBeginSetupProgress(string label)
@@ -376,14 +398,15 @@ internal sealed partial class HubForm
         _setupActionRunning = false;
         _setupProgress.IsIndeterminate = false;
         _setupProgress.Value = succeeded ? 100 : 0;
-        _setupProgressStatus.Text = succeeded ? label + " completed successfully." : label + " did not complete. See Activity for details.";
+        _setupProgressStatus.Text = succeeded ? label + " completed successfully." : _actionTitle.Text + ". " + _actionNext.Text;
         _setupProgressStatus.ForeColor = succeeded ? Good : Bad;
         SetSetupButtonsEnabled(true);
     }
 
     private void SetSetupButtonsEnabled(bool enabled)
     {
-        enabled &= !_setupActionRunning;
+        enabled &= !_closingInProgress && !_starting && !_stopping && !_trackingCleanupPending && !_gazeRecoveryRunning &&
+            !_setupActionRunning && !_utilityActionRunning && !_datasetOperationBusy && !_trackingProcesses.Any(p => !p.HasExited);
         _setupRuntimeButton.Enabled = enabled;
         UpdateModuleInstallButtonState(enabled);
         _uninstallBridgeButton.Enabled = enabled && BridgeUninstallAvailable();
@@ -444,6 +467,8 @@ internal sealed partial class HubForm
                 trainingArguments.ToArray());
             if (!succeeded) { FinishTrainingProgress(false); return; }
             var created = TongueModelVersions().Where(version => !versionsBefore.Contains(version)).OrderDescending().FirstOrDefault();
+            if (created <= 0)
+                throw new InvalidOperationException("The training helper exited successfully, but no complete new model pair was found. Check Activity and the selected dataset before retrying.");
             if (created > 0)
             {
                 // The trainer's result determines whether cheeks were trained.
@@ -503,7 +528,21 @@ internal sealed partial class HubForm
                     "Lower-face model ready", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
         }
+        catch (Exception error)
+        {
+            FinishTrainingProgress(false);
+            ShowWorkflowFailure("Training result", error);
+        }
         finally { _datasetOperationBusy = false; UpdateControlState(); }
+    }
+
+    private void ShowWorkflowFailure(string label, Exception error)
+    {
+        AppendLog($"{label} failed: {error}");
+        var failure = HubActionFailure.Explain(label, error.Message, string.Empty);
+        SetActionFeedback(failure.Title, failure.Detail, failure.NextStep, true);
+        MessageBox.Show(this, failure.Detail + "\n\nNext: " + failure.NextStep,
+            failure.Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
     }
 
     private async Task<List<string>> TrackingPrerequisitesAsync()
@@ -513,14 +552,15 @@ internal sealed partial class HubForm
         else if (!await HasQuestAsync()) missing.Add(_environment.WirelessSelected
             ? "an authorized wireless Quest — use First-time setup to connect or pair it"
             : "an authorized Quest over USB — connect the cable and approve debugging");
+        else if (await QuestIdentityProblemAsync() is { } identityProblem) missing.Add(identityProblem);
         if (!Process.GetProcessesByName("vrserver").Any()) missing.Add("SteamVR");
         bool faceFeatures = _gaze.Checked || _tongue.Checked || _cameraCheekPuff.Checked || _pupil.Checked;
         if (faceFeatures && !Process.GetProcessesByName("VRCFaceTracking").Any()) missing.Add("VRCFaceTracking");
         else if (faceFeatures && _environment.TrackingSourceRequiresVrcftRestart()) missing.Add("restart VRCFaceTracking after changing the face-tracking source");
-        if (faceFeatures && !BridgeInstalled()) missing.Add("the Qpro VRCFT module — use First-time setup step 2");
-        else if (faceFeatures && !CurrentBridgeInstalled()) missing.Add("the module for this face-tracking source and Qpro build — close VRCFaceTracking, use First-time setup step 2, then restart it");
-        if (!BackendReady()) missing.Add("the PC runtime — use First-time setup step 1");
-        if (_gaze.Checked && !EyeModelReady()) missing.Add("the locally prepared gaze patch — use First-time setup step 3: Prepare independent gaze");
+        if (faceFeatures && !BridgeInstalled()) missing.Add("the Qpro VRCFT module — use First-time setup: Install module");
+        else if (faceFeatures && !CurrentBridgeInstalled()) missing.Add("the module for this face-tracking source and Qpro build — close VRCFaceTracking, use First-time setup: Install module, then restart it");
+        if (!BackendReady()) missing.Add("the PC runtime — use First-time setup: Install runtime");
+        if (_gaze.Checked && !EyeModelReady()) missing.Add("the locally prepared gaze patch — use First-time setup: Optional independent gaze");
         if (_gaze.Checked && _eyeProfiles.SelectedItem is null) missing.Add("an eye profile");
         if ((_tongue.Checked || _cameraCheekPuff.Checked) && _tongueModels.SelectedItem is null) missing.Add("a paired tongue model");
         if (_cameraCheekPuff.Checked && !SelectedModelHasCameraCheeks()) missing.Add("a trained tongue + cheeks model — use Personalize to record and train cheek camera poses, then select that copy under Lower-face model");
@@ -537,6 +577,7 @@ internal sealed partial class HubForm
         if (_trackingProcesses.Any(p => !p.HasExited)) { MessageBox.Show(this, "Tracking is already running."); return; }
         if (!_gaze.Checked && !_tongue.Checked && !_cameraCheekPuff.Checked && !_pupil.Checked && !_hybridHands.Checked && !_controllerTouchpad.Checked) { PlaySfx("warning.wav"); MessageBox.Show(this, "Select at least one tracking feature."); return; }
         _starting = true;
+        _cameraInputReady = false;
         var startCancellation = new CancellationTokenSource();
         _startCancellation = startCancellation;
         UpdateControlState();
@@ -547,6 +588,7 @@ internal sealed partial class HubForm
             if (IsDisposed || Disposing) return;
             if (missing.Count > 0)
             {
+                SetActionFeedback("Tracking needs a few prerequisites", string.Join("; ", missing), "Complete the listed requirements, then retry Start tracking.", true);
                 PlaySfx("warning.wav");
                 MessageBox.Show(this, "Before starting tracking, start or provide:\n\n• " +
                     string.Join("\n• ", missing), "Not ready");
@@ -626,8 +668,8 @@ internal sealed partial class HubForm
             if (!_gazeFailureHandled)
             {
                 _runStatus.Text = (_hybridHands.Checked || _controllerTouchpad.Checked)
-                    ? "● Waiting for valid controller input…" : "● Selected overrides active";
-                _runStatus.ForeColor = (_hybridHands.Checked || _controllerTouchpad.Checked) ? Warning : Good;
+                    ? "● Waiting for valid controller input…" : cameraPlan.Required ? "● Waiting for camera output…" : "● Selected overrides active";
+                _runStatus.ForeColor = (_hybridHands.Checked || _controllerTouchpad.Checked || cameraPlan.Required) ? Warning : Good;
             }
             UpdateControlState();
         }
@@ -638,6 +680,8 @@ internal sealed partial class HubForm
         catch (Exception error)
         {
             AppendLog("START FAILED: " + error.Message);
+            var failure = HubActionFailure.Explain("Tracking", error.Message, error.Message);
+            SetActionFeedback(failure.Title, error.Message, failure.NextStep, true);
             await StopTrackingAsync();
             PlaySfx("warning.wav");
             MessageBox.Show(this, error.Message, "Tracking did not start");
@@ -666,12 +710,23 @@ internal sealed partial class HubForm
             while (_trackingProcesses.Any(p => !p.HasExited) && DateTime.UtcNow < deadline)
                 await Task.Delay(250);
             if (_trackingProcesses.Any(p => !p.HasExited))
+            {
+                _trackingCleanupPending = true;
                 AppendLog("Tracking cleanup is still running. The stop request remains active; press Stop tracking again if needed, or Q if the preview is still open.");
+            }
             else
             {
                 // Drain final stdout before inspecting the recovery marker. An
                 // exit code alone cannot prove that the headset was restored.
-                foreach (var process in _trackingProcesses) process.WaitForExit();
+                var drained = await Task.WhenAll(_trackingProcesses.Select(process =>
+                    HubProcessResult.WaitForOutputDrainAsync(process, TimeSpan.FromSeconds(5))));
+                if (drained.Any(complete => !complete))
+                {
+                    _trackingCleanupPending = true;
+                    AppendLog("Tracking processes exited, but their final output has not finished. Cleanup remains unverified; keep the Hub open and press Stop tracking again.");
+                    return;
+                }
+                _trackingCleanupPending = false;
                 gazeRestoreFailed = !_gazeRecoveryConfirmed && _trackingProcesses.Any(process =>
                     process.StartInfo.ArgumentList.Any(argument =>
                         argument.EndsWith("native-eye-local-branch-test.ps1", StringComparison.OrdinalIgnoreCase)));
@@ -691,10 +746,10 @@ internal sealed partial class HubForm
         }
         finally
         {
-            _trackingProcesses.RemoveAll(p => p.HasExited);
+            if (!_trackingCleanupPending) _trackingProcesses.RemoveAll(p => p.HasExited);
             _stopping = false; _start.Enabled = true; _stop.Enabled = false;
             _runStatus.Text = stopRequestFailed ? "● Stop request failed — check Activity"
-                : _trackingProcesses.Count != 0 ? "● Waiting for tracking cleanup"
+                : _trackingCleanupPending || _trackingProcesses.Count != 0 ? "● Waiting for tracking cleanup"
                 : gazeRestoreFailed ? "● Eye-model restore unconfirmed — check Activity"
                 : "● Idle — Qpro live overrides off";
             _runStatus.ForeColor = _trackingProcesses.Count == 0 && !gazeRestoreFailed && !stopRequestFailed ? Good : Warning;
@@ -712,33 +767,53 @@ internal sealed partial class HubForm
         var process = new Process { StartInfo = start, EnableRaisingEvents = true };
         void ReportLine(string line)
         {
-            AppendLog($"[{label}] {line}");
-            HandleInferenceStatus(label, line);
-            ObserveControllerInput(label, line);
-            if (label == "Independent gaze" && line.StartsWith("GAZE_STREAM_READY ", StringComparison.Ordinal))
-                _gazeStartupSignal?.TrySetResult(true);
-            if (label == "Independent gaze") ObserveGazeRecovery(line, allowNoSession: false);
+            try
+            {
+                AppendLog($"[{label}] {line}");
+                PostProcessUpdate(label, () =>
+                {
+                    if (!_trackingProcesses.Contains(process)) return;
+                    if (!process.HasExited) HandleInferenceStatus(label, line);
+                    // Restoration reports remain relevant after process exit;
+                    // readiness output must not reactivate a stopped session.
+                    if (!process.HasExited || line.StartsWith(HubControllerFeedback.CleanupPrefix, StringComparison.Ordinal))
+                        ObserveControllerInput(label, line);
+                });
+                if (label == "Independent gaze" && line.StartsWith("GAZE_STREAM_READY ", StringComparison.Ordinal))
+                    _gazeStartupSignal?.TrySetResult(true);
+                if (label == "Independent gaze") ObserveGazeRecovery(line, allowNoSession: false);
+            }
+            catch (Exception error)
+            {
+                AppendLog($"[{label}] Output handling failed: {error}");
+                PostProcessUpdate(label, () => SetActionFeedback(label + " output needs attention",
+                    error.Message, "Copy diagnostics and check the Activity output before relying on tracking.", true));
+            }
         }
         process.OutputDataReceived += (_, e) => { if (e.Data is not null) ReportLine(e.Data); };
         process.ErrorDataReceived += (_, e) => { if (e.Data is not null) ReportLine(e.Data); };
         process.Exited += (_, _) =>
         {
             if (label == "Independent gaze") _gazeStartupSignal?.TrySetResult(false);
-            if (IsDisposed || Disposing || !IsHandleCreated) return;
-            try
+            var stopWasRequested = _stopping || _trackingCleanupPending || _closingInProgress;
+            int exitCode;
+            try { exitCode = process.ExitCode; }
+            catch (Exception error)
             {
-                BeginInvoke(() =>
-                {
-                    if (IsDisposed || Disposing) return;
-                    AppendLog($"[{label}] exited with code {process.ExitCode}.");
-                    if (label == "Independent gaze" && !_stopping && !_closingInProgress)
+                AppendLog($"[{label}] Exit status could not be read: {error.Message}");
+                return;
+            }
+            PostProcessUpdate(label, () =>
+            {
+                    AppendLog($"[{label}] exited with code {exitCode}.");
+                    if (label == "Independent gaze" && !stopWasRequested && !_stopping && !_closingInProgress)
                     {
                         if (!_gazeStartupInProgress && !_gazeFailureHandled)
-                            _ = DisableFailedGazeAsync($"The independent-gaze process stopped with code {process.ExitCode}.");
+                            _ = DisableFailedGazeAsync($"The independent-gaze process stopped with code {exitCode}.");
                         UpdateControlState();
                         return;
                     }
-                    if (!_stopping)
+                    if (!stopWasRequested && !_stopping)
                     {
                         _runStatus.Text = $"● {label} stopped — check Activity";
                         _runStatus.ForeColor = Warning;
@@ -746,21 +821,30 @@ internal sealed partial class HubForm
                         if (_pupil.Checked && label is ("Camera tracking" or "Pupil tracking")) SetStatus(_pupilStatus, StatusKind.Warning, "Stopped");
                     }
                     UpdateControlState();
-                });
-            }
-            catch (InvalidOperationException) { /* The window closed during process exit. */ }
+            });
         };
-        if (!process.Start()) throw new InvalidOperationException($"Could not start {label}.");
-        process.BeginOutputReadLine(); process.BeginErrorReadLine();
-        _trackingProcesses.Add(process);
-        AppendLog($"Starting {label}…");
-        return process;
+        try
+        {
+            if (!process.Start()) throw new InvalidOperationException($"Could not start {label}.");
+            // Track it before attaching readers: if a reader fails, the caller's
+            // Stop path must still request this child's headset cleanup.
+            _trackingProcesses.Add(process);
+            process.BeginOutputReadLine(); process.BeginErrorReadLine();
+            AppendLog($"Starting {label}…");
+            return process;
+        }
+        catch
+        {
+            if (!_trackingProcesses.Contains(process)) process.Dispose();
+            throw;
+        }
     }
 
     private async Task DisableFailedGazeAsync(string reason)
     {
         if (_gazeFailureHandled || _stopping || _closingInProgress || IsDisposed || Disposing) return;
         _gazeRecoveryRunning = true;
+        _gazeRecoveryConfirmed = false;
         _gazeFailureHandled = true;
         _gaze.Checked = false;
         AppendLog($"Independent Eye Gaze disabled automatically: {reason}");
@@ -771,25 +855,15 @@ internal sealed partial class HubForm
         try
         {
             var start = PowerShellStart("native-eye-local-branch-test.ps1", ["-RestoreIfActive"], hidden: true);
-            start.RedirectStandardOutput = true;
-            start.RedirectStandardError = true;
-            using var process = new Process { StartInfo = start };
-            if (!process.Start()) throw new InvalidOperationException("The stock eye-model recovery check could not start.");
-            var output = process.StandardOutput.ReadToEndAsync();
-            var errors = process.StandardError.ReadToEndAsync();
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(35));
-            try { await process.WaitForExitAsync(timeout.Token); }
-            catch (OperationCanceledException)
-            {
-                try { process.Kill(entireProcessTree: true); } catch { /* Process already ended. */ }
-                throw new TimeoutException("The stock eye-model recovery check timed out.");
-            }
-            foreach (var line in (await output + Environment.NewLine + await errors).Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+            var result = await HubProcessResult.RunAsync(start, TimeSpan.FromSeconds(35));
+            foreach (var line in result.Diagnostics.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
             {
                 AppendLog("[Independent gaze recovery] " + line);
-                ObserveGazeRecovery(line, allowNoSession: true);
+                if (!result.TimedOut && result.CleanupError is null) ObserveGazeRecovery(line, allowNoSession: true);
             }
-            if (process.ExitCode != 0) throw new InvalidOperationException($"Stock eye-model recovery failed with code {process.ExitCode}.");
+            if (result.TimedOut) throw new TimeoutException("The stock eye-model recovery check timed out; restoration remains unconfirmed.");
+            if (result.CleanupError is not null) throw new InvalidOperationException(result.CleanupError);
+            if (result.ExitCode != 0) throw new InvalidOperationException($"Stock eye-model recovery failed with code {result.ExitCode}.");
             if (!_gazeRecoveryConfirmed) throw new InvalidOperationException("The recovery script did not confirm the Qpro session state.");
             if (_stopping || IsDisposed || Disposing || (_starting && _startCancellation?.IsCancellationRequested == true)) return;
             _runStatus.Text = _trackingProcesses.Any(p => !p.HasExited)
@@ -798,6 +872,7 @@ internal sealed partial class HubForm
         }
         catch (Exception error)
         {
+            _gazeRecoveryConfirmed = false;
             AppendLog("Independent gaze recovery needs attention: " + error.Message);
             if (_stopping || IsDisposed || Disposing || (_starting && _startCancellation?.IsCancellationRequested == true)) return;
             _runStatus.Text = "● Independent gaze disabled — check eye-model recovery in Activity";
@@ -871,8 +946,16 @@ internal sealed partial class HubForm
     private void HandleInferenceStatus(string label, string line)
     {
         if (label is not ("Camera tracking" or "Pupil tracking")) return;
-        if (InvokeRequired) { BeginInvoke(() => HandleInferenceStatus(label, line)); return; }
         if (IsDisposed || Disposing || _stopping) return;
+        if (InvokeRequired) { PostProcessUpdate(label, () => HandleInferenceStatus(label, line)); return; }
+
+        if (line.StartsWith("TRANSPORT_QUALITY ", StringComparison.Ordinal) &&
+            Regex.Match(line, @"\bfps=(?<fps>\d+(?:\.\d+)?)").Groups["fps"] is { Success: true } frameRate &&
+            double.TryParse(frameRate.Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var fps) && fps > 0)
+        {
+            _cameraInputReady = true;
+            UpdateSessionReadiness();
+        }
 
         if (label == "Camera tracking")
         {
@@ -888,7 +971,7 @@ internal sealed partial class HubForm
                     "cpu" => "CPU",
                     _ => "Other (" + match.Groups["device"].Value + ")"
                 };
-                SetStatus(_inferenceStatus, backend == "cpu" ? StatusKind.Warning : StatusKind.Good, description);
+                SetStatus(_inferenceStatus, StatusKind.Warning, description + " selected");
                 _inferenceStatus.AccessibleDescription = name;
             }
         }
@@ -922,17 +1005,30 @@ internal sealed partial class HubForm
     private async Task<bool> RunUtilityAsync(string label, string script, params string[] args)
     {
         if (_closingInProgress) return false;
+        if (_starting || _stopping)
+        {
+            SetActionFeedback(label + " is waiting", "Tracking startup or cleanup is still running.", "Wait for it to finish, then retry this action.");
+            return false;
+        }
         if (_utilityActionRunning)
         {
             AppendLog($"{label} was not started because another setup, capture, or training action is running.");
             return false;
         }
-        if (_trackingProcesses.Any(p => !p.HasExited)) { MessageBox.Show(this, "Stop live tracking before starting this action."); return false; }
+        if (_trackingCleanupPending || _trackingProcesses.Any(p => !p.HasExited)) { MessageBox.Show(this, "Stop live tracking and finish its cleanup before starting this action."); return false; }
+        var recentOutput = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var acceptingProgress = 1;
+        var isControllerUtility = script.Equals("controller-input.ps1", StringComparison.OrdinalIgnoreCase);
+        var isControllerCompatibility = isControllerUtility && args.Length >= 2 &&
+            args[0].Equals("-Action", StringComparison.OrdinalIgnoreCase) && args[1].Equals("check", StringComparison.OrdinalIgnoreCase);
+        var controllerResult = isControllerUtility ? new HubControllerUtilityResult() : null;
+        var setupResult = HubSetupResult.Create(script, args);
         _utilityActionRunning = true;
         UpdateControlState();
         try
         {
             AppendLog($"Starting {label}…");
+            SetActionFeedback("Starting " + label, "Launching the bundled helper and waiting for progress.", "Keep the Hub open. Activity will report the current step and any failure.");
             var isRuntimeSetup = script.Equals("setup-runtime.ps1", StringComparison.OrdinalIgnoreCase);
             var isGazeRecovery = script.Equals("native-eye-local-branch-test.ps1", StringComparison.OrdinalIgnoreCase) &&
                 args.Contains("-RestoreIfActive", StringComparer.OrdinalIgnoreCase);
@@ -945,16 +1041,43 @@ internal sealed partial class HubForm
             var start = PowerShellStart(script, args, hidden: true);
             start.RedirectStandardOutput = true;
             start.RedirectStandardError = true;
-            using var process = new Process { StartInfo = start };
+            using var process = new Process { StartInfo = start, EnableRaisingEvents = true };
+            var exited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            process.Exited += (_, _) => exited.TrySetResult();
             var startedAt = DateTime.UtcNow;
             var lastOutputTicks = startedAt.Ticks;
             var outputLineCount = 0;
+            Exception? outputFailure = null;
             void ReportProcessLine(string line)
+            {
+                try { ObserveProcessLine(line); }
+                catch (Exception error)
+                {
+                    Interlocked.CompareExchange(ref outputFailure, error, null);
+                    AppendLog($"[{label}] Output handling failed: {error}");
+                }
+            }
+            void ObserveProcessLine(string line)
             {
                 Interlocked.Exchange(ref lastOutputTicks, DateTime.UtcNow.Ticks);
                 Interlocked.Increment(ref outputLineCount);
+                recentOutput.Enqueue(line);
+                while (recentOutput.Count > 60) recentOutput.TryDequeue(out _);
                 AppendLog($"[{label}] {line}");
-                HandleTrainingProgress(label, line);
+                if (Volatile.Read(ref acceptingProgress) == 0) return;
+                controllerResult?.Observe(line);
+                setupResult?.Observe(line);
+                PostProcessUpdate(label, () =>
+                {
+                    // Posted progress may arrive after the final result. It must
+                    // not turn a completed or failed action back into "running".
+                    if (Volatile.Read(ref acceptingProgress) == 0) return;
+                    if ((isRuntimeSetup || script.Equals("Install-QproRocm.ps1", StringComparison.OrdinalIgnoreCase)) &&
+                        Regex.IsMatch(line, @"^(Checking|Installing|Downloading|Verifying|Selected|Discrete|PC runtime|ROCm|NVIDIA GPU|AMD GPU|Existing shared)", RegexOptions.IgnoreCase))
+                        SetActionFeedback(label + " is running", line.Length <= 240 ? line : line[..237] + "…", "Wait for the final checks. The environment is ready only when setup confirms success.");
+                    if (!isControllerCompatibility) ObserveControllerInput(label, line);
+                    HandleTrainingProgress(label, line);
+                });
                 if (isGazeRecovery) ObserveGazeRecovery(line, allowNoSession: true);
                 if (isGazeInspection && line.StartsWith(HubGazeInspection.Prefix, StringComparison.Ordinal))
                     _gazeInspectionResult = HubGazeInspection.ParseLine(line);
@@ -968,7 +1091,7 @@ internal sealed partial class HubForm
                 AppendLog($"[PC runtime setup] PowerShell launched (PID {process.Id}). Waiting for the script's first progress message…");
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
-            var exitTask = process.WaitForExitAsync();
+            var exitTask = exited.Task;
             if (isRuntimeSetup)
             {
                 var startupWarningShown = false;
@@ -984,6 +1107,7 @@ internal sealed partial class HubForm
                         ? "The setup script has not printed its first message yet."
                         : "No new setup output has arrived.";
                     AppendLog($"[PC runtime setup] Still running after {elapsed.TotalSeconds:0} seconds (PowerShell PID {process.Id}); {stage} Last output was {quietFor.TotalSeconds:0} seconds ago.");
+                    SetActionFeedback("PC runtime setup is still running", $"Elapsed: {elapsed.TotalSeconds:0} seconds. {stage} Last progress: {quietFor.TotalSeconds:0} seconds ago.", "Keep the Hub open. If it stays silent, check Windows Security and copy diagnostics.");
                     if (!startupWarningShown && elapsed.TotalMinutes >= 1 && Interlocked.CompareExchange(ref outputLineCount, 0, 0) == 0)
                     {
                         startupWarningShown = true;
@@ -992,14 +1116,37 @@ internal sealed partial class HubForm
                 }
             }
             await exitTask;
-            // WaitForExit also drains asynchronous stdout/stderr callbacks, so
-            // a quick failure cannot appear to have exited with no output.
-            process.WaitForExit();
+            // Drain callbacks asynchronously with a separate deadline after the
+            // helper exits; a descendant retaining a pipe must not hang the Hub.
+            var outputDrained = await HubProcessResult.WaitForOutputDrainAsync(process, TimeSpan.FromSeconds(5));
+            Interlocked.Exchange(ref acceptingProgress, 0);
+            if (!outputDrained)
+                throw new InvalidOperationException("The helper exited, but its output did not finish. Its result remains unverified; check Activity before retrying.");
+            if (outputFailure is not null)
+                throw new InvalidOperationException("The helper output could not be read completely; its result remains unverified.", outputFailure);
             AppendLog($"{label} finished with code {process.ExitCode}{(isRuntimeSetup ? $" after {(DateTime.UtcNow - startedAt).TotalSeconds:0} seconds" : string.Empty)}.");
             if (isRuntimeSetup && Interlocked.CompareExchange(ref outputLineCount, 0, 0) == 0)
                 AppendLog("[PC runtime setup] PowerShell exited without any script output. Check that the complete release ZIP was extracted, then share this Activity log and any Windows Security alert.");
+            var controllerFeedback = controllerResult?.Complete(isControllerCompatibility, process.ExitCode);
+            if (controllerFeedback?.IsError == true)
+            {
+                ShowControllerFeedback(controllerFeedback);
+                AppendLog($"{label} needs attention: {controllerFeedback.Detail}");
+                return false;
+            }
             if (process.ExitCode != 0)
                 throw new InvalidOperationException($"{label} failed with code {process.ExitCode}. See Activity for the exact error and suggested fix.");
+            if (setupResult?.Failure() is string setupFailure)
+                throw new InvalidOperationException(setupFailure);
+            if (script.Equals("uninstall-vrcft-eye-bridge.ps1", StringComparison.OrdinalIgnoreCase) && BridgeInstalled())
+                throw new InvalidOperationException("A Qpro module is still installed after the uninstall helper completed. Close VRCFaceTracking and retry.");
+            if (isControllerUtility && !isControllerCompatibility && setupResult is not null)
+            {
+                var uninstall = args.Contains("uninstall", StringComparer.OrdinalIgnoreCase);
+                if (uninstall ? Directory.Exists(ControllerAddonRoot) :
+                    !File.Exists(Path.Combine(ControllerComponentsRoot, "ready.json")) || !File.Exists(Path.Combine(ControllerAddonRoot, "qpro-owner.json")))
+                    throw new InvalidOperationException("The controller helper reported completion, but its installed files did not match the result. Check Activity and repair the optional components.");
+            }
             if (isGazeRecovery && !_gazeRecoveryConfirmed)
                 throw new InvalidOperationException("The recovery script did not confirm the Qpro session state. Check Activity before starting independent gaze.");
             if (isGazeInspection && !_gazeInspectionConfirmed || isLegacyGazeReset && !_legacyGazeResetConfirmed)
@@ -1010,21 +1157,30 @@ internal sealed partial class HubForm
             // The wireless connection script already verifies ADB and Magisk root.
             // Show its result without waiting on a second network status probe.
             if (label != "Connect wireless Quest") await RefreshStatusAsync();
+            if (controllerFeedback is not null) ShowControllerFeedback(controllerFeedback);
+            else SetActionFeedback(label + " completed", "The helper exited successfully and its required result checks passed.", label.StartsWith("Install ", StringComparison.Ordinal) && label.Contains("module", StringComparison.Ordinal) ? "Reopen VRCFaceTracking to load the installed module." : "Continue setup or choose your features on Live tracking.");
             return true;
         }
         catch (Exception error)
         {
             AppendLog($"{label} failed: {error.Message}");
+            var failure = HubActionFailure.Explain(label, error.Message, string.Join("\n", recentOutput));
+            SetActionFeedback(failure.Title, failure.Detail, failure.NextStep, true);
             if (label == "Connect wireless Quest")
                 MessageBox.Show(this,
                     "The Quest did not connect over wireless ADB. Check its current Wi-Fi IP and port, keep the headset awake, and allow Shell / ADB Shell in Magisk if prompted. See Activity for the exact error.",
                     "Quest connection failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             else if (!(script.Equals("native-eye-local-branch-test.ps1", StringComparison.OrdinalIgnoreCase) &&
                 args.Contains("-InspectOnly", StringComparer.OrdinalIgnoreCase)))
-                MessageBox.Show(this, error.Message, label + " failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, failure.Detail + "\n\nNext: " + failure.NextStep + "\n\nOpen Activity for the detailed log.", failure.Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
         }
-        finally { _utilityActionRunning = false; UpdateControlState(); }
+        finally
+        {
+            Interlocked.Exchange(ref acceptingProgress, 0);
+            _utilityActionRunning = false;
+            UpdateControlState();
+        }
     }
 
     private void BeginTrainingProgress(TongueDatasetKind kind)
@@ -1040,7 +1196,8 @@ internal sealed partial class HubForm
     private void HandleTrainingProgress(string label, string line)
     {
         if (!label.Contains("training", StringComparison.OrdinalIgnoreCase)) return;
-        if (InvokeRequired) { BeginInvoke(() => HandleTrainingProgress(label, line)); return; }
+        if (IsDisposed || Disposing) return;
+        if (InvokeRequired) { PostProcessUpdate(label, () => HandleTrainingProgress(label, line)); return; }
 
         if (line.Contains("TRAIN_STATUS phase=preparing", StringComparison.Ordinal))
         {
@@ -1055,30 +1212,27 @@ internal sealed partial class HubForm
             var device = deviceMatch.Groups["device"].Value;
             _trainingProgress.Value = Math.Max(_trainingProgress.Value, 5);
             _trainingProgressStatus.Text = device == "cpu"
-                ? "CPU fallback active — training is working but slower. NVIDIA owners can rerun setup step 1 afterward."
-                : "NVIDIA CUDA acceleration active — beginning model training…";
+                ? "CPU fallback active — training is working but slower. GPU owners can verify acceleration in First-time setup afterward."
+                : "GPU acceleration active — beginning model training…";
             _trainingProgressStatus.ForeColor = device == "cpu" ? Warning : Good;
             return;
         }
-        var stageMatch = Regex.Match(line, @"TRAIN_STAGE index=(?<index>\d+) total=(?<total>\d+) name=(?<name>\S+) epochs=(?<epochs>\d+) device=(?<device>\S+)");
-        if (stageMatch.Success)
+        if (HubTrainingProgress.TryStage(line, out var trainingStage) && trainingStage is not null)
         {
-            _trainingStage = int.Parse(stageMatch.Groups["index"].Value);
-            _trainingStageCount = Math.Max(1, int.Parse(stageMatch.Groups["total"].Value));
-            var name = stageMatch.Groups["name"].Value;
-            _trainingProgressStatus.Text = $"Training {name} checkpoint · stage {_trainingStage} of {_trainingStageCount} · 0/{stageMatch.Groups["epochs"].Value} epochs";
-            _trainingProgressStatus.ForeColor = stageMatch.Groups["device"].Value == "cpu" ? Warning : Good;
+            _trainingStage = trainingStage.Index;
+            _trainingStageCount = trainingStage.Total;
+            _trainingProgressStatus.Text = $"Training {trainingStage.Name} checkpoint · stage {_trainingStage} of {_trainingStageCount} · 0/{trainingStage.Epochs} epochs";
+            _trainingProgressStatus.ForeColor = trainingStage.Device == "cpu" ? Warning : Good;
             _trainingProgress.Value = Math.Clamp((int)Math.Round(5 + 94.0 * (_trainingStage - 1) / _trainingStageCount), 1, 99);
             return;
         }
-        var epochMatch = Regex.Match(line, @"TRAIN_EPOCH current=(?<current>\d+) total=(?<total>\d+) focus=(?<focus>\S+)");
-        if (!epochMatch.Success) return;
-        var current = int.Parse(epochMatch.Groups["current"].Value);
-        var total = Math.Max(1, int.Parse(epochMatch.Groups["total"].Value));
+        if (!HubTrainingProgress.TryEpoch(line, out var epoch) || epoch is null) return;
+        var current = epoch.Current;
+        var total = epoch.Total;
         var stage = Math.Max(1, _trainingStage);
         var overall = 5 + 94.0 * ((stage - 1) + Math.Clamp((double)current / total, 0, 1)) / Math.Max(1, _trainingStageCount);
         _trainingProgress.Value = Math.Clamp((int)Math.Round(overall), 1, 99);
-        _trainingProgressStatus.Text = $"Training {epochMatch.Groups["focus"].Value} checkpoint · stage {stage} of {_trainingStageCount} · {current}/{total} epochs · {_trainingProgress.Value}%";
+        _trainingProgressStatus.Text = $"Training {epoch.Focus} checkpoint · stage {stage} of {_trainingStageCount} · {current}/{total} epochs · {_trainingProgress.Value}%";
     }
 
     private void FinishTrainingProgress(bool succeeded)

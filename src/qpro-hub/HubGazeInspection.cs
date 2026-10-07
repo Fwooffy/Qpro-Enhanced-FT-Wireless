@@ -61,7 +61,8 @@ internal sealed record HubGazeInspection(string Firmware, string ExperimentalSel
             var names = string.Join(", ", MagiskGazeModules.Take(3));
             if (MagiskGazeModules.Count > 3) names += $" (+{MagiskGazeModules.Count - 3} more)";
             method += "\nModule: " + names;
-            next = "Leave Independent Eye Gaze unchecked in the Hub while the Magisk module is active. " +
+            next = "The Magisk module already provides independent gaze. Skip Prepare gaze. Leave Independent Eye Gaze unchecked in the Hub. " +
+                "You can still use Qpro tongue, camera cheek, pupil and eyebrow features. " +
                 "To use the Hub method instead, disable that gaze module in Magisk, reboot, then run Check gaze setup again.";
             if (QproSessionRecorded) next += " A Qpro record also remains; stop its owning Hub and use Recover Qpro gaze.";
         }

@@ -46,11 +46,11 @@ internal sealed partial class HubForm
         brand.Controls.Add(brandSubtitle, 0, 1);
         sidebar.Controls.Add(brand, 0, 0);
 
-        var liveTab = NavigationButton("Live tracking");
-        var setupTab = NavigationButton("First-time setup");
-        var personalizationTab = NavigationButton("Personalize");
-        var modelsTab = NavigationButton("Model manager");
-        var activityTab = NavigationButton("Activity");
+        var liveTab = NavigationButton("Live tracking", HubIcon.Headset);
+        var setupTab = NavigationButton("First-time setup", HubIcon.Setup);
+        var personalizationTab = NavigationButton("Personalize", HubIcon.Sliders);
+        var modelsTab = NavigationButton("Model manager", HubIcon.Models);
+        var activityTab = NavigationButton("Activity", HubIcon.Activity);
         var tabs = new[] { setupTab, liveTab, personalizationTab, modelsTab, activityTab };
         for (var index = 0; index < tabs.Length; index++) sidebar.Controls.Add(tabs[index], 0, index + 1);
         var sidebarNotice = new Label
@@ -68,7 +68,7 @@ internal sealed partial class HubForm
         {
             var dpiScale = shell.DeviceDpi / 96F;
             var textWidth = tabs.Max(tab => TextRenderer.MeasureText(tab.Text, tab.Font).Width);
-            var requiredWidth = textWidth + sidebar.Padding.Horizontal + (int)Math.Ceiling(18 * dpiScale);
+            var requiredWidth = textWidth + sidebar.Padding.Horizontal + (int)Math.Ceiling(54 * dpiScale);
             var sidebarWidth = Math.Max(
                 Math.Clamp((int)(shell.ClientSize.Width * 0.2), (int)(180 * dpiScale), (int)(226 * dpiScale)),
                 requiredWidth);
@@ -80,13 +80,21 @@ internal sealed partial class HubForm
         var main = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, BackColor = Background, Margin = Padding.Empty };
         main.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
         main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        var header = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(38, 16, 38, 7), Margin = Padding.Empty };
+        var header = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new Padding(38, 16, 38, 7), Margin = Padding.Empty };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         header.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
         header.RowStyles.Add(new RowStyle(SizeType.Absolute, 23));
         var pageTitle = new Label { Dock = DockStyle.Fill, Font = new Font(UiFontName, 20F, FontStyle.Bold), ForeColor = Color.White, TextAlign = ContentAlignment.MiddleLeft, Margin = Padding.Empty };
         var pageSubtitle = new Label { Dock = DockStyle.Fill, ForeColor = Muted, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, Margin = Padding.Empty };
         header.Controls.Add(pageTitle, 0, 0);
+        _updateLink.AutoSize = true;
+        _updateLink.Anchor = AnchorStyles.Right;
+        _updateLink.TextAlign = ContentAlignment.MiddleRight;
+        _updateLink.Margin = new Padding(16, 0, 0, 0);
+        header.Controls.Add(_updateLink, 1, 0);
         header.Controls.Add(pageSubtitle, 0, 1);
+        header.SetColumnSpan(pageSubtitle, 2);
         main.Controls.Add(header, 0, 0);
         var pages = new Panel { Dock = DockStyle.Fill, BackColor = Background, Margin = Padding.Empty };
         main.Controls.Add(pages, 0, 1);
@@ -159,11 +167,12 @@ internal sealed partial class HubForm
             var button = SecondaryButton("Show " + text);
             button.Enabled = true;
             button.Margin = new Padding(0, 4, 8, 4);
-            button.AccessibleName = text;
+            button.AccessibleName = button.Text;
             button.Click += (_, _) =>
             {
                 body.Visible = !body.Visible;
                 button.Text = (body.Visible ? "Hide " : "Show ") + text;
+                button.AccessibleName = button.Text;
             };
             Span(card, button, row);
             Span(card, body, row + 1);
@@ -171,7 +180,7 @@ internal sealed partial class HubForm
         }
 
         var liveSource = LiveFields();
-        Span(liveSource, SectionTitle("Session"), 0);
+        Span(liveSource, SectionTitle("Your session", HubIcon.Headset), 0);
         LiveField(liveSource, 1, "Streaming app", _trackingSourceLive);
         var statuses = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = false,
             ColumnCount = 2, RowCount = 4, Margin = new Padding(0, 8, 0, 3) };
@@ -181,9 +190,9 @@ internal sealed partial class HubForm
         var statusItems = new[]
         {
             ("Quest ADB", _usbStatus), ("SteamVR", _steamStatus), ("VRCFaceTracking", _vrcftStatus),
-            ("Qpro module", _bridgeStatus), ("PC runtime", _runtimeStatus), ("Gaze support", _gazeStatus),
-            ("Lower-face", _inferenceStatus), ("Pupil", _pupilStatus),
+            ("Qpro module", _bridgeStatus), ("PC runtime", _runtimeStatus),
         };
+        var readinessItems = new List<FlowLayoutPanel>();
         for (var index = 0; index < statusItems.Length; index++)
         {
             // A status wraps within its own cell at narrow widths instead of
@@ -195,6 +204,7 @@ internal sealed partial class HubForm
             statusItems[index].Item2.Margin = Padding.Empty;
             item.Controls.Add(statusItems[index].Item2);
             statuses.Controls.Add(item, index % 2, index / 2);
+            readinessItems.Add(item);
         }
         bool fittingReadiness = false;
         void FitLiveReadiness()
@@ -203,19 +213,43 @@ internal sealed partial class HubForm
             fittingReadiness = true;
             try
             {
-                var rowHeights = new int[4];
+                var scale = DeviceDpi / 96F;
+                var columns = statuses.ClientSize.Width >= 700 * scale ? 3
+                    : statuses.ClientSize.Width >= 430 * scale ? 2 : 1;
+                var rows = (int)Math.Ceiling(statusItems.Length / (double)columns);
+                if (statuses.ColumnCount != columns)
+                {
+                    statuses.SuspendLayout();
+                    try
+                    {
+                        // Change the shared grid once at each width breakpoint.
+                        // Each status then stays aligned with the row beside it.
+                        statuses.ColumnCount = columns;
+                        statuses.RowCount = rows;
+                        statuses.ColumnStyles.Clear();
+                        statuses.RowStyles.Clear();
+                        for (var column = 0; column < columns; column++)
+                            statuses.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F / columns));
+                        for (var row = 0; row < rows; row++)
+                            statuses.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                        for (var index = 0; index < readinessItems.Count; index++)
+                            statuses.SetCellPosition(readinessItems[index], new TableLayoutPanelCellPosition(index % columns, index / columns));
+                    }
+                    finally { statuses.ResumeLayout(true); }
+                }
+                var rowHeights = new int[rows];
                 for (var index = 0; index < statusItems.Length; index++)
                 {
-                    var item = (FlowLayoutPanel)statuses.GetControlFromPosition(index % 2, index / 2)!;
+                    var item = readinessItems[index];
                     var name = (Label)item.Controls[0];
                     var value = statusItems[index].Item2;
-                    var width = Math.Max(100, statuses.ClientSize.Width / 2 - item.Margin.Horizontal);
+                    var width = Math.Max(100, statuses.ClientSize.Width / columns - item.Margin.Horizontal);
                     name.MaximumSize = value.MaximumSize = new Size(width, 0);
                     var nameSize = name.PreferredSize;
                     var valueSize = value.PreferredSize;
                     item.Height = nameSize.Width + name.Margin.Horizontal + valueSize.Width <= width
                         ? Math.Max(nameSize.Height, valueSize.Height) : nameSize.Height + valueSize.Height;
-                    rowHeights[index / 2] = Math.Max(rowHeights[index / 2], item.Height + item.Margin.Vertical);
+                    rowHeights[index / columns] = Math.Max(rowHeights[index / columns], item.Height + item.Margin.Vertical);
                 }
                 // Fix the total to the measured rows. Otherwise WinForms can
                 // stretch the last flow row into blank space while autosizing.
@@ -229,27 +263,57 @@ internal sealed partial class HubForm
         var connectionDetails = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1, Margin = Padding.Empty };
         LiveRows(connectionDetails, 1);
+        var processingStatus = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
+            ColumnCount = 2, Margin = new Padding(0, 0, 0, 8) };
+        processingStatus.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
+        processingStatus.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        var processingItems = new[] { ("Gaze support", _gazeStatus), ("Lower-face tracking", _inferenceStatus), ("Pupil tracking", _pupilStatus) };
+        for (var index = 0; index < processingItems.Length; index++)
+        {
+            processingStatus.Controls.Add(FieldLabel(processingItems[index].Item1), 0, index);
+            processingItems[index].Item2.Margin = new Padding(0, 4, 0, 4);
+            processingStatus.Controls.Add(processingItems[index].Item2, 1, index);
+        }
+        connectionDetails.Controls.Add(processingStatus);
+        var sessionCameraSettings = LiveFields();
+        sessionCameraSettings.BackColor = Inset;
+        sessionCameraSettings.Padding = new Padding(12);
+        sessionCameraSettings.Margin = new Padding(0, 4, 0, 8);
+        LiveField(sessionCameraSettings, 0, "Camera FPS cap", _fps);
+        Span(sessionCameraSettings, _cameraPreview, 1);
+        Span(sessionCameraSettings, Info("Shared by tongue, camera cheeks and pupils. A higher FPS cap uses more PC resources. Hiding the preview keeps tracking active. These options apply the next time tracking starts."), 2);
+        connectionDetails.Controls.Add(sessionCameraSettings);
         _trackingSourceLiveNote.Margin = new Padding(0, 2, 0, 8);
         connectionDetails.Controls.Add(_trackingSourceLiveNote);
-        connectionDetails.Controls.Add(ActionButton("Refresh connection status", (_, _) => { ReloadProfiles(); _ = RefreshStatusAsync(); }));
-        Details(liveSource, connectionDetails, "connection details", 3);
+        var connectionActions = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
+            WrapContents = true, Margin = Padding.Empty };
+        connectionActions.Controls.Add(ActionButton("Refresh connection status", (_, _) => { ReloadProfiles(); _ = RefreshStatusAsync(); }));
+        connectionActions.Controls.Add(ActionButton("Open setup", (_, _) => setupTab.PerformClick()));
+        connectionDetails.Controls.Add(connectionActions);
+        Span(liveSource, Info("Eyebrow and native cheek adjustments apply immediately and stay enabled after Stop tracking or closing Hub. Turn them off for the streaming app's original values."), 3);
+        Details(liveSource, connectionDetails, "connection and camera settings", 4);
         liveLayout.Controls.Add(liveSource);
 
         var eyesCard = LiveFields();
-        Span(eyesCard, SectionTitle("Eyes"), 0);
-        Span(eyesCard, _gaze, 1);
-        LiveField(eyesCard, 2, "Eye profile", _eyeProfiles);
-        Span(eyesCard, Info("Keep independent gaze off while the Magisk gaze module is active. The Hub's method briefly freezes the headset while restarting tracking; wait for Activity to confirm it is ready."), 3);
-        Span(eyesCard, _pupil, 4);
-        LiveField(eyesCard, 5, "Pupil response", _pupilSensitivity);
-        Span(eyesCard, Info("Look straight and hold steady until both eyes finish warming up. Processing status is shown under Session. Shared FPS and preview controls are under Lower-face tracking > Show camera settings."), 6);
-        Span(eyesCard, _eyebrowBoost, 7);
-        LiveField(eyesCard, 8, "Eyebrow sensitivity", _eyebrowSensitivity);
-        Span(eyesCard, Info("Eyebrow sensitivity adjusts the streaming app's existing brow movement from 0.50× to 3.00×. Changes apply immediately through the Qpro module. Turn the adjustment off to use native values."), 9);
+        Span(eyesCard, SectionTitle("Eyes", HubIcon.Eyes), 0);
+        Span(eyesCard, Info("With the independent-gaze Magisk module enabled, leave Hub gaze off. Pupil and eyebrow tracking work separately."), 1);
+        Span(eyesCard, _gaze, 2);
+        Span(eyesCard, _pupil, 3);
+        Span(eyesCard, _eyebrowBoost, 4);
+        var eyeSettings = LiveFields();
+        eyeSettings.BackColor = Inset;
+        eyeSettings.Padding = new Padding(12);
+        eyeSettings.Margin = new Padding(0, 4, 0, 2);
+        LiveField(eyeSettings, 0, "Eye profile", _eyeProfiles);
+        LiveField(eyeSettings, 1, "Pupil response", _pupilSensitivity);
+        LiveField(eyeSettings, 2, "Eyebrow sensitivity", _eyebrowSensitivity);
+        Span(eyeSettings, Info("Use one independent gaze method at a time. Leave the Hub option off while a Magisk gaze module is active. The Hub method briefly freezes the headset while restarting tracking; wait for Activity to confirm it is ready."), 3);
+        Span(eyeSettings, Info("Pupils need a short warmup: look straight and hold steady. Shared FPS and preview options are under Your session > Show connection and camera settings."), 4);
+        Details(eyesCard, eyeSettings, "eye settings and guidance", 5);
         liveLayout.Controls.Add(eyesCard);
 
         var lowerFace = LiveFields();
-        Span(lowerFace, SectionTitle("Lower-face tracking"), 0);
+        Span(lowerFace, SectionTitle("Lower-face tracking", HubIcon.LowerFace), 0);
         LiveField(lowerFace, 1, "Lower-face model", _tongueModels);
         _tongueModelNote.Margin = new Padding(0, 3, 0, 8);
         Span(lowerFace, _tongueModelNote, 2);
@@ -257,17 +321,19 @@ internal sealed partial class HubForm
         Span(lowerFace, _cameraCheekPuff, 4);
         _cameraCheekSourceNote.Margin = new Padding(0, 3, 0, 8);
         Span(lowerFace, _cameraCheekSourceNote, 5);
-        Span(lowerFace, Info("Choose a model and enable the camera features you want. Restart tracking after changing the model or Camera cheek puff."), 6);
         var cameraSettings = LiveFields();
         cameraSettings.BackColor = Inset;
         cameraSettings.Padding = new Padding(8);
         cameraSettings.Margin = new Padding(0, 2, 0, 4);
-        LiveField(cameraSettings, 0, "FPS cap", _fps);
-        LiveField(cameraSettings, 1, "Motion smoothing", _smoothing);
-        LiveField(cameraSettings, 2, "Tongue visibility", _visibilityMode);
-        Span(cameraSettings, _cameraPreview, 3);
-        Span(cameraSettings, Info("FPS cap and camera preview also apply to pupil tracking. Hiding the preview keeps tracking active. Changes apply the next time tracking starts."), 4);
-        Details(lowerFace, cameraSettings, "camera settings", 7);
+        LiveField(cameraSettings, 0, "Motion smoothing", _smoothing);
+        LiveField(cameraSettings, 1, "Tongue visibility", _visibilityMode);
+        var smoothingHelp = new ToolTip();
+        smoothingHelp.SetToolTip(_smoothing, "Higher values steady small movements. Fast tongue movements still respond quickly.");
+        _smoothing.AccessibleDescription = "Higher values steady small movements. Fast tongue movements still respond quickly. Use the arrow keys to adjust.";
+        Disposed += (_, _) => smoothingHelp.Dispose();
+        Span(cameraSettings, Info("Restart tracking after changing the model or camera options. Shared FPS and preview options are under Your session > Show connection and camera settings."), 2);
+        Details(lowerFace, cameraSettings, "camera settings", 6);
+        Span(lowerFace, SectionCaption("STREAMING APP FACE ADJUSTMENTS"), 8);
         Span(lowerFace, _individualCheekPuff, 9);
         var cheekPuffActions = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Dock = DockStyle.Fill,
             WrapContents = true, Margin = Padding.Empty };
@@ -295,28 +361,32 @@ internal sealed partial class HubForm
         FitCheekActions();
         Span(lowerFace, _individualCheekSuck, 11);
         LiveField(lowerFace, 12, "Cheek suck style", _cheekSuckStyle);
-        Span(lowerFace, Info("Cheek adjustments update immediately through the Qpro module. Camera cheek strengths bypass the native puff style and calibration. Turn an adjustment off to use native values when camera cheeks are inactive."), 13);
         var cheekHelp = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1, Margin = Padding.Empty };
         LiveRows(cheekHelp, 1);
         cheekHelp.Controls.Add(Info("Cheek puff: Calibrated gives a smooth relaxed-to-full response, using the developer baseline until you calibrate. Calibrate with the current streaming app's Qpro module running. 1/0 selects a full-strength cheek; Balanced is gentler."));
         cheekHelp.Controls.Add(Info("Cheek suck: Strong selects the leading side; Balanced is gentler. These controls adjust the existing streaming-app values; camera cheek training uses its own recorded poses."));
+        cheekHelp.Controls.Add(Info("Camera cheek puff uses the selected camera model. Cheek puff style and Calibrate cheek puff apply only when camera cheek output is off or stops."));
+        Span(lowerFace, Info("These cheek adjustments stay active in VRCFaceTracking after Stop or closing Hub. Turn their switches off to use native values when camera cheek tracking is off."), 13);
         Details(lowerFace, cheekHelp, "cheek adjustment details", 14);
         liveLayout.Controls.Add(lowerFace);
 
         var handsCard = LiveFields();
-        Span(handsCard, SectionTitle("Hands and controllers"), 0);
-        Span(handsCard, _hybridHands, 1);
-        Span(handsCard, _controllerTouchpad, 2);
-        LiveField(handsCard, 3, "Thumb-rest mode", _touchpadMode);
+        Span(handsCard, SectionTitle("Hands and controllers", HubIcon.Controller), 0);
+        Span(handsCard, Info("Experimental · Virtual Desktop only. Check your headset and app versions before use."), 1);
+        Span(handsCard, _hybridHands, 2);
+        Span(handsCard, _controllerTouchpad, 3);
         _handsStatus.Margin = new Padding(0, 3, 0, 8);
         Span(handsCard, _handsStatus, 4);
         _checkHandsButton.Margin = new Padding(0, 4, 8, 4);
         Span(handsCard, _checkHandsButton, 5);
-        var handsDetails = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, Margin = Padding.Empty };
-        handsDetails.Controls.Add(Info("The hands option can route optical fingers alongside controller position and buttons when the compatibility check passes. Thumb-rest input offers Trackpad, Relative joystick, Swipe or Desktop mouse."));
-        handsDetails.Controls.Add(Info("Start tracking applies the selected options. Desktop mouse can move the Windows pointer. Stop tracking stops these inputs. Both options are experimental and currently require Virtual Desktop."));
+        var handsDetails = LiveFields();
+        handsDetails.BackColor = Inset;
+        handsDetails.Padding = new Padding(12);
+        LiveField(handsDetails, 0, "Thumb-rest mode", _touchpadMode);
+        Span(handsDetails, Info("Hands + controllers combines optical fingers with controller position and buttons when compatibility checks pass. Thumb-rest input offers Trackpad, Relative joystick, Swipe or Desktop mouse."), 1);
+        Span(handsDetails, Info("Start tracking applies these options. Desktop mouse can move the Windows pointer. Stop tracking stops these inputs. Close SteamVR before installing or removing their optional components."), 2);
+        Span(handsDetails, Info("This experimental option adds processing work. If game FPS drops, press Stop tracking and keep it off."), 3);
         Details(handsCard, handsDetails, "hand and controller details", 6);
         liveLayout.Controls.Add(handsCard);
 
@@ -325,14 +395,24 @@ internal sealed partial class HubForm
         setupLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (var row = 0; row < 7; row++) setupLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         setupPage.Controls.Add(setupLayout);
+        var setupIntro = Card(); setupIntro.Dock = DockStyle.Top;
+        setupIntro.Controls.Add(SectionTitle("Three steps to get ready", HubIcon.Setup));
+        setupIntro.Controls.Add(Info("Before you start: a rooted Meta Quest Pro and the latest VRCFaceTracking from Steam."));
+        setupIntro.Controls.Add(Info("1. Connect your Quest Pro   →   2. Install the PC runtime   →   3. Install your streaming app's module"));
+        var setupNext = Info("After setup, open Live tracking to choose features and start a session. Optional extras are below the three steps.");
+        setupNext.ForeColor = Accent;
+        setupIntro.Controls.Add(setupNext);
+        setupLayout.Controls.Add(setupIntro);
         var connectionCard = Card(); connectionCard.Dock = DockStyle.Top;
         connectionCard.ColumnCount = 1;
-        connectionCard.Controls.Add(SectionTitle("Connect your Quest Pro"));
+        connectionCard.Controls.Add(SectionCaption("STEP 1"));
+        connectionCard.Controls.Add(SectionTitle("Connect your Quest Pro", HubIcon.Headset));
         var connectionPicker = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, Margin = new Padding(0, 3, 0, 7) };
         connectionPicker.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
         connectionPicker.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         connectionPicker.Controls.Add(FieldLabel("Connection type"), 0, 0);
         ConfigureDropDown(_connectionMode);
+        _connectionMode.AccessibleName = "Connection type";
         _connectionMode.Margin = new Padding(0, 3, 0, 3);
         connectionPicker.Controls.Add(_connectionMode, 1, 0);
         connectionCard.Controls.Add(connectionPicker);
@@ -341,7 +421,7 @@ internal sealed partial class HubForm
         _wirelessSetup.Margin = new Padding(0, 3, 0, 8);
         _wirelessSetup.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         LiveRows(_wirelessSetup, 6);
-        _wirelessSetup.Controls.Add(Info("Enter the Quest's Wi-Fi IP and press Connect to Quest. If it reports ready, start tracking; pairing is not needed. Use Enable from USB if wireless ADB has not been enabled yet."), 0, 0);
+        _wirelessSetup.Controls.Add(Info("Enter the Quest's Wi-Fi IP and press Connect to Quest. If it reports ready, continue with the next setup card; pairing is not needed. Use Enable from USB if wireless ADB has not been enabled yet."), 0, 0);
         var wirelessFields = new List<TableLayoutPanel>();
         TableLayoutPanel ConnectionField(string title, TextBox input)
         {
@@ -349,6 +429,7 @@ internal sealed partial class HubForm
             row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
             row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             row.Controls.Add(FieldLabel(title), 0, 0);
+            input.AccessibleName = title;
             input.Margin = new Padding(0, 3, 0, 3);
             row.Controls.Add(input, 1, 0);
             wirelessFields.Add(row);
@@ -372,25 +453,24 @@ internal sealed partial class HubForm
         setupSource.ColumnCount = 2;
         setupSource.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
         setupSource.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        setupSource.Controls.Add(SectionTitle("Choose your PCVR streaming app"), 0, 0);
+        setupSource.BackColor = Raised;
+        setupSource.Padding = Padding.Empty;
+        setupSource.Controls.Add(SectionCaption("CHOOSE YOUR STREAMING APP"), 0, 0);
         setupSource.SetColumnSpan(setupSource.GetControlFromPosition(0, 0)!, 2);
-        setupSource.Controls.Add(FieldLabel("Face source"), 0, 1);
+        setupSource.Controls.Add(FieldLabel("Streaming app"), 0, 1);
         _trackingSourceSetup.Margin = new Padding(0, 3, 0, 3);
+        _trackingSourceSetup.AccessibleName = "Streaming app";
         setupSource.Controls.Add(_trackingSourceSetup, 1, 1);
         _trackingSourceSetupNote.Margin = new Padding(0, 2, 0, 8);
         setupSource.Controls.Add(_trackingSourceSetupNote, 0, 2);
         setupSource.SetColumnSpan(_trackingSourceSetupNote, 2);
-        setupLayout.Controls.Add(setupSource);
-        var setupIntro = Card(); setupIntro.Dock = DockStyle.Top;
-        setupIntro.Controls.Add(SectionTitle("Required setup checklist"));
-        setupIntro.Controls.Add(Info("Install the latest VRCFaceTracking from Steam first. Set up the PC runtime, then install the Qpro module for your streaming app. Installing one source removes the other Qpro source module. Close VRCFaceTracking before installing or uninstalling a module, then start it again afterward."));
-        setupLayout.Controls.Add(setupIntro);
         _setupProgressContainer.Dock = DockStyle.Top;
         _setupProgressContainer.AutoSize = true;
         _setupProgressContainer.ColumnCount = 1;
         _setupProgressContainer.BackColor = Panel;
         _setupProgressContainer.Padding = new Padding(16);
         _setupProgressContainer.Margin = new Padding(0, 0, 0, 12);
+        _setupProgressContainer.Visible = false;
         _setupProgressContainer.Controls.Add(new Label { Text = "Setup progress", AutoSize = true, ForeColor = Color.White, Font = new Font(UiFontName, 10F, FontStyle.Bold) });
         _setupProgressContainer.Controls.Add(_setupProgressStatus);
         _setupProgressContainer.Controls.Add(_setupProgress);
@@ -419,47 +499,121 @@ internal sealed partial class HubForm
         _resetLegacyGazeButton.Click += async (_, _) => await ResetLegacyGazeAsync();
         // Step cards size to their copy and actions, avoiding large empty bands
         // at high resolutions and clipped descriptions in narrow windows.
-        var setupCards = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, RowCount = 3, Margin = Padding.Empty };
+        var setupCards = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
         setupCards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (var row = 0; row < 3; row++) setupCards.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        setupCards.Controls.Add(SetupStepCard("1", "PC runtime", "Prepares Qpro's private Python and installs CPU/GPU libraries. Works whether Python is installed on this PC or not.", _setupRuntimeStatus, _setupRuntimeButton), 0, 0);
-        var moduleCard = SetupStepCard("2", "VRCFT module", "Choose Virtual Desktop or Steam Link. Installing one removes the other Qpro source module. Close VRCFaceTracking first.",
-            _setupBridgeStatus, _setupBridgeButton, _setupSteamLinkModuleButton, _uninstallBridgeButton);
+        for (var row = 0; row < 2; row++) setupCards.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        setupCards.Controls.Add(SetupStepCard("2", "Install the PC runtime", "Installs Qpro's private Python and tracking libraries. Keep the Hub open until the downloads finish.", _setupRuntimeStatus, _setupRuntimeButton), 0, 0);
+        var moduleCard = (TableLayoutPanel)SetupStepCard("3", "Install your VRCFaceTracking module", "Choose the app you stream with. Close VRCFaceTracking, install its matching module below, then reopen it. This replaces the other Qpro source module.",
+            _setupBridgeStatus, _setupBridgeButton, _setupSteamLinkModuleButton);
+        var moduleDescription = moduleCard.GetControlFromPosition(0, 3)!;
+        moduleCard.Controls.Remove(moduleDescription);
+        var moduleChoices = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, Margin = Padding.Empty };
+        moduleChoices.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        moduleChoices.Controls.Add(moduleDescription);
+        moduleChoices.Controls.Add(setupSource);
+        moduleCard.Controls.Add(moduleChoices, 0, 3);
+        var moduleActions = (TableLayoutPanel)moduleCard.GetControlFromPosition(0, 4)!;
+        void FitSelectedModuleAction()
+        {
+            // Display the selected source's action in one stable row. Keeping
+            // both controls lets their existing install handlers stay intact.
+            var steamLink = _trackingSourceSetup.SelectedIndex == 1;
+            var actionHeight = (int)Math.Ceiling(54 * DeviceDpi / 96F);
+            moduleActions.SuspendLayout();
+            try
+            {
+                _setupBridgeButton.Visible = !steamLink;
+                _setupSteamLinkModuleButton.Visible = steamLink;
+                moduleActions.RowStyles[0].SizeType = SizeType.Absolute;
+                moduleActions.RowStyles[0].Height = steamLink ? 0 : actionHeight;
+                moduleActions.RowStyles[1].SizeType = SizeType.Absolute;
+                moduleActions.RowStyles[1].Height = steamLink ? actionHeight : 0;
+                moduleCard.RowStyles[4].Height = actionHeight;
+            }
+            finally { moduleActions.ResumeLayout(true); }
+        }
+        _trackingSourceSetup.SelectedIndexChanged += (_, _) => FitSelectedModuleAction();
+        FitSelectedModuleAction();
+        var moduleMaintenance = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, Margin = Padding.Empty };
+        moduleMaintenance.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        moduleMaintenance.Controls.Add(Info("Close VRCFaceTracking before removing its Qpro module. Your personal models and recordings stay in place."));
+        moduleMaintenance.Controls.Add(_uninstallBridgeButton);
+        Details(moduleCard, moduleMaintenance, "module uninstall", 5);
         setupCards.Controls.Add(moduleCard, 0, 1);
-        setupCards.Controls.Add(SetupStepCard("3", "Independent gaze",
-            "Start with Check gaze setup to identify the headset's gaze method and see what to do next. Use one independent gaze method at a time.\n\n" +
-            "Recover Qpro gaze: Restores the previous eye-model state saved for a recorded Qpro session.\n" +
-            "Reset legacy gaze: Chooses normal, nonexperimental gaze selection for an older session without a record, after confirmation.\n" +
-            "Neither recovery button disables a Magisk module or uninstalls the PC module.",
-            _setupGazeStatus, _inspectGazeButton, _setupGazeButton, _recoverGazeButton, _resetLegacyGazeButton), 0, 2);
         setupLayout.Controls.Add(setupCards);
+        setupLayout.Controls.Add(BuildHeadsetCompatibilityCard());
+        var gazeSetup = Card(); gazeSetup.ColumnCount = 1;
+        Span(gazeSetup, SectionTitle("Optional independent gaze", HubIcon.Eyes), 0);
+        Span(gazeSetup, _setupGazeStatus, 1);
+        Span(gazeSetup, Info("Using a Magisk gaze module? Skip this setup and leave Hub gaze off."), 2);
+        var gazeOptions = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, Margin = Padding.Empty };
+        gazeOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        Span(gazeOptions, Info("For Hub gaze, start with Check gaze setup. Prepare gaze only after the check confirms support."), 0);
+        var gazeActions = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
+            ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
+        gazeActions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        gazeActions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        _inspectGazeButton.Dock = _setupGazeButton.Dock = DockStyle.Fill;
+        _inspectGazeButton.Margin = new Padding(0, 4, 8, 4);
+        _setupGazeButton.Margin = new Padding(0, 4, 0, 4);
+        gazeActions.Controls.Add(_inspectGazeButton, 0, 0);
+        gazeActions.Controls.Add(_setupGazeButton, 1, 0);
+        Span(gazeOptions, gazeActions, 1);
+        var gazeRecovery = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, Margin = Padding.Empty };
+        gazeRecovery.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        gazeRecovery.Controls.Add(Info("Recover Qpro gaze restores the previous eye-model state saved by a recorded Qpro session. Reset legacy gaze selects normal gaze for an older session without a record, after confirmation. Neither option disables Magisk or removes the PC module."));
+        gazeRecovery.Controls.Add(_recoverGazeButton);
+        gazeRecovery.Controls.Add(_resetLegacyGazeButton);
+        Details(gazeOptions, gazeRecovery, "gaze recovery tools", 2);
+        Details(gazeSetup, gazeOptions, "gaze setup", 3);
+        setupLayout.Controls.Add(gazeSetup);
         var handsSetup = Card(); handsSetup.ColumnCount = 1;
-        handsSetup.Controls.Add(SectionTitle("Optional hands and controllers"));
-        handsSetup.Controls.Add(Info("Experimental components for compatible Quest Pro and Virtual Desktop versions. Close SteamVR before installing or uninstalling, then reopen SteamVR through Virtual Desktop."));
-        handsSetup.Controls.Add(Info("After installation, use Check hand/controller compatibility on Live tracking before enabling either option. These components have a separate setup from the VRCFaceTracking face module."));
-        handsSetup.Controls.Add(_installHandsButton);
-        handsSetup.Controls.Add(_removeHandsButton);
+        handsSetup.Controls.Add(SectionTitle("Optional hands and controllers", HubIcon.Controller));
+        handsSetup.Controls.Add(Info("Experimental · Virtual Desktop only. Check compatibility on Live tracking before enabling."));
+        var handsOptions = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, Margin = Padding.Empty };
+        handsOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        handsOptions.Controls.Add(Info("Close SteamVR before installing or uninstalling, then reopen it through Virtual Desktop. These components are separate from the VRCFaceTracking face module."));
+        handsOptions.Controls.Add(_installHandsButton);
+        handsOptions.Controls.Add(_removeHandsButton);
+        Details(handsSetup, handsOptions, "hands setup and uninstall", 2);
         setupLayout.Controls.Add(handsSetup);
-        var amdCard = Card(); amdCard.Dock = DockStyle.Top;
-        amdCard.Controls.Add(SectionTitle("Optional AMD ROCm acceleration"));
-        amdCard.Controls.Add(Info("Install ROCm 10.0 for a mapped discrete Radeon. This Qpro path is experimental until GPU training and inference checks pass. An existing verified ROCm 7.2.1 environment remains a fallback on AMD's older supported GPU list. Install the PC runtime first."));
-        amdCard.Controls.Add(_amdGpuStatus);
+        var amdCard = Card(); amdCard.Dock = DockStyle.Top; amdCard.ColumnCount = 1;
+        amdCard.Controls.Add(SectionTitle("Optional AMD ROCm acceleration", HubIcon.Module));
+        _setupAmdStatus.Tag = "responsive-info";
+        amdCard.Controls.Add(_setupAmdStatus);
+        amdCard.Controls.Add(Info("Optional acceleration for compatible Radeon graphics cards. Install the PC runtime first."));
+        var amdOptions = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, Margin = Padding.Empty };
+        amdOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        amdOptions.Controls.Add(Info($"ROCm {HubRocmRuntime.InstallVersion} accelerates training and tracking on listed discrete Radeon GPUs. Setup enables it only after GPU tests pass. This remains experimental; earlier verified ROCm runtimes stay available as fallbacks."));
+        amdOptions.Controls.Add(_amdGpuStatus);
         var amdSupportLink = new LinkLabel { Text = "ROCm 7.2.1 fallback GPU list", AutoSize = true, LinkColor = Accent, ActiveLinkColor = Accent, VisitedLinkColor = Accent, Margin = new Padding(0, 3, 0, 8) };
         amdSupportLink.LinkClicked += (_, _) =>
         {
             try { Process.Start(new ProcessStartInfo("https://rocm.docs.amd.com/projects/radeon-ryzen/en/docs-7.2.1/docs/compatibility/compatibilityrad/windows/windows_compatibility.html") { UseShellExecute = true }); }
             catch (Exception error) { MessageBox.Show(this, error.Message, "Could not open AMD support list"); }
         };
-        var amdExperimentalLink = new LinkLabel { Text = "AMD TheRock ROCm 10.0 GPU targets", AutoSize = true, LinkColor = Accent, ActiveLinkColor = Accent, VisitedLinkColor = Accent, Margin = new Padding(0, 3, 0, 8) };
+        var amdExperimentalLink = new LinkLabel { Text = $"AMD TheRock ROCm {HubRocmRuntime.InstallVersion} GPU targets", AutoSize = true, LinkColor = Accent, ActiveLinkColor = Accent, VisitedLinkColor = Accent, Margin = new Padding(0, 3, 0, 8) };
         amdExperimentalLink.LinkClicked += (_, _) =>
         {
             try { Process.Start(new ProcessStartInfo("https://github.com/ROCm/TheRock/blob/main/RELEASES.md") { UseShellExecute = true }); }
             catch (Exception error) { MessageBox.Show(this, error.Message, "Could not open AMD TheRock details"); }
         };
-        amdCard.Controls.Add(amdExperimentalLink);
-        amdCard.Controls.Add(amdSupportLink);
-        amdCard.Controls.Add(_setupAmdStatus);
-        amdCard.Controls.Add(_setupAmdButton);
+        amdOptions.Controls.Add(amdExperimentalLink);
+        amdOptions.Controls.Add(amdSupportLink);
+        amdOptions.Controls.Add(_setupAmdButton);
+        var amdDetails = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, Margin = Padding.Empty };
+        amdDetails.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        amdDetails.Controls.Add(_experimentalWindows10Rocm);
+        amdDetails.Controls.Add(Info("AMD validates this Windows ROCm path on Windows 11. Windows 10 is experimental and still requires a mapped discrete Radeon plus successful training and inference checks."));
+        Details(amdOptions, amdDetails, "AMD compatibility details", amdOptions.Controls.Count);
+        Details(amdCard, amdOptions, "AMD setup", 3);
         setupLayout.Controls.Add(amdCard);
 
         var personalizationPage = NewPage();
@@ -471,7 +625,7 @@ internal sealed partial class HubForm
         personalLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         personalizationPage.Controls.Add(personalLayout);
         var personalIntro = Card(); personalIntro.Dock = DockStyle.Top;
-        personalIntro.Controls.Add(SectionTitle("Capture and train"));
+        personalIntro.Controls.Add(SectionTitle("Capture and train", HubIcon.Sliders));
         personalIntro.Controls.Add(Info("Record tongue and cheek poses to fit tracking to your face and headset position. Quick refinement and Full dataset include 21 cheek camera cards. The camera cheek option is experimental and remains off until you enable it."));
         personalLayout.Controls.Add(personalIntro);
         _trainingProgressContainer.Dock = DockStyle.Top;
@@ -484,22 +638,30 @@ internal sealed partial class HubForm
         _trainingProgressContainer.Controls.Add(_trainingProgressStatus);
         _trainingProgressContainer.Controls.Add(_trainingProgress);
         personalLayout.Controls.Add(_trainingProgressContainer);
-        var choices = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, RowCount = 3, Margin = Padding.Empty };
+        var choices = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, RowCount = 1, Margin = Padding.Empty };
         choices.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (var row = 0; row < 3; row++) choices.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        choices.Controls.Add(WorkflowCard("Quick refinement · 15–30 min", "Refines the selected tongue model, then trains cheek camera outputs from 21 guided cheek cards. Inherits some parent-model bias.", _quickDatasets, _quickQueueStatus, _quickRecordedDatasets,
+        choices.Controls.Add(WorkflowCard("Quick refinement · 15–30 min · Recommended", "Start here to fit the selected model to your face. The guided capture includes tongue poses and 21 experimental cheek camera cards. Training saves a separate personalized copy.", _quickDatasets, _quickQueueStatus, _quickRecordedDatasets,
             ActionButton("1. Record refinement", async (_, _) => await ConfirmCaptureAsync(TongueDatasetKind.Quick)), ActionButton("2. Train personalized copy", async (_, _) => await TrainTongueAsync(TongueDatasetKind.Quick)),
             ActionButton("Delete selected dataset…", (_, _) => DeleteRecordedDataset(TongueDatasetKind.Quick))), 0, 0);
-        choices.Controls.Add(WorkflowCard("Focused diagonals + facial hair · 15–30 min", "Targets diagonal tongue errors and facial-hair shadows with matched hidden and visible poses. Fine-tunes a new model.", _focusedDatasets, _focusedQueueStatus, _focusedRecordedDatasets,
-            ActionButton("1. Record focused dataset", async (_, _) => await ConfirmCaptureAsync(TongueDatasetKind.Focused)), ActionButton("2. Train focused copy", async (_, _) => await TrainTongueAsync(TongueDatasetKind.Focused)),
-            ActionButton("Delete selected dataset…", (_, _) => DeleteRecordedDataset(TongueDatasetKind.Focused))), 0, 1);
-        choices.Controls.Add(WorkflowCard("Full dataset · 60–120 min", "Broad tongue coverage plus 21 cheek camera cards. Trains a new lower-face copy and requires careful capture time.", _fullDatasets, _fullQueueStatus, _fullRecordedDatasets,
-            ActionButton("1. Record full dataset", async (_, _) => await ConfirmCaptureAsync(TongueDatasetKind.Full)), ActionButton("2. Train new personal model", async (_, _) => await TrainTongueAsync(TongueDatasetKind.Full)),
-            ActionButton("Delete selected dataset…", (_, _) => DeleteRecordedDataset(TongueDatasetKind.Full))), 0, 2);
         personalLayout.Controls.Add(choices);
+        var alternativeCaptures = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, Margin = Padding.Empty };
+        alternativeCaptures.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        alternativeCaptures.Controls.Add(WorkflowCard("Focused diagonals + facial hair · 15–30 min", "Extra practice for diagonal tongue movement and facial-hair shadows. Record matching hidden and visible poses, then train a new copy.", _focusedDatasets, _focusedQueueStatus, _focusedRecordedDatasets,
+            ActionButton("1. Record focused dataset", async (_, _) => await ConfirmCaptureAsync(TongueDatasetKind.Focused)), ActionButton("2. Train focused copy", async (_, _) => await TrainTongueAsync(TongueDatasetKind.Focused)),
+            ActionButton("Delete selected dataset…", (_, _) => DeleteRecordedDataset(TongueDatasetKind.Focused))), 0, 0);
+        alternativeCaptures.Controls.Add(WorkflowCard("Full dataset · 60–120 min", "Broader tongue coverage and 21 experimental cheek camera cards. Choose this when you can take your time and follow each pose carefully.", _fullDatasets, _fullQueueStatus, _fullRecordedDatasets,
+            ActionButton("1. Record full dataset", async (_, _) => await ConfirmCaptureAsync(TongueDatasetKind.Full)), ActionButton("2. Train new personal model", async (_, _) => await TrainTongueAsync(TongueDatasetKind.Full)),
+            ActionButton("Delete selected dataset…", (_, _) => DeleteRecordedDataset(TongueDatasetKind.Full))), 0, 1);
+        var captureOptions = Card(); captureOptions.ColumnCount = 1;
+        Span(captureOptions, SectionTitle("More capture options", HubIcon.Sliders), 0);
+        Span(captureOptions, Info("Use a focused capture for specific tongue problems, or a full dataset for broader coverage."), 1);
+        Details(captureOptions, alternativeCaptures, "focused and full captures", 2);
+        personalLayout.Controls.Add(captureOptions);
         var cameraCheekTraining = Card(); cameraCheekTraining.Dock = DockStyle.Top;
         cameraCheekTraining.ColumnCount = 1;
-        Span(cameraCheekTraining, SectionTitle("Experimental tongue + cheeks model"), 0);
+        Span(cameraCheekTraining, SectionTitle("Experimental tongue + cheeks model", HubIcon.LowerFace), 0);
         Span(cameraCheekTraining, Info("Quick refinement and Full dataset already include cheek camera poses. Use this separate capture to add cheeks to a new copy of a selected tongue model."), 1);
         var cameraCheekTrainingBody = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, Margin = Padding.Empty };
@@ -508,9 +670,11 @@ internal sealed partial class HubForm
         cameraCheekTrainingBody.Controls.Add(Info("Native cheek calibration remains available. Record all guided poses and test the resulting copy before using it for a session."), 0, 0);
         cameraCheekTrainingBody.Controls.Add(new Label { Text = "Parent tongue model", AutoSize = true, ForeColor = Muted, Margin = new Padding(0, 4, 0, 4) }, 0, 1);
         _cheekCameraBaseModels.Margin = new Padding(0, 3, 0, 8);
+        _cheekCameraBaseModels.AccessibleName = "Parent tongue model";
         cameraCheekTrainingBody.Controls.Add(_cheekCameraBaseModels, 0, 2);
         cameraCheekTrainingBody.Controls.Add(new Label { Text = "Completed cheek camera dataset", AutoSize = true, ForeColor = Muted, Margin = new Padding(0, 4, 0, 4) }, 0, 3);
         _cheekCameraDatasets.Margin = new Padding(0, 3, 0, 8);
+        _cheekCameraDatasets.AccessibleName = "Completed cheek camera dataset";
         _cheekCameraDatasetNote.Margin = new Padding(0, 0, 0, 8);
         cameraCheekTrainingBody.Controls.Add(_cheekCameraDatasets, 0, 4);
         cameraCheekTrainingBody.Controls.Add(_cheekCameraDatasetNote, 0, 5);
@@ -537,9 +701,10 @@ internal sealed partial class HubForm
         manager.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         manager.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         manager.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        manager.Controls.Add(SectionTitle("Lower-face model manager"), 0, 0);
+        manager.Controls.Add(SectionTitle("Lower-face model manager", HubIcon.Models), 0, 0);
         manager.Controls.Add(Info("Manage tongue models and experimental tongue + camera cheeks copies. Export creates a portable .qptonguemodel package containing the paired files; import assigns a safe new version."), 0, 1);
         var modelBody = new Panel { Dock = DockStyle.Fill, BackColor = Inset, Margin = Padding.Empty };
+        _modelList.AccessibleName = "Lower-face models";
         modelBody.Controls.Add(_modelList);
         modelBody.Controls.Add(_modelEmpty);
         manager.Controls.Add(modelBody, 0, 2);
@@ -553,48 +718,129 @@ internal sealed partial class HubForm
         modelsPage.Controls.Add(manager);
 
         var activityPage = NewPage();
+        var activityLayout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = false,
+            ColumnCount = 1, RowCount = 2, Margin = Padding.Empty, Padding = Padding.Empty };
+        activityLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        activityLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        activityLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        var feedbackCard = BuildFeedbackCard();
+        activityLayout.Controls.Add(feedbackCard, 0, 0);
         var logCard = Card(); logCard.Dock = DockStyle.Fill; logCard.AutoSize = false;
-        logCard.ColumnCount = 1; logCard.RowCount = 2;
+        logCard.ColumnCount = 1; logCard.RowCount = 3;
+        logCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         logCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         logCard.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        logCard.Controls.Add(SectionTitle("Activity and diagnostics"), 0, 0);
+        logCard.Controls.Add(SectionTitle("Detailed activity", HubIcon.Activity), 0, 0);
+        var activityLegend = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
+            WrapContents = true, Margin = new Padding(0, 0, 0, 10) };
+        foreach (var level in new[] { ActivitySeverity.Normal, ActivitySeverity.Warning, ActivitySeverity.Error })
+            activityLegend.Controls.Add(new Label { Text = ActivityName(level), AutoSize = true,
+                ForeColor = ActivityColor(level), Margin = new Padding(0, 0, 20, 0) });
+        logCard.Controls.Add(activityLegend, 0, 1);
         _log.Margin = Padding.Empty;
-        logCard.Controls.Add(_log, 0, 1);
-        activityPage.Controls.Add(logCard);
+        _log.ForeColor = Good;
+        _log.AccessibleName = "Detailed activity";
+        logCard.Controls.Add(_log, 0, 2);
+        activityLayout.Controls.Add(logCard, 0, 1);
+        activityPage.Controls.Add(activityLayout);
+        bool fittingActivity = false;
+        void FitActivityHeight()
+        {
+            if (fittingActivity) return;
+            fittingActivity = true;
+            try
+            {
+                // Short windows scroll the complete feedback and log instead
+                // of squeezing the log's heading into an unusable last row.
+                var minimumLogHeight = (int)Math.Ceiling(240 * DeviceDpi / 96F);
+                var feedbackHeight = Math.Max(feedbackCard.Height, feedbackCard.PreferredSize.Height);
+                var available = activityPage.ClientSize.Height - activityPage.Padding.Vertical;
+                var height = Math.Max(available, feedbackHeight + feedbackCard.Margin.Vertical
+                    + minimumLogHeight + logCard.Margin.Vertical);
+                if (activityLayout.Height != height) activityLayout.Height = height;
+            }
+            finally { fittingActivity = false; }
+        }
+        activityPage.SizeChanged += (_, _) => FitActivityHeight();
+        feedbackCard.SizeChanged += (_, _) => FitActivityHeight();
+        FitActivityHeight();
 
         var pageList = new[] { setupPage, livePage, personalizationPage, modelsPage, activityPage };
-        var pageTextWidths = new Dictionary<Panel, int>();
+        var fittingTextPages = new HashSet<Panel>();
+        var pendingTextPages = new HashSet<Panel>();
         Panel? resizingPage = null;
         void FitPageText(Panel page)
         {
             if (ReferenceEquals(page, resizingPage)) return;
-            // A changing child width can make AutoScroll retain a horizontal
-            // offset; keep headings anchored to the left while preserving Y.
-            if (page.AutoScrollPosition.X != 0)
-                page.AutoScrollPosition = new Point(0, -page.AutoScrollPosition.Y);
-            // Use the outer width so the appearance of a vertical scrollbar does not
-            // make the wrapped labels and the scrollbar repeatedly resize each other.
-            // Cap long setup notes on large displays so they remain easy to read.
-            var availableTextWidth = page.Width - page.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 40;
-            var textWidth = Math.Min((int)Math.Ceiling(900 * DeviceDpi / 96F), Math.Max(240, availableTextWidth));
-            if (pageTextWidths.TryGetValue(page, out var previousWidth) && previousWidth == textWidth) return;
-            pageTextWidths[page] = textWidth;
-            void Fit(Control parent)
+            if (!fittingTextPages.Add(page)) return;
+            try
             {
-                foreach (Control child in parent.Controls)
+                // A changing child width can make AutoScroll retain a horizontal
+                // offset; keep headings anchored to the left while preserving Y.
+                if (page.AutoScrollPosition.X != 0)
+                    page.AutoScrollPosition = new Point(0, -page.AutoScrollPosition.Y);
+                // Use the outer width so the appearance of a vertical scrollbar does not
+                // make the wrapped labels and the scrollbar repeatedly resize each other.
+                // Cap long setup notes on large displays so they remain easy to read.
+                var availableTextWidth = page.Width - page.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 40;
+                var textWidth = Math.Min((int)Math.Ceiling(900 * DeviceDpi / 96F), Math.Max(240, availableTextWidth));
+                void Fit(Control parent)
                 {
-                    if (child is Label label && Equals(label.Tag, "responsive-info"))
+                    foreach (Control child in parent.Controls)
                     {
-                        if (label.MaximumSize.Width != textWidth)
-                            label.MaximumSize = new Size(textWidth, 0);
+                        if (child is Label label && Equals(label.Tag, "responsive-info"))
+                        {
+                            // Nested disclosures and workflow cards can be narrower
+                            // than the page. Wrap to their actual content width.
+                            var parentWidth = parent.ClientSize.Width - parent.Padding.Horizontal - label.Margin.Horizontal;
+                            if (parent is TableLayoutPanel table)
+                            {
+                                var position = table.GetPositionFromControl(label);
+                                var widths = table.GetColumnWidths();
+                                if (position.Column >= 0 && widths.Length > position.Column)
+                                {
+                                    var span = table.GetColumnSpan(label);
+                                    parentWidth = widths.Skip(position.Column).Take(span).Sum() - label.Margin.Horizontal;
+                                }
+                            }
+                            var target = Math.Min(textWidth, parentWidth > 0 ? parentWidth : textWidth);
+                            target = Math.Max(120, target);
+                            if (label.MaximumSize.Width != target)
+                                label.MaximumSize = new Size(target, 0);
+                        }
+                        if (child.HasChildren) Fit(child);
                     }
-                    if (child.HasChildren) Fit(child);
                 }
+                Fit(page);
             }
-            Fit(page);
+            finally { fittingTextPages.Remove(page); }
+        }
+        void SchedulePageText(Panel page)
+        {
+            if (!IsHandleCreated || IsDisposed || Disposing || !pendingTextPages.Add(page)) return;
+            BeginInvoke((Action)(() =>
+            {
+                pendingTextPages.Remove(page);
+                if (!IsDisposed && !Disposing) FitPageText(page);
+            }));
+        }
+        void WatchResponsiveText(Control container, Panel page)
+        {
+            if (container.Controls.Cast<Control>().Any(child => child is Label label
+                && Equals(label.Tag, "responsive-info")))
+            {
+                // Hidden disclosures have no final column width yet. Reflow
+                // after they become visible and WinForms has laid them out.
+                container.Layout += (_, _) => SchedulePageText(page);
+                container.SizeChanged += (_, _) => SchedulePageText(page);
+                container.VisibleChanged += (_, _) => SchedulePageText(page);
+            }
+            foreach (Control child in container.Controls)
+                if (child.HasChildren) WatchResponsiveText(child, page);
         }
         foreach (var page in pageList)
         {
+            WatchResponsiveText(page, page);
             page.ClientSizeChanged += (_, _) => FitPageText(page);
             FitPageText(page);
         }
@@ -650,6 +896,7 @@ internal sealed partial class HubForm
         footerIdentity.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
         footerIdentity.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
         _runStatus.AutoSize = false; _runStatus.Dock = DockStyle.Fill; _runStatus.TextAlign = ContentAlignment.MiddleLeft;
+        _runStatus.AutoEllipsis = true;
         footerIdentity.Controls.Add(_runStatus, 0, 0);
         var madeByCredit = new Label
         {
@@ -692,8 +939,10 @@ internal sealed partial class HubForm
         };
         footerIdentity.Controls.Add(originalCredit, 0, 2);
         footer.Controls.Add(footerIdentity, 0, 0);
-        _start.Dock = DockStyle.Fill; _stop.Dock = DockStyle.Fill;
+        _start.Dock = DockStyle.None; _stop.Dock = DockStyle.None;
+        _start.Anchor = _stop.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         _start.AutoSize = false; _stop.AutoSize = false;
+        _start.Height = _stop.Height = 48;
         _start.Margin = new Padding(0, 0, 8, 0);
         _stop.Margin = Padding.Empty;
         footer.Controls.Add(_start, 1, 0);
@@ -773,6 +1022,7 @@ internal sealed partial class HubForm
                 footerIdentity.RowStyles[0].Height = Math.Max(Px(30), TextHeight(_runStatus));
                 shell.RowStyles[1].Height = Math.Max(Px(110), footer.Padding.Vertical
                     + (int)footerIdentity.RowStyles[0].Height + creditHeight * 2 + Px(8));
+                _start.Height = _stop.Height = Px(48);
                 var sidebarTextWidth = Math.Max(Px(90), sidebar.Width - sidebar.Padding.Horizontal - Px(18));
                 var brandSubtitleHeight = TextRenderer.MeasureText(brandSubtitle.Text, brandSubtitle.Font,
                     new Size(sidebarTextWidth, int.MaxValue), TextFormatFlags.WordBreak).Height;
@@ -787,7 +1037,7 @@ internal sealed partial class HubForm
                     TextRenderer.MeasureText("Eyebrow sensitivity", Font).Width + Px(24));
                 foreach (var card in liveFieldTables)
                 {
-                    var inset = card == cameraSettings ? card.Padding.Left : 0;
+                    var inset = card.BackColor == Inset ? card.Padding.Left : 0;
                     card.ColumnStyles[0].Width = fieldWidth - inset;
                 }
                 foreach (var page in pageList) FitPageWidth(page);
@@ -797,13 +1047,15 @@ internal sealed partial class HubForm
                 foreach (TableLayoutPanel card in setupCards.Controls)
                 {
                     var actionCount = card.GetControlFromPosition(0, 4) is TableLayoutPanel actions ? actions.RowCount : 1;
-                    card.RowStyles[4].Height = Px(54 * actionCount);
+                    card.RowStyles[4].Height = Px(54 * (ReferenceEquals(card, moduleCard) ? 1 : actionCount));
                 }
+                FitSelectedModuleAction();
                 FitModelManagerHeight();
+                FitActivityHeight();
 
                 foreach (var toggle in new[] { _gaze, _tongue, _pupil, _cameraPreview, _cameraCheekPuff,
                     _individualCheekPuff, _individualCheekSuck, _eyebrowBoost, _hybridHands, _controllerTouchpad })
-                    toggle.Height = Math.Max(Px(38), (int)Math.Ceiling(toggle.Font.GetHeight()) + Px(14));
+                    FitFeatureToggle(toggle);
                 _fps.Width = Px(84);
                 _pupilSensitivity.Width = Px(220);
                 _eyebrowSensitivity.Width = Px(220);
