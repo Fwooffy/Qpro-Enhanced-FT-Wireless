@@ -46,6 +46,98 @@ class GatedOutput:
 
 
 class ComponentTests(unittest.TestCase):
+    def create_addon(self, local):
+        hands, addon = module.managed_paths(local)
+        module.atomic_json(addon / 'qpro-owner.json', {'format': module.OWNER_FORMAT})
+        module.atomic_json(addon / 'resources' / 'settings.json', {'enabled': False, 'smoothingMs': 25})
+        hands.mkdir(parents=True, exist_ok=True)
+        (hands / 'ready.json').write_text('fixture hands environment')
+        return hands, addon
+
+    def test_uninstall_preserves_settings_hands_and_unique_recovery(self):
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+            local = Path(temporary)
+            hands, addon = self.create_addon(local)
+            settings = (addon / 'resources' / 'settings.json').read_bytes()
+            with patch.object(module, 'assert_steamvr_closed'), \
+                 patch.object(module, 'steamvr_tool', return_value=Path('fixture-vrpathreg')), \
+                 patch.object(module, 'command', return_value='') as execute, \
+                 contextlib.redirect_stdout(io.StringIO()) as output:
+                module.uninstall(local)
+                self.create_addon(local)
+                module.uninstall(local)
+            self.assertFalse(addon.exists())
+            copies = list(addon.parent.glob('controller-addon-uninstalled-*'))
+            self.assertEqual(len(copies), 2)
+            self.assertTrue(all((path / 'resources' / 'settings.json').read_bytes() == settings for path in copies))
+            self.assertEqual((hands / 'ready.json').read_text(), 'fixture hands environment')
+            self.assertEqual(execute.call_count, 2)
+            self.assertTrue(all(call.args[0][1:] == ['removedriver', str(addon)] for call in execute.call_args_list))
+            self.assertEqual(output.getvalue().count('"phase": "uninstalled"'), 2)
+
+    def test_uninstall_locked_directory_does_not_unregister(self):
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+            local = Path(temporary)
+            _, addon = self.create_addon(local)
+            with patch.object(module, 'assert_steamvr_closed'), \
+                 patch.object(module, 'steamvr_tool', return_value=Path('fixture-vrpathreg')), \
+                 patch.object(module, 'command') as execute, \
+                 patch.object(Path, 'rename', side_effect=PermissionError('fixture locked')):
+                with self.assertRaisesRegex(PermissionError, 'fixture locked'):
+                    module.uninstall(local)
+            execute.assert_not_called()
+            self.assertTrue((addon / 'resources' / 'settings.json').is_file())
+
+    def test_uninstall_registration_failure_restores_files(self):
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+            local = Path(temporary)
+            _, addon = self.create_addon(local)
+            original = (addon / 'resources' / 'settings.json').read_bytes()
+            with patch.object(module, 'assert_steamvr_closed'), \
+                 patch.object(module, 'steamvr_tool', return_value=Path('fixture-vrpathreg')), \
+                 patch.object(module, 'command', side_effect=RuntimeError('fixture registration failed')):
+                with self.assertRaisesRegex(RuntimeError, 'files were restored.*registration could not be confirmed'):
+                    module.uninstall(local)
+            self.assertEqual((addon / 'resources' / 'settings.json').read_bytes(), original)
+            self.assertEqual(list(addon.parent.glob('controller-addon-uninstalled-*')), [])
+
+    def test_uninstall_failed_rollback_reports_preserved_recovery(self):
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+            local = Path(temporary)
+            _, addon = self.create_addon(local)
+            rename = Path.rename
+            def fail_restore(path, destination):
+                if path != addon:
+                    raise PermissionError('fixture rollback locked')
+                return rename(path, destination)
+            with patch.object(module, 'assert_steamvr_closed'), \
+                 patch.object(module, 'steamvr_tool', return_value=Path('fixture-vrpathreg')), \
+                 patch.object(module, 'command', side_effect=RuntimeError('fixture registration failed')), \
+                 patch.object(Path, 'rename', fail_restore):
+                with self.assertRaisesRegex(RuntimeError, 'Recovery files remain at.*fixture rollback locked'):
+                    module.uninstall(local)
+            copies = list(addon.parent.glob('controller-addon-uninstalled-*'))
+            self.assertEqual(len(copies), 1)
+            self.assertTrue((copies[0] / 'resources' / 'settings.json').is_file())
+
+    def test_uninstall_running_steamvr_refuses_before_changes(self):
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+            local = Path(temporary)
+            _, addon = self.create_addon(local)
+            with patch.object(module, 'assert_steamvr_closed', side_effect=RuntimeError('Close SteamVR')), \
+                 patch.object(module, 'command') as execute:
+                with self.assertRaisesRegex(RuntimeError, 'Close SteamVR'):
+                    module.uninstall(local)
+            execute.assert_not_called()
+            self.assertTrue(addon.is_dir())
+
+    def test_malformed_owner_is_refused_without_changes(self):
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+            addon = Path(temporary)
+            for value in (None, [], 42, {'format': 'foreign'}, 'fixture'):
+                module.atomic_json(addon / 'qpro-owner.json', value)
+                self.assertFalse(module.owner_is_valid(addon))
+
     def run_workers(self, children, hands=True, touchpad=False, stopped=False):
         self.activity = io.StringIO()
         with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:

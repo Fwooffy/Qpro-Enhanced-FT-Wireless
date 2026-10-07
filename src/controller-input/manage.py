@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+import uuid
 
 FRIDA_VERSION = '17.18.0'
 WHEEL_NAME = 'frida-17.18.0-cp37-abi3-win_amd64.whl'
@@ -101,8 +102,9 @@ def atomic_json(path: Path, data):
 
 def owner_is_valid(addon: Path):
     try:
-        return json.loads((addon / 'qpro-owner.json').read_text(encoding='utf-8'))['format'] == OWNER_FORMAT
-    except (OSError, ValueError, KeyError):
+        value = json.loads((addon / 'qpro-owner.json').read_text(encoding='utf-8'))
+        return isinstance(value, dict) and value.get('format') == OWNER_FORMAT
+    except (OSError, ValueError):
         return False
 
 
@@ -209,10 +211,27 @@ def uninstall(local: Path):
         return
     if not owner_is_valid(addon):
         raise RuntimeError('The controller add-on lacks its Qpro ownership marker; no files were changed.')
-    command([steamvr_tool(local), 'removedriver', str(addon)])
-    # Keep recovery files; no recursive deletion is needed to unregister the add-on.
-    recovery = addon.with_name('controller-addon-uninstalled-' + time.strftime('%Y%m%d-%H%M%S'))
+    tool = steamvr_tool(local)
+    # Move first: locked files must not unregister a still-installed add-on.
+    # A unique sibling also permits repeated install/remove cycles in one second.
+    recovery = addon.with_name('controller-addon-uninstalled-' + uuid.uuid4().hex)
+    scope = (local / 'QproFaceTracking').resolve()
+    if (addon.resolve().parent != scope or recovery.resolve().parent != scope or
+            any(path.is_symlink() or path.is_junction() for path in (addon, *addon.parents))):
+        raise RuntimeError('The controller add-on path contains a link or is outside its managed folder; no files were changed.')
     addon.rename(recovery)
+    try:
+        assert_steamvr_closed()
+        command([tool, 'removedriver', str(addon)])
+    except Exception as error:
+        try:
+            recovery.rename(addon)
+        except OSError as rollback_error:
+            raise RuntimeError(f'Controller removal failed: {error}. Recovery files remain at {recovery}. '
+                               f'The original folder could not be restored: {rollback_error}. '
+                               'Keep SteamVR closed and repair the controller add-on before use.') from error
+        raise RuntimeError(f'Controller removal failed: {error}. The add-on files were restored. '
+                           'SteamVR registration could not be confirmed; repair the controller add-on before use.') from error
     report('CONTROLLER_SETUP', phase='uninstalled', recovery=str(recovery), restart='Reopen SteamVR')
 
 
