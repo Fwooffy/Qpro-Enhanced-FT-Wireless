@@ -6,6 +6,18 @@ A rooted Quest Pro and the latest [VRCFaceTracking on Steam](https://store.steam
 
 Follow the PDF guide included in the ZIP, or use the [text setup instructions](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/blob/main/src/RELEASE_INSTRUCTIONS.md).
 
+## Latest test revision
+
+- **Simpler setup and controls:** Three required setup steps, expandable optional settings, and separate Eyes, Lower-face tracking, and Hands and controllers sections. Added small icons and clearer keyboard focus without changing the Hub's visual style.
+- **Readable Activity:** Green normal progress, yellow warnings and red errors include text labels. A short explanation and next action appear above the detailed log, with copy and save controls.
+- **App and component updates:** Automatic release checks are optional; installation starts only when clicked. App updates preserve models, recordings, options and connections in the existing folder. The Components window can update an installed Qpro module and owned Python/PyTorch/ROCm environments, with progress and result checks. VRCFaceTracking must be closed to update its module.
+- **Runtime recovery:** PC runtime updates retain a recovery copy before changing dependencies and restore it after a caught failure. ROCm updates use a separate environment and retain verified fallback environments. A forced process termination can still require recovery from the retained copy.
+- **ROCm 10.1:** Added the ROCm 10.1.0 / PyTorch 2.14.0 package recipe. Discrete GPU selection and training/inference checks remain required. RX 6000 support remains experimental. Package and routing checks passed offline; this revision has not had a live ROCm 10.1 installation test.
+- **Tongue responsiveness:** Reduced inference overhead and stale-pose retention without replacing the bundled model weights. Paired synthetic-input tests reduced median processing time from 24.4 to 19.6 ms on CPU and 13.1 to 11.3 ms on an RX 7900 XTX; live headset-to-avatar latency and NVIDIA performance still need testing.
+- **Training and uninstall checks:** Checkpoint selection now evaluates tongue detail on visible-tongue examples. Module and controller removal retain recovery files and report incomplete restoration explicitly.
+
+These changes have passed offline regression and UI checks. A full installed-app update remains untested. Native cheek values can still activate when lips are pursed, and saved **1/0** adjustments can amplify them even with the Hub closed. Turn **Individual cheek puff** off to compare native output; a dedicated filter still needs labeled live samples. See **RELEASE_FIX_NOTES.md** for the detailed changes and validation limits.
+
 ## What's in V2.1.2
 
 - **Interrupted gaze recovery:** Qpro records the previous headset eye-model selection before applying its temporary patch. A verified interrupted session can be recovered after a reboot, even when its temporary mount is gone. Recovery checks the headset, owning process, original model and temporary source before changing anything; foreign mounts and unknown legacy settings are left alone.
