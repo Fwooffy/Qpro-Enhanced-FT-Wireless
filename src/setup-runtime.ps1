@@ -1,4 +1,4 @@
-param()
+param([switch]$Update)
 
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
@@ -57,6 +57,8 @@ function Install-QproPrivatePython {
     }
     finally {
         if (Test-Path -LiteralPath $stagingRoot) {
+            Assert-QproManagedRuntimePath $stagingRoot (Split-Path -Leaf $stagingRoot)
+            Assert-QproRuntimeWithoutLinks $stagingRoot -Tree
             Remove-Item -LiteralPath $stagingRoot -Recurse -Force
         }
     }
@@ -75,7 +77,7 @@ function Test-PythonCommand([string]$Python, [string]$Code) {
         # Import failures are expected while repairing a new/partial environment.
         # Do not let stderr become a terminating NativeCommandError.
         $ErrorActionPreference = "Continue"
-        & $Python -c $Code *> $null
+        & $Python -I -c $Code *> $null
         return $LASTEXITCODE -eq 0
     }
     catch { return $false }
@@ -84,17 +86,165 @@ function Test-PythonCommand([string]$Python, [string]$Code) {
     }
 }
 
-function Write-ReadyMarker([string]$Python) {
+function Get-QproRuntimeRecipe {
+    $manifestPath = Join-Path $root 'release-manifest.json'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return $null }
+    if ((Get-Item -LiteralPath $manifestPath).Length -gt 65536) { throw 'The release manifest is too large. Re-extract the release ZIP.' }
+    try { $manifest = [IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json }
+    catch { throw 'The release manifest could not be read. Re-extract the release ZIP.' }
+    if (-not $manifest.PSObject.Properties['componentUpdates']) { return $null }
+    $components = $manifest.componentUpdates
+    if ($null -eq $components -or $components.schema -ne 1 -or
+        $components.runtimeRecipe -isnot [string] -or $components.runtimeRecipe -notmatch '^[0-9a-fA-F]{64}$') {
+        throw 'The PC runtime update recipe is invalid. Re-extract the release ZIP.'
+    }
+    return $components.runtimeRecipe.ToLowerInvariant()
+}
+
+function Test-QproRuntimeReceipt([string]$Recipe) {
+    if ([string]::IsNullOrWhiteSpace($Recipe)) { return $true }
+    try {
+        if (-not (Test-Path -LiteralPath $readyMarker -PathType Leaf) -or (Get-Item -LiteralPath $readyMarker).Length -gt 4096) { return $false }
+        $record = [IO.File]::ReadAllText($readyMarker) | ConvertFrom-Json
+        return $record.format -eq 'qpro-runtime-ready-v1' -and $record.recipeSha256 -eq $Recipe -and
+            [IO.Path]::GetFullPath($record.python).Equals([IO.Path]::GetFullPath($venvPython), [StringComparison]::OrdinalIgnoreCase)
+    } catch { return $false }
+}
+
+function Write-ReadyMarker([string]$Python, [string]$Recipe, [string]$Backend) {
     $payload = @{
         format = "qpro-runtime-ready-v1"
         python = $Python
         completedUtc = [DateTimeOffset]::UtcNow.ToString("O")
-    } | ConvertTo-Json
-    Set-Content -LiteralPath $readyMarker -Value $payload -Encoding UTF8
+        backend = $Backend
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Recipe)) { $payload.recipeSha256 = $Recipe }
+    $temporary = $readyMarker + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
+    try {
+        [IO.File]::WriteAllText($temporary, ($payload | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+        if (Test-Path -LiteralPath $readyMarker -PathType Leaf) { [IO.File]::Replace($temporary, $readyMarker, $null) }
+        else { [IO.File]::Move($temporary, $readyMarker) }
+    } finally {
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+    }
+}
+
+function Assert-QproRuntimeWithoutLinks([string]$Path, [switch]$Tree) {
+    $absolute = [IO.Path]::GetFullPath($Path)
+    for ($current = $absolute; -not [string]::IsNullOrWhiteSpace($current); $current = Split-Path -Parent $current) {
+        if (-not (Test-Path -LiteralPath $current)) { continue }
+        if (((Get-Item -LiteralPath $current -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Qpro runtime setup will not follow a linked folder or file: $current"
+        }
+    }
+    if ($Tree -and (Test-Path -LiteralPath $absolute -PathType Container)) {
+        # Walk one level at a time so a junction is rejected before recursion.
+        $pending = New-Object 'System.Collections.Generic.Stack[string]'
+        $pending.Push($absolute)
+        while ($pending.Count -gt 0) {
+            foreach ($entry in @(Get-ChildItem -LiteralPath $pending.Pop() -Force)) {
+                if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw "Qpro runtime setup will not follow a linked folder or file: $($entry.FullName)"
+                }
+                if ($entry.PSIsContainer) { $pending.Push($entry.FullName) }
+            }
+        }
+    }
+}
+
+function Backup-QproRuntime {
+    Assert-QproManagedRuntimePath $venvRoot '.venv'
+    Assert-QproRuntimeWithoutLinks $venvRoot -Tree
+    $files = @(Get-ChildItem -LiteralPath $venvRoot -File -Force -Recurse)
+    $bytes = [long]0
+    foreach ($file in $files) { $bytes += $file.Length }
+    $drive = New-Object IO.DriveInfo ([IO.Path]::GetPathRoot($venvRoot))
+    if ($drive.AvailableFreeSpace -lt ($bytes + 512MB)) {
+        throw ('Not enough free disk space to keep a recovery copy of the PC runtime. Free at least {0:N1} GB on {1} and retry; the existing runtime was kept.' -f (($bytes + 512MB) / 1GB), $drive.Name)
+    }
+    $backup = Join-Path $sharedRoot ('runtime-backup-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $backup | Out-Null
+    Write-Host ('Keeping a recovery copy of the PC runtime: {0:N0} files, {1:N1} MB.' -f $files.Count, ($bytes / 1MB))
+    try {
+        $savedEnvironment = Join-Path $backup '.venv'
+        New-Item -ItemType Directory -Path $savedEnvironment | Out-Null
+        $copiedBytes = [long]0
+        $copiedFiles = 0
+        $progressTimer = [Diagnostics.Stopwatch]::StartNew()
+        foreach ($directory in @(Get-ChildItem -LiteralPath $venvRoot -Directory -Force -Recurse)) {
+            New-Item -ItemType Directory -Path (Join-Path $savedEnvironment $directory.FullName.Substring($venvRoot.Length + 1)) -Force | Out-Null
+        }
+        foreach ($file in $files) {
+            [IO.File]::Copy($file.FullName, (Join-Path $savedEnvironment $file.FullName.Substring($venvRoot.Length + 1)), $false)
+            $copiedBytes += $file.Length
+            $copiedFiles++
+            if ($progressTimer.Elapsed.TotalSeconds -ge 5) {
+                Write-Host ('Runtime recovery copy: {0}/{1} files, {2:N1}/{3:N1} MB.' -f $copiedFiles, $files.Count, ($copiedBytes / 1MB), ($bytes / 1MB))
+                $progressTimer.Restart()
+            }
+        }
+        if (Test-Path -LiteralPath $readyMarker -PathType Leaf) { [IO.File]::Copy($readyMarker, (Join-Path $backup 'runtime-ready.json'), $false) }
+        # Completion describes the copy, not interpreter health: repair must
+        # also be able to restore a pre-existing partial environment exactly.
+        $completion = @{ format = 'qpro-runtime-backup-v1'; environment = $venvRoot; files = $copiedFiles; bytes = $copiedBytes }
+        [IO.File]::WriteAllText((Join-Path $backup 'backup-complete.json'), ($completion | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+        Write-Host 'The recovery copy is complete. Updating the private Qpro environment...'
+        return $backup
+    } catch {
+        # Nothing in the installed environment has changed if its copy failed.
+        Write-Warning "The recovery copy did not complete; the current runtime was not changed. Incomplete copy: $backup"
+        throw
+    }
+}
+
+function Restore-QproRuntime([string]$Backup) {
+    $expected = [IO.Path]::GetFullPath($sharedRoot).TrimEnd('\') + '\'
+    $absolute = [IO.Path]::GetFullPath($Backup)
+    if (-not $absolute.StartsWith($expected, [StringComparison]::OrdinalIgnoreCase) -or
+        (Split-Path -Leaf $absolute) -notmatch '^runtime-backup-[0-9a-f]{32}$') { throw 'Invalid PC runtime recovery path.' }
+    Assert-QproRuntimeWithoutLinks $absolute -Tree
+    Assert-QproManagedRuntimePath $venvRoot '.venv'
+    Assert-QproRuntimeWithoutLinks $venvRoot -Tree
+    $savedEnvironment = Join-Path $absolute '.venv'
+    $completionPath = Join-Path $absolute 'backup-complete.json'
+    if (-not (Test-Path -LiteralPath $savedEnvironment -PathType Container) -or
+        -not (Test-Path -LiteralPath $completionPath -PathType Leaf) -or (Get-Item -LiteralPath $completionPath).Length -gt 4096) {
+        throw 'The runtime recovery copy is incomplete.'
+    }
+    $completion = [IO.File]::ReadAllText($completionPath) | ConvertFrom-Json
+    if ($completion.format -ne 'qpro-runtime-backup-v1' -or
+        -not [IO.Path]::GetFullPath($completion.environment).Equals([IO.Path]::GetFullPath($venvRoot), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The runtime recovery copy belongs to a different environment.'
+    }
+    $savedFiles = @(Get-ChildItem -LiteralPath $savedEnvironment -File -Force -Recurse)
+    $savedBytes = [long]0
+    foreach ($file in $savedFiles) { $savedBytes += $file.Length }
+    if ($savedFiles.Count -ne $completion.files -or $savedBytes -ne $completion.bytes) { throw 'The runtime recovery copy is incomplete or has changed.' }
+    if (Test-Path -LiteralPath $venvRoot) { Remove-Item -LiteralPath $venvRoot -Recurse -Force }
+    Move-Item -LiteralPath $savedEnvironment -Destination $venvRoot
+    $savedMarker = Join-Path $absolute 'runtime-ready.json'
+    if (Test-Path -LiteralPath $savedMarker) {
+        if (Test-Path -LiteralPath $readyMarker) { [IO.File]::Replace($savedMarker, $readyMarker, $null) }
+        else { [IO.File]::Move($savedMarker, $readyMarker) }
+    } elseif (Test-Path -LiteralPath $readyMarker) { Remove-Item -LiteralPath $readyMarker -Force }
+    Write-Host 'The previous Qpro PC runtime and its ready record were restored.'
+}
+
+function Invoke-QproRuntimePip([string[]]$Arguments) {
+    # -I blocks Python path injection. --isolated and PIP_CONFIG_FILE=nul also
+    # exclude pip user/global config and inherited target/prefix settings.
+    $savedPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $venvPython -I -m pip --isolated install --disable-pip-version-check --no-input --no-user @Arguments | ForEach-Object { Write-Host $_ }
+        return $LASTEXITCODE
+    } finally { $ErrorActionPreference = $savedPreference }
 }
 
 function Reset-QproTrackingEnvironment {
     New-Item -ItemType Directory -Force -Path $sharedRoot | Out-Null
+    Assert-QproRuntimeWithoutLinks $privatePythonRoot -Tree
+    Assert-QproRuntimeWithoutLinks $venvRoot -Tree
     if (-not (Test-QproPython312 $privatePython)) { Install-QproPrivatePython }
     if (Test-Path -LiteralPath $venvRoot) {
         Write-Host "Rebuilding Qpro's incomplete tracking environment; other Python installations and Qpro settings are untouched."
@@ -102,17 +252,17 @@ function Reset-QproTrackingEnvironment {
         Remove-Item -LiteralPath $venvRoot -Recurse -Force
     }
     Write-Host "Creating Qpro's separate tracking environment from its private Python."
-    & $privatePython -m venv $venvRoot
+    & $privatePython -I -m venv $venvRoot
     if ($LASTEXITCODE -ne 0 -or -not (Test-QproPython312 $venvPython)) {
         throw 'Creating the local Python environment failed. Check Activity for the specific error. For missing DLL or VCRUNTIME errors, install or repair Microsoft Visual C++ Redistributable x64: https://aka.ms/vc14/vc_redist.x64.exe'
     }
 }
 
-function Get-QproRuntimeImportDiagnostic([string]$Python) {
+function Get-QproRuntimeImportDiagnostic([string]$Python, [string]$Code = "import cv2,numpy,torch; assert hasattr(cv2,'namedWindow')") {
     $previousPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        $details = @(& $Python -c "import cv2,numpy,torch; assert hasattr(cv2,'namedWindow')" 2>&1 |
+        $details = @(& $Python -I -c $Code 2>&1 |
             ForEach-Object { $_.ToString() })
         return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Text = ($details -join "`n") }
     }
@@ -149,98 +299,172 @@ function Get-QproNvidiaNames {
     finally { $process.Dispose() }
 }
 
-Write-Host 'Checking NVIDIA driver and GPU (up to 8 seconds)...'
-$nvidiaName = Get-QproNvidiaNames
-$nvidiaDetected = -not [string]::IsNullOrWhiteSpace($nvidiaName)
-if ($nvidiaDetected) { Write-Host "NVIDIA GPU detected: $nvidiaName" }
+function Invoke-QproRuntimeSetup {
+    $recipe = Get-QproRuntimeRecipe
+    if ($Update -and [string]::IsNullOrWhiteSpace($recipe)) { throw 'This release does not contain a PC runtime update recipe. Install the current complete release ZIP.' }
+    Assert-QproRuntimeWithoutLinks $sharedRoot
+    Assert-QproRuntimeWithoutLinks $readyMarker
+    Assert-QproRuntimeWithoutLinks $venvRoot -Tree
+    Write-Host 'Checking NVIDIA driver and GPU (up to 8 seconds)...'
+    $nvidiaName = Get-QproNvidiaNames
+    $nvidiaDetected = -not [string]::IsNullOrWhiteSpace($nvidiaName)
+    if ($nvidiaDetected) { Write-Host "NVIDIA GPU detected: $nvidiaName" }
 
-if (-not [string]::IsNullOrWhiteSpace($env:QPRO_PYTHON) -and (Test-Path -LiteralPath $env:QPRO_PYTHON)) {
-    Write-Host 'Checking the Python runtime explicitly selected by QPRO_PYTHON...'
-    if (Test-PythonCommand $env:QPRO_PYTHON "import cv2,numpy,torch; assert hasattr(cv2,'namedWindow')") {
-        & $env:QPRO_PYTHON -c "import cv2,numpy,torch; print('Existing runtime ready:', torch.__version__, 'CUDA:', torch.cuda.is_available())"
-        Write-Host "An explicitly configured QPRO_PYTHON runtime is ready. Training will automatically use CUDA when that runtime exposes it, otherwise CPU."
-        exit 0
+    if (-not [string]::IsNullOrWhiteSpace($env:QPRO_PYTHON)) {
+        if ($Update) { Write-Host 'The update applies only to the shared Qpro runtime. The custom QPRO_PYTHON environment will not be modified.' }
+        elseif ((Test-Path -LiteralPath $env:QPRO_PYTHON) -and
+            (Test-PythonCommand $env:QPRO_PYTHON "import cv2,numpy,torch; assert hasattr(cv2,'namedWindow')")) {
+            & $env:QPRO_PYTHON -I -c "import cv2,numpy,torch; print('Existing runtime ready:', torch.__version__, 'CUDA:', torch.cuda.is_available())"
+            Write-Host 'The explicitly configured QPRO_PYTHON runtime is ready. Its packages are managed separately.'
+            return
+        }
+    }
+
+    $backup = $null
+    $mutationStarted = $false
+    $finished = $false
+    $runtimeCheck = "import cv2,numpy,torch,sys,pathlib; p=pathlib.Path(sys.prefix).resolve(); assert all(pathlib.Path(m.__file__).resolve().is_relative_to(p) for m in (cv2,numpy,torch)), 'Runtime libraries must come from the private Qpro environment'; assert hasattr(cv2,'namedWindow'); assert torch.arange(4).sum().item() == 6"
+    try {
+        $existingPythonReady = Test-QproPython312 $venvPython
+        $existingRuntimeReady = $false
+        $existingCudaReady = $false
+        $existingCudaBuild = $false
+        if ($existingPythonReady) {
+            $expectedPrefix = $venvRoot.Replace('\', '/').Replace("'", "\'")
+            if (-not (Test-PythonCommand $venvPython "import os,sys; assert sys.prefix != sys.base_prefix and os.path.normcase(os.path.realpath(sys.prefix)) == os.path.normcase(os.path.realpath('$expectedPrefix'))")) {
+                throw 'The shared Qpro interpreter is not its private virtual environment. No packages were changed. Re-extract the release and retry setup.'
+            }
+            Write-Host 'Checking OpenCV, NumPy, and PyTorch in the shared Qpro environment. The first import can take a while...'
+            $existingRuntimeReady = Test-PythonCommand $venvPython $runtimeCheck
+            $existingCudaBuild = $existingRuntimeReady -and (Test-PythonCommand $venvPython "import torch; assert torch.version.cuda is not None and torch.version.hip is None")
+            $existingCudaReady = $existingCudaBuild -and (Test-PythonCommand $venvPython "import torch; assert torch.cuda.is_available(); assert torch.arange(4,device='cuda').sum().item() == 6; torch.cuda.synchronize()")
+            if (-not $Update -and $existingRuntimeReady -and (-not $nvidiaDetected -or $existingCudaReady) -and (Test-QproRuntimeReceipt $recipe)) {
+                & $venvPython -I -c "import cv2,numpy,torch; print('Existing shared runtime ready:', torch.__version__, 'CUDA:', torch.cuda.is_available())"
+                # An import alone does not certify that a new release recipe ran.
+                if ([string]::IsNullOrWhiteSpace($recipe) -and -not (Test-Path -LiteralPath $readyMarker)) {
+                    Write-ReadyMarker $venvPython $null $(if ($existingCudaReady) { 'cuda' } else { 'cpu' })
+                }
+                Write-Host 'No runtime reinstall was needed.'
+                return
+            }
+            if ($existingRuntimeReady) {
+                Write-Host 'Updating the Qpro tracking requirements and PyTorch for this release.'
+                if ($nvidiaDetected -and -not $existingCudaBuild) { Write-Host 'The existing runtime is CPU-only even though an NVIDIA GPU is present. Repairing its PyTorch installation.' }
+            } else {
+                $diagnostic = Get-QproRuntimeImportDiagnostic $venvPython $runtimeCheck
+                Write-Host "The existing Qpro runtime failed its import check (exit $($diagnostic.ExitCode))."
+                if (-not [string]::IsNullOrWhiteSpace($diagnostic.Text)) { Write-Host $diagnostic.Text }
+            }
+        }
+
+        # Keep a byte-for-byte recovery copy before pip or environment repair can
+        # modify an existing installation. Copy failure leaves it untouched.
+        if (Test-Path -LiteralPath $venvRoot -PathType Container) { $backup = Backup-QproRuntime }
+        $mutationStarted = $true
+        if (Test-Path -LiteralPath $readyMarker) { Remove-Item -LiteralPath $readyMarker -Force }
+        if (-not $existingPythonReady -or -not $existingRuntimeReady) {
+            Write-Host 'Preparing the private shared Qpro Python environment...'
+            Reset-QproTrackingEnvironment
+        }
+        Write-Host 'Installing the shared tracking runtime. PyTorch is large; this may take several minutes.'
+        if ((Invoke-QproRuntimePip @('--upgrade', 'pip')) -ne 0) {
+            throw 'Updating pip failed. Read the preceding Activity error. For VCRUNTIME or missing DLL errors, repair Microsoft Visual C++ Redistributable x64: https://aka.ms/vc14/vc_redist.x64.exe'
+        }
+        Write-Host 'Installing OpenCV, NumPy, and the other tracking requirements...'
+        if ((Invoke-QproRuntimePip @('--upgrade', '-r', $requirements)) -ne 0) { throw 'Installing the tracking requirements failed. Read the preceding Activity error; existing Qpro models and captures are unchanged.' }
+
+        # Driver detection can fail transiently. Retain an existing CUDA build
+        # during updates rather than silently replacing it with CPU PyTorch.
+        $useCuda = $nvidiaDetected -or $existingCudaBuild
+        if ($useCuda) {
+            Write-Host 'Installing the official CUDA 12.8 PyTorch wheel.'
+            $cudaOptions = @('--upgrade')
+            if ($existingRuntimeReady -and -not $existingCudaBuild) {
+                $cudaOptions += '--force-reinstall'
+                Write-Host 'Replacing the CPU-only PyTorch wheel with the CUDA build.'
+            }
+            $code = Invoke-QproRuntimePip ($cudaOptions + @($torchRequirement, '--index-url', $cudaIndex))
+            if ($code -ne 0) {
+                if ($existingCudaReady) { throw 'Updating CUDA PyTorch failed. The previous working GPU runtime will be restored.' }
+                Write-Warning 'The CUDA PyTorch download failed. Installing the CPU build so tracking and training remain usable.'
+                if ((Invoke-QproRuntimePip @('--upgrade', '--force-reinstall', $torchRequirement, '--index-url', $cpuIndex)) -ne 0) {
+                    throw 'Installing both CUDA and CPU PyTorch builds failed. Check the internet connection and run setup again.'
+                }
+            }
+        } else {
+            Write-Host 'No NVIDIA driver/GPU was detected. Installing the official CPU PyTorch wheel.'
+            if ((Invoke-QproRuntimePip @('--upgrade', $torchRequirement, '--index-url', $cpuIndex)) -ne 0) { throw 'Installing the CPU PyTorch build failed.' }
+        }
+
+        Write-Host 'Verifying OpenCV, NumPy, and a PyTorch tensor operation...'
+        if (-not (Test-PythonCommand $venvPython $runtimeCheck)) {
+            $diagnostic = Get-QproRuntimeImportDiagnostic $venvPython $runtimeCheck
+            if (-not [string]::IsNullOrWhiteSpace($diagnostic.Text)) { Write-Host $diagnostic.Text }
+            if ($diagnostic.Text -match '(?i)DLL load failed|VCRUNTIME|MSVCP140|Microsoft Visual C\+\+' -or
+                $diagnostic.ExitCode -in @(-1073741515, 3221225781)) {
+                throw 'A Windows native dependency could not load. Install or repair Microsoft Visual C++ Redistributable x64 from https://aka.ms/vc14/vc_redist.x64.exe, then retry. Qpro settings and captures can stay in place.'
+            }
+            throw "The installed runtime failed its final tensor/import check (exit $($diagnostic.ExitCode)). Send the complete Activity log."
+        }
+        $cudaReady = Test-PythonCommand $venvPython "import torch; assert torch.version.cuda is not None and torch.cuda.is_available(); assert torch.arange(4,device='cuda').sum().item() == 6; torch.cuda.synchronize()"
+        if ($useCuda -and -not $cudaReady) {
+            $gpuDiagnostic = Get-QproRuntimeImportDiagnostic $venvPython "import torch; print('PyTorch:', torch.__version__, 'CUDA build:', torch.version.cuda); assert torch.version.cuda is not None, 'Installed PyTorch has no CUDA build'; assert torch.cuda.is_available(), 'CUDA driver/device could not be initialized'; assert torch.arange(4,device='cuda').sum().item() == 6; torch.cuda.synchronize()"
+            if (-not [string]::IsNullOrWhiteSpace($gpuDiagnostic.Text)) { Write-Host $gpuDiagnostic.Text }
+        }
+        if ($existingCudaReady -and -not $cudaReady) { throw 'The updated CUDA runtime did not pass its GPU tensor check. The previous working GPU runtime will be restored.' }
+        if ($useCuda -and -not $cudaReady) { Write-Warning 'PyTorch could not initialize CUDA. CPU tracking/training is available; update the NVIDIA display driver and rerun PC runtime setup for GPU acceleration.' }
+        & $venvPython -I -c "import cv2,numpy,torch; print('Runtime ready:', torch.__version__, 'CUDA:', torch.cuda.is_available())"
+        Write-ReadyMarker $venvPython $recipe $(if ($cudaReady) { 'cuda' } else { 'cpu' })
+        $finished = $true
+        Write-Host 'PC runtime setup complete. The private runtime passed verification.'
+    } catch {
+        $originalError = $_
+        if ($mutationStarted -and $null -ne $backup) {
+            Write-Warning 'PC runtime setup failed. Restoring its previous environment...'
+            try { Restore-QproRuntime $backup }
+            catch {
+                throw "PC runtime setup failed: $($originalError.Exception.Message) Recovery also failed: $($_.Exception.Message) Keep the recovery copy at $backup and close all Qpro tracking/training processes before retrying."
+            }
+        }
+        throw $originalError
+    } finally {
+        if ($finished -and $null -ne $backup) {
+            try {
+                Assert-QproManagedRuntimePath $backup (Split-Path -Leaf $backup)
+                Assert-QproRuntimeWithoutLinks $backup -Tree
+                Remove-Item -LiteralPath $backup -Recurse -Force
+            } catch { Write-Warning "The runtime update succeeded, but its recovery copy could not be removed: $backup" }
+        }
     }
 }
 
-$newEnvironment = $false
-if (-not (Test-QproPython312 $venvPython)) {
-    Write-Host 'The shared Qpro Python environment is missing or incomplete; creating a private one.'
-    Reset-QproTrackingEnvironment
-    $newEnvironment = $true
+# Scope isolation to this setup process, then restore it for callers that
+# dot-source the script. Neither pip config nor another app's Python variables
+# may route Qpro's update into a system or user installation.
+$savedEnvironment = @{}
+$setupMutex = $null
+$setupMutexOwned = $false
+$gpuVisibilityVariables = @('CUDA_VISIBLE_DEVICES', 'HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'GPU_DEVICE_ORDINAL')
+foreach ($item in @(Get-ChildItem Env: | Where-Object { $_.Name -match '^(PIP_|PYTHON)' -or $gpuVisibilityVariables -contains $_.Name })) {
+    $savedEnvironment[$item.Name] = $item.Value
+    [Environment]::SetEnvironmentVariable($item.Name, $null, 'Process')
 }
-if (Test-Path -LiteralPath $venvPython) {
-    Write-Host 'Checking OpenCV, NumPy, and PyTorch in the shared Qpro environment. The first import can take a while...'
-    $existingRuntimeReady = Test-PythonCommand $venvPython "import cv2,numpy,torch; assert hasattr(cv2,'namedWindow')"
-    $existingCudaReady = $existingRuntimeReady -and (Test-PythonCommand $venvPython "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)")
-    if ($existingRuntimeReady -and (-not $nvidiaDetected -or $existingCudaReady)) {
-        & $venvPython -c "import cv2,numpy,torch; print('Existing shared runtime ready:', torch.__version__, 'CUDA:', torch.cuda.is_available())"
-        Write-ReadyMarker $venvPython
-        Write-Host "No runtime reinstall was needed."
-        exit 0
+try {
+    $env:PIP_CONFIG_FILE = 'nul'
+    $env:PYTHONNOUSERSITE = '1'
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try { $runtimeKey = [BitConverter]::ToString($hasher.ComputeHash([Text.Encoding]::UTF8.GetBytes([IO.Path]::GetFullPath($sharedRoot).ToLowerInvariant()))).Replace('-', '') }
+    finally { $hasher.Dispose() }
+    $setupMutex = New-Object Threading.Mutex($false, ('Local\QproRuntimeSetup-' + $runtimeKey))
+    try { $setupMutexOwned = $setupMutex.WaitOne(0) }
+    catch [Threading.AbandonedMutexException] { $setupMutexOwned = $true }
+    if (-not $setupMutexOwned) { throw 'Another Qpro PC runtime setup is already running. Wait for it to finish before retrying.' }
+    Invoke-QproRuntimeSetup
+} finally {
+    if ($setupMutexOwned) { $setupMutex.ReleaseMutex() }
+    if ($null -ne $setupMutex) { $setupMutex.Dispose() }
+    foreach ($item in @(Get-ChildItem Env: | Where-Object { $_.Name -match '^(PIP_|PYTHON)' -or $gpuVisibilityVariables -contains $_.Name })) {
+        [Environment]::SetEnvironmentVariable($item.Name, $null, 'Process')
     }
-    if ($existingRuntimeReady -and $nvidiaDetected -and -not $existingCudaReady) {
-        Write-Host "The existing runtime is CPU-only even though an NVIDIA GPU is present. Repairing its PyTorch installation."
-    }
-    if (-not $existingRuntimeReady -and -not $newEnvironment) {
-        $diagnostic = Get-QproRuntimeImportDiagnostic $venvPython
-        Write-Host "The existing Qpro runtime failed its import check (exit $($diagnostic.ExitCode))."
-        if (-not [string]::IsNullOrWhiteSpace($diagnostic.Text)) { Write-Host $diagnostic.Text }
-        Reset-QproTrackingEnvironment
-    }
+    foreach ($key in $savedEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $savedEnvironment[$key], 'Process') }
 }
-
-if (Test-Path -LiteralPath $readyMarker) { Remove-Item -LiteralPath $readyMarker -Force }
-Write-Host "Installing the shared tracking runtime. PyTorch is large; this may take several minutes."
-& $venvPython -m pip install --disable-pip-version-check --no-input --upgrade pip
-if ($LASTEXITCODE -ne 0) {
-    throw 'Updating pip failed. Read the preceding Activity error. If it mentions a missing DLL, VCRUNTIME, or MSVCP140, install or repair Microsoft Visual C++ Redistributable x64: https://aka.ms/vc14/vc_redist.x64.exe'
-}
-Write-Host 'Installing OpenCV, NumPy, and the other tracking requirements...'
-& $venvPython -m pip install --disable-pip-version-check --no-input -r $requirements
-if ($LASTEXITCODE -ne 0) {
-    throw 'Installing the tracking runtime failed. Read the preceding Activity error. For missing DLL, VCRUNTIME, or MSVCP140 errors, install or repair Microsoft Visual C++ Redistributable x64: https://aka.ms/vc14/vc_redist.x64.exe'
-}
-
-if ($nvidiaDetected) {
-    Write-Host "Installing the official CUDA 12.8 PyTorch wheel for $nvidiaName."
-    $cudaInstallOptions = @()
-    if ($existingRuntimeReady -and -not $existingCudaReady) {
-        # A CPU wheel satisfies torch>=2.7,<3, even when pip's index points at
-        # CUDA. Force replacement only for this repair path.
-        $cudaInstallOptions = @('--force-reinstall')
-        Write-Host 'Replacing the CPU-only PyTorch wheel with the CUDA build.'
-    }
-    & $venvPython -m pip install --disable-pip-version-check --no-input --upgrade @cudaInstallOptions $torchRequirement --index-url $cudaIndex
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "The CUDA PyTorch download failed. Installing the CPU build so tracking and training remain usable."
-        & $venvPython -m pip install --disable-pip-version-check --no-input --upgrade $torchRequirement --index-url $cpuIndex
-        if ($LASTEXITCODE -ne 0) { throw "Installing both CUDA and CPU PyTorch builds failed. Check the internet connection and run setup again." }
-    }
-}
-else {
-    Write-Host "No NVIDIA driver/GPU was detected. Installing the official CPU PyTorch wheel."
-    & $venvPython -m pip install --disable-pip-version-check --no-input --upgrade $torchRequirement --index-url $cpuIndex
-    if ($LASTEXITCODE -ne 0) { throw "Installing the CPU PyTorch build failed." }
-}
-
-Write-Host 'Verifying that the installed OpenCV, NumPy, and PyTorch libraries load successfully...'
-if (-not (Test-PythonCommand $venvPython "import cv2,numpy,torch; assert hasattr(cv2,'namedWindow')")) {
-    $diagnostic = Get-QproRuntimeImportDiagnostic $venvPython
-    if (-not [string]::IsNullOrWhiteSpace($diagnostic.Text)) { Write-Host $diagnostic.Text }
-    if ($diagnostic.Text -match '(?i)DLL load failed|VCRUNTIME|MSVCP140|Microsoft Visual C\+\+' -or
-        $diagnostic.ExitCode -in @(-1073741515, 3221225781)) {
-        throw 'A Windows native dependency could not load. Install or repair the latest Microsoft Visual C++ Redistributable x64 from https://aka.ms/vc14/vc_redist.x64.exe, then rerun PC runtime setup. Qpro settings and captures can stay in place.'
-    }
-    throw "The installed runtime failed its final import check (exit $($diagnostic.ExitCode)). Send the complete Activity log; there is no need to delete Qpro settings or captures."
-}
-& $venvPython -c "import cv2,numpy,torch; print('Runtime ready:', torch.__version__, 'CUDA:', torch.cuda.is_available())"
-
-if ($nvidiaDetected) {
-    if (-not (Test-PythonCommand $venvPython "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)")) {
-        Write-Warning "NVIDIA hardware was detected, but PyTorch still cannot initialize CUDA. Update/reinstall the NVIDIA display driver, then run this setup again. CPU training fallback remains available meanwhile."
-    }
-}
-
-Write-ReadyMarker $venvPython
-Write-Host "PC runtime setup complete. You can close this window and press Refresh in QproFaceTracking."
