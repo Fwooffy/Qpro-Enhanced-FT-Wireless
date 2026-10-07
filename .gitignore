@@ -1,5 +1,6 @@
 dist/
 artifacts/
+outputs/
 **/bin/
 **/obj/
 .venv/

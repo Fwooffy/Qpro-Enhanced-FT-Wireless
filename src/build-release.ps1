@@ -11,6 +11,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($Version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+    throw "Release Version must be a stable major.minor.patch version."
+}
 $root = $PSScriptRoot
 $safeVersion = $Version -replace '[^A-Za-z0-9._-]', '-'
 $releaseName = if ([string]::IsNullOrWhiteSpace($PackageName)) { "QproFaceTracking-$safeVersion" } else { $PackageName }
@@ -45,7 +48,7 @@ New-Item -ItemType Directory -Force -Path $releaseRoot, $artifactRoot | Out-Null
 
 Write-Host "Publishing the self-contained Windows hub..."
 $hubPublish = Join-Path $artifactRoot "hub"
-& $dotnet publish (Join-Path $root "qpro-hub\QproFaceTracking.Hub.csproj") -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:DebugType=None -o $hubPublish @restoreArgs
+& $dotnet publish (Join-Path $root "qpro-hub\QproFaceTracking.Hub.csproj") -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:DebugType=None "-p:Version=$Version" -o $hubPublish @restoreArgs
 if ($LASTEXITCODE -ne 0) { throw "Publishing the Windows hub failed." }
 Copy-Item -LiteralPath (Join-Path $hubPublish "QproFaceTracking.Hub.exe") -Destination (Join-Path $releaseRoot "QproFaceTracking.exe")
 
@@ -133,6 +136,7 @@ $runtimeFiles = @(
     "native-eye-local-branch-test.ps1",
     "install-vrcft-eye-bridge.ps1",
     "uninstall-vrcft-eye-bridge.ps1",
+    "vrcft-module-installation.ps1",
     "setup-runtime.ps1",
     "runtime-python.ps1",
     "prepare-eye-model.ps1",
@@ -191,6 +195,11 @@ $runtimeFiles = @(
     "release-manifest.json"
 )
 foreach ($file in $runtimeFiles) { Copy-ReleaseFile $file }
+$packagedManifestPath = Join-Path $runtimeRoot 'release-manifest.json'
+$packagedManifest = Get-Content -LiteralPath $packagedManifestPath -Raw | ConvertFrom-Json
+$packagedManifest.version = $Version
+$packagedManifest | Add-Member -NotePropertyName updateFormat -NotePropertyValue 1 -Force
+$packagedManifest | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $packagedManifestPath -Encoding utf8
 
 # The optional controller runtime is built separately from the .NET face module.
 # Copy an explicit list so compiler caches, debug symbols and reference source
@@ -330,6 +339,9 @@ try {
     finally { $licenseInput.Dispose() }
 }
 finally { $pythonArchive.Dispose() }
+. (Join-Path $root 'release-components.ps1')
+$packagedManifest | Add-Member -NotePropertyName componentUpdates -NotePropertyValue (Get-QproReleaseComponents $runtimeRoot) -Force
+$packagedManifest | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $packagedManifestPath -Encoding utf8
 $helpersRoot = Join-Path $releaseRoot "Helpers"
 New-Item -ItemType Directory -Force -Path $helpersRoot | Out-Null
 foreach ($launcher in @(
@@ -342,7 +354,7 @@ foreach ($launcher in @(
 Copy-Item -LiteralPath (Join-Path $root "RELEASE_HELPERS_README.md") -Destination (Join-Path $helpersRoot "README.md")
 $docsRoot = Join-Path $releaseRoot "Docs"
 New-Item -ItemType Directory -Force -Path $docsRoot | Out-Null
-foreach ($document in @("LICENSE", "THIRD_PARTY_NOTICES.md", "UPSTREAM-README.md", "RELEASE_INSTRUCTIONS.md", "RELEASE_NOTES_V2.1.2.md", "CONTROLLER_INPUT.md", "GAZE_ENGINE_TEST_NOTES.md")) {
+foreach ($document in @("LICENSE", "THIRD_PARTY_NOTICES.md", "UPSTREAM-README.md", "RELEASE_INSTRUCTIONS.md", "RELEASE_NOTES_V2.1.2.md", "RELEASE_FIX_NOTES.md", "CONTROLLER_INPUT.md", "GAZE_ENGINE_TEST_NOTES.md")) {
     $documentSource = Join-Path $root $document
     if (-not (Test-Path -LiteralPath $documentSource) -and $assetRootResolved) {
         $documentSource = Join-Path $assetRootResolved $document

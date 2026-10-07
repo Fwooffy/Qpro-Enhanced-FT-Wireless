@@ -23,6 +23,34 @@ function Copy-SourceFile([string]$RelativePath, [string]$DestinationPath = $Rela
     Copy-Item -LiteralPath $source -Destination $destination -Force
 }
 
+function Get-QproPublicTestSources([string]$SourceRoot) {
+    $sourceFull = [System.IO.Path]::GetFullPath($SourceRoot).TrimEnd('\', '/')
+    $tests = Join-Path $sourceFull 'tests'
+    $pending = [System.Collections.Generic.Stack[string]]::new()
+    $pending.Push($tests)
+    while ($pending.Count) {
+        $directory = $pending.Pop()
+        if (((Get-Item -LiteralPath $directory -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Public test sources cannot include a linked directory: $directory"
+        }
+        foreach ($item in Get-ChildItem -LiteralPath $directory -Force | Sort-Object Name) {
+            $relative = $item.FullName.Substring($sourceFull.Length + 1)
+            # Export regression code, never compiled outputs, recordings or caches.
+            if ($relative -match '(?i)(^|[\\/])(bin|obj|artifacts|__pycache__|captures|training|private)([\\/]|$)') {
+                continue
+            }
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Public test sources cannot include a linked entry: $relative"
+            }
+            if ($item.PSIsContainer) {
+                $pending.Push($item.FullName)
+            } elseif ($item.Extension -in @('.cs', '.csproj', '.ps1', '.py', '.md')) {
+                $relative
+            }
+        }
+    }
+}
+
 $sourceFiles = @(
     "build-and-run.ps1",
     "build-release.ps1",
@@ -48,9 +76,16 @@ $sourceFiles = @(
     "native-eye-local-branch-test.ps1",
     "install-vrcft-eye-bridge.ps1",
     "uninstall-vrcft-eye-bridge.ps1",
+    "vrcft-module-installation.ps1",
     "setup-runtime.ps1",
     "runtime-python.ps1",
     "test_runtime_python_discovery.ps1",
+    "test_vrcft_module_installation.ps1",
+    "test_release_metadata.ps1",
+    "release-components.ps1",
+    "test_release_components.ps1",
+    "test_runtime_updates.ps1",
+    "capture-native-cheek-context.ps1",
     "test_rocm_installer_packages.ps1",
     "test_rocm_gpu_visibility.ps1",
     "test_rocm_runtime_paths.ps1",
@@ -132,6 +167,7 @@ $sourceFiles = @(
     "qpro-hub\README.md",
     "RELEASE_README.md",
     "RELEASE_NOTES_V2.1.2.md",
+    "RELEASE_FIX_NOTES.md",
     "RELEASE_INSTRUCTIONS.md",
     "RELEASE_HELPERS_README.md",
     "DEVELOPER_TONGUE_TRAINING.md",
@@ -178,12 +214,7 @@ foreach ($hubSource in Get-ChildItem -LiteralPath (Join-Path $root "qpro-hub") -
 foreach ($bridgeSource in Get-ChildItem -LiteralPath (Join-Path $root "vrcft-gaze-bridge") -File -Filter "*.cs") {
     Copy-SourceFile ("vrcft-gaze-bridge\" + $bridgeSource.Name)
 }
-foreach ($testSource in Get-ChildItem -LiteralPath (Join-Path $root "tests\steam-osc") -File -Filter "*.cs") {
-    Copy-SourceFile ("tests\steam-osc\" + $testSource.Name)
-}
-foreach ($testSource in Get-ChildItem -LiteralPath (Join-Path $root "tests\hub-datasets") -File -Filter "*.cs") {
-    Copy-SourceFile ("tests\hub-datasets\" + $testSource.Name)
-}
+foreach ($testSource in Get-QproPublicTestSources $root) { Copy-SourceFile $testSource }
 $exportedReleaseReadme = Join-Path $sourceRoot "RELEASE_README.md"
 # Windows PowerShell otherwise reads UTF-8 punctuation through the ANSI default.
 $releaseGuide = [System.IO.File]::ReadAllText($exportedReleaseReadme, [System.Text.Encoding]::UTF8)
