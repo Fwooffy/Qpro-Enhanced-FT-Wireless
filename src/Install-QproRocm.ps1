@@ -1,6 +1,8 @@
 param(
     [string]$QproRoot = $PSScriptRoot,
     [switch]$UseLegacyRocm,
+    [switch]$Update,
+    [switch]$AllowExperimentalWindows10,
     [string]$RocmStorageRoot = ''
 )
 
@@ -44,8 +46,19 @@ $qproRocm10Targets = @{
     'Radeon RX 9060' = 'gfx1200'
 }
 
-if ([Environment]::OSVersion.Version.Build -lt 22000) {
-    throw 'Qpro AMD ROCm requires Windows 11. Use the CPU runtime on this version of Windows.'
+function Test-QproRocmWindowsPolicy([int]$Build, [bool]$AllowWindows10, [bool]$Legacy) {
+    return ($Build -ge 22000 -or (-not $Legacy -and $Build -ge 19045 -and $Build -lt 22000 -and $AllowWindows10))
+}
+$qproWindowsBuild = [Environment]::OSVersion.Version.Build
+$qproWindows10Experiment = $qproWindowsBuild -ge 19045 -and $qproWindowsBuild -lt 22000
+if (-not (Test-QproRocmWindowsPolicy $qproWindowsBuild ([bool]$AllowExperimentalWindows10) ([bool]$UseLegacyRocm))) {
+    if ($qproWindows10Experiment -and -not $UseLegacyRocm) {
+        throw 'Windows 10 ROCm support is experimental and disabled by default. On Windows 10 22H2, enable Try ROCm on Windows 10 in the Hub, or retry this script with -AllowExperimentalWindows10. GPU training and inference checks still must pass.'
+    }
+    throw 'ROCm setup needs Windows 11, or Windows 10 22H2 (build 19045 or later) with -AllowExperimentalWindows10 for ROCm 10.1. Legacy ROCm 7.2.1 remains Windows 11 only. Use the PC runtime on older Windows versions.'
+}
+if ($qproWindows10Experiment) {
+    Write-Warning "Experimental Windows 10 ROCm setup explicitly enabled (build $qproWindowsBuild). AMD validates Windows 11; this card/driver combination may fail. Qpro will not enable this environment unless every GPU check passes."
 }
 
 try {
@@ -63,27 +76,48 @@ function Get-QproNormalizedGpuName($gpu) {
     return $name
 }
 
+function Get-QproRocmRecipe([string]$Root, [bool]$Legacy) {
+    $manifest = Join-Path $Root 'release-manifest.json'
+    if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { return $null }
+    $record = [System.IO.File]::ReadAllText($manifest) | ConvertFrom-Json
+    $components = $record.componentUpdates
+    if ($null -eq $components -or $components.schema -ne 1) { return $null }
+    $recipe = if ($Legacy) { [string]$components.legacyRocmRecipe } else { [string]$components.rocmRecipe }
+    if ($recipe -notmatch '^[a-fA-F0-9]{64}$') { return $null }
+    return $recipe.ToLowerInvariant()
+}
+
+function Test-QproRocmReplacement([string]$EnvironmentRoot, [string]$Version, [switch]$Update) {
+    if ($Update) { return $true }
+    $marker = Join-Path $EnvironmentRoot 'qpro-rocm-ready.json'
+    if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { return $false }
+    try {
+        $record = [System.IO.File]::ReadAllText($marker) | ConvertFrom-Json
+        return $record.schema -eq 1 -and [string]$record.rocmVersion -ne $Version
+    } catch { return $false }
+}
+
 function Get-QproRocm10Packages([string]$GfxTarget) {
     # Request the concrete packages as well as the host wheels. An incomplete
     # installed torch METADATA can silently omit extras and make pip report
     # "already satisfied" while the target kernels are missing.
     $packages = @(
-        'torch==2.13.0+rocm10.0.0',
-        'torchvision==0.28.0+rocm10.0.0',
-        'torchaudio==2.11.0.2+rocm10.0.0',
-        "amd-torch-device-$GfxTarget==2.13.0+rocm10.0.0",
-        "amd-torchvision-device-$GfxTarget==0.28.0+rocm10.0.0",
-        'rocm==10.0.0',
-        'rocm-sdk-core==10.0.0',
-        'rocm-sdk-libraries==10.0.0',
-        "rocm-sdk-device-$GfxTarget==10.0.0"
+        'torch==2.14.0+rocm10.1.0',
+        'torchvision==0.29.0a0+rocm10.1.0',
+        'torchaudio==2.11.0.3+rocm10.1.0',
+        "amd-torch-device-$GfxTarget==2.14.0+rocm10.1.0",
+        "amd-torchvision-device-$GfxTarget==0.29.0a0+rocm10.1.0",
+        'rocm==10.1.0',
+        'rocm-sdk-core==10.1.0',
+        'rocm-sdk-libraries==10.1.0',
+        "rocm-sdk-device-$GfxTarget==10.1.0"
     )
     # These family packs are additional dependencies of AMD's Windows Torch
     # device extras, alongside the exact target's device pack.
     if ($GfxTarget -in @('gfx1100', 'gfx1101', 'gfx1102', 'gfx1103')) {
-        $packages += 'amd-torch-device-gfx110x==2.13.0+rocm10.0.0'
+        $packages += 'amd-torch-device-gfx110x==2.14.0+rocm10.1.0'
     } elseif ($GfxTarget -in @('gfx1200', 'gfx1201')) {
-        $packages += 'amd-torch-device-gfx12-0==2.13.0+rocm10.0.0'
+        $packages += 'amd-torch-device-gfx12-0==2.14.0+rocm10.1.0'
     }
     return $packages
 }
@@ -190,7 +224,7 @@ function Repair-QproRocm10HostWheels([string]$Python, [string[]]$Packages) {
     # pip's "already satisfied" checks metadata, not files. Reinstall only
     # the host wheels once; keep the already-downloaded SDK/device packs.
     $environmentRoot = Split-Path -Parent (Split-Path -Parent $Python)
-    Invoke-QproRocmPip $Python @('install', '--no-input', '--disable-pip-version-check', '--no-cache-dir', '--force-reinstall', '--no-deps', '--index-url', 'https://stable.repo.amd.com/rocm/whl-next/', 'torch==2.13.0+rocm10.0.0', 'torchvision==0.28.0+rocm10.0.0', 'torchaudio==2.11.0.2+rocm10.0.0') 'Repairing AMD PyTorch host wheels failed.' $environmentRoot
+    Invoke-QproRocmPip $Python @('install', '--no-input', '--disable-pip-version-check', '--no-cache-dir', '--force-reinstall', '--no-deps', '--index-url', 'https://stable.repo.amd.com/rocm/whl-next/', 'torch==2.14.0+rocm10.1.0', 'torchvision==0.29.0a0+rocm10.1.0', 'torchaudio==2.11.0.3+rocm10.1.0') 'Repairing AMD PyTorch host wheels failed.' $environmentRoot
     # Restore dependencies that damaged host metadata may have skipped on
     # the first install, without reinstalling the large SDK/device wheels.
     Invoke-QproRocmPip $Python (@('install', '--no-input', '--disable-pip-version-check', '--no-cache-dir', '--index-url', 'https://stable.repo.amd.com/rocm/whl-next/') + $Packages) 'Installing the repaired AMD PyTorch dependencies failed.' $environmentRoot
@@ -213,24 +247,24 @@ if ($qproExperimental) {
 if ($null -eq $qproAmdGpu) {
     $qproDetectedNames = ($qproVideoControllers | ForEach-Object { $_.Name }) -join ', '
     if ($UseLegacyRocm) {
-        throw "No Radeon on AMD's ROCm 7.2.1 Windows card list was found ($qproDetectedNames). Retry without -UseLegacyRocm for the latest ROCm 10.0 device package."
+        throw "No Radeon on AMD's ROCm 7.2.1 Windows card list was found ($qproDetectedNames). Retry without -UseLegacyRocm for the latest ROCm 10.1 device package."
     }
     throw "No eligible discrete Radeon GPU was found ($qproDetectedNames). Ryzen integrated graphics cannot run Qpro ROCm. Qpro supports selected RX 6000, 7000 and 9000 models with an exact ROCm device package; use Install runtime for NVIDIA CUDA or CPU."
 }
 $qproGfxTarget = $qproRocm10Targets[(Get-QproNormalizedGpuName $qproAmdGpu)]
-$qproRocmVersion = if ($qproExperimental) { '10.0.0' } else { '7.2.1' }
+$qproRocmVersion = if ($qproExperimental) { '10.1.0' } else { '7.2.1' }
 . (Join-Path $QproRoot 'runtime-python.ps1')
 $qproRocmPrefix = if ($qproExperimental) { '10' } else { '721' }
 $qproRocmEnv = Get-QproRocmInstallEnvironment $qproRocmPrefix $qproGfxTarget $RocmStorageRoot
 Assert-QproRocmPathBudget $qproRocmEnv
 if ($qproExperimental) {
     Write-Host "Discrete AMD GPU detected: $($qproAmdGpu.Name) ($qproGfxTarget)."
-    Write-Host 'Installing the latest stable ROCm 10.0 GPU-specific packages in a separate Qpro environment. Setup reports ready only after GPU training and inference checks pass.'
+    Write-Host 'Installing the latest stable ROCm 10.1 GPU-specific packages in a separate Qpro environment. Setup reports ready only after GPU training and inference checks pass.'
     if ((Get-QproNormalizedGpuName $qproAmdGpu) -match '^Radeon RX 6') {
-        Write-Warning 'Radeon RX 6000 support on Windows is experimental for Qpro. AMD does not list these RX gaming cards in its ROCm 10.0 Windows compatibility matrix.'
+        Write-Warning 'Radeon RX 6000 support on Windows is experimental for Qpro. AMD does not list these RX gaming cards in its ROCm 10.1 Windows compatibility matrix.'
     }
-    if ([Environment]::OSVersion.Version.Build -lt 26200) {
-        Write-Warning 'AMD validates ROCm 10.0 on Windows 11 25H2. This Windows build is outside that validation; the GPU checks may fail.'
+    if (-not $qproWindows10Experiment -and $qproWindowsBuild -lt 26200) {
+        Write-Warning 'AMD validates ROCm 10.1 on Windows 11 25H2. This Windows build is outside that validation; the GPU checks may fail.'
     }
 } else {
     Write-Host "Legacy ROCm 7.2.1 explicitly selected for supported discrete AMD GPU: $($qproAmdGpu.Name)"
@@ -270,14 +304,17 @@ if ($qproExperimental) {
 }
 $qproSiteCustomize = Join-Path $qproRocmEnv 'Lib\site-packages\sitecustomize.py'
 $qproReplaceCustomizedEnvironment = Test-Path -LiteralPath $qproSiteCustomize
-if ($qproReplaceCustomizedEnvironment) {
+$qproReplaceForUpdate = Test-QproRocmReplacement $qproRocmEnv $qproRocmVersion -Update:$Update
+if ($qproReplaceForUpdate) {
+    Write-Host 'Preparing a separate ROCm update. The current environment stays available until the new GPU checks pass.'
+} elseif ($qproReplaceCustomizedEnvironment) {
     Write-Host 'Keeping a ROCm folder that contains an earlier GPU-discovery shim; a clean replacement will be created.'
 }
 
 & $qproBasePython -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
 if ($LASTEXITCODE -ne 0) { throw 'QproFaceTracking requires Python 3.12 for these AMD wheels.' }
 
-$qproRocmEnv = Initialize-QproRocmEnvironment $qproRocmEnv $qproBasePython -ForceReplacement:$qproReplaceCustomizedEnvironment
+$qproRocmEnv = Initialize-QproRocmEnvironment $qproRocmEnv $qproBasePython -ForceReplacement:($qproReplaceCustomizedEnvironment -or $qproReplaceForUpdate)
 $qproRocmPython = Join-Path $qproRocmEnv 'Scripts\python.exe'
 $qproReadyMarker = Join-Path $qproRocmEnv 'qpro-rocm-ready.json'
 Write-Host "Separate Qpro ROCm environment: $qproRocmEnv"
@@ -309,8 +346,8 @@ if (-not $qproRuntimeReady) {
     if ($qproExperimental) {
         # Exact device and family packages are required even when old torch
         # metadata would otherwise cause pip to silently skip its extras.
-        Write-Host "Downloading latest stable ROCm 10.0 $qproGfxTarget PyTorch packages; this may take several gigabytes."
-        Invoke-QproRocmPip $qproRocmPython (@('install', '--no-input', '--disable-pip-version-check', '--no-cache-dir', '--index-url', 'https://stable.repo.amd.com/rocm/whl-next/') + $qproRocm10Packages) "Installing AMD ROCm 10.0 $qproGfxTarget PyTorch packages failed." $qproRocmEnv
+        Write-Host "Downloading latest stable ROCm 10.1 $qproGfxTarget PyTorch packages; this may take several gigabytes."
+        Invoke-QproRocmPip $qproRocmPython (@('install', '--no-input', '--disable-pip-version-check', '--no-cache-dir', '--index-url', 'https://stable.repo.amd.com/rocm/whl-next/') + $qproRocm10Packages) "Installing AMD ROCm 10.1 $qproGfxTarget PyTorch packages failed." $qproRocmEnv
     } else {
         $qproAmdSdkPackages = @(
             'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_core-7.2.1-py3-none-win_amd64.whl',
@@ -379,6 +416,8 @@ Remove-Item Env:QPRO_ROCM_EXPECTED_GFX_TARGET -ErrorAction SilentlyContinue
     rocmVersion = $qproRocmVersion
     supportTier = if ($qproExperimental) { 'experimental-rocm-10' } else { 'amd-windows-7.2.1' }
     gfxTarget = $qproGfxTarget
+    windowsBuild = $qproWindowsBuild
+    experimentalWindows10 = $qproWindows10Experiment
     python = $qproRocmPython
     gpu = $qproAmdGpu.Name
     verifiedAtUtc = [DateTime]::UtcNow.ToString('o')
@@ -389,6 +428,13 @@ try {
 } catch {
     Remove-Item -LiteralPath $qproReadyMarker -Force -ErrorAction SilentlyContinue
     throw
+}
+$qproRecipe = Get-QproRocmRecipe $QproRoot ([bool]$UseLegacyRocm)
+if ($qproRecipe) {
+    # Record the release recipe only after the final GPU validation succeeds.
+    $qproReceipt = [System.IO.File]::ReadAllText($qproReadyMarker) | ConvertFrom-Json
+    $qproReceipt | Add-Member -NotePropertyName recipeSha256 -NotePropertyValue $qproRecipe -Force
+    $qproReceipt | ConvertTo-Json | Set-Content -LiteralPath $qproReadyMarker -Encoding UTF8
 }
 Register-QproRocmEnvironment $qproRocmEnv ([bool]$UseLegacyRocm)
 Write-Host "ROCm runtime ready: $qproRocmPython"

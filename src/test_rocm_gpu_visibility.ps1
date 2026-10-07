@@ -49,10 +49,11 @@ try {
             $node.Extent.Text.Contains('Restore-QproGpuVisibility')
         }, $true).Extent.Text
         $fallback = $fallback.Replace('$PSScriptRoot', $fixtureScriptRoot)
-        $finallyRestore = $ast.Find({ param($node)
+        $finallyRestore = $ast.FindAll({ param($node)
             $node -is [System.Management.Automation.Language.TryStatementAst] -and
-            $null -ne $node.Finally -and $node.Finally.Extent.Text.Contains('Restore-QproGpuVisibility')
-        }, $true).Finally.Statements | Where-Object { $_.Extent.Text -eq 'Restore-QproGpuVisibility' }
+            $null -ne $node.Finally
+        }, $true) | ForEach-Object { $_.Finally.Statements } |
+            Where-Object { $_.Extent.Text -eq 'Restore-QproGpuVisibility' } | Select-Object -First 1
         if ($null -eq $finallyRestore) { throw "$launcher has no finally restoration" }
 
         foreach ($scenario in @('rocm-ready', 'rocm-failed', 'no-rocm')) {

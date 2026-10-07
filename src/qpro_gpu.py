@@ -3,7 +3,7 @@
 ROCm exposes its devices through PyTorch's ``cuda`` API.  On a hybrid PC,
 device zero may be a Ryzen integrated GPU, so availability alone is not enough.
 The older Radeon allowlist matches the ROCm 7.2.1 Windows PyTorch matrix.
-Mapped RX 6000, 7000, and 9000 cards can use AMD's stable ROCm 10.0
+Mapped RX 6000, 7000, and 9000 cards can use AMD's stable ROCm 10.1
 packages with a device package selected for the card's gfx target. This Qpro
 integration remains experimental until its GPU checks pass on each PC.
 """
@@ -16,6 +16,13 @@ import os
 import sys
 from pathlib import Path
 
+# Keep previous verified environments usable after a release update. A new
+# upstream version is deliberately not admitted just because its major matches.
+_ROCM_10_TORCH_BUILDS = {
+    "2.13.0+rocm10.0.0": "10.0.0",
+    "2.14.0+rocm10.1.0": "10.1.0",
+}
+_ROCM_10_RELEASES = frozenset(_ROCM_10_TORCH_BUILDS.values())
 
 _SUPPORTED_RADEON_721 = frozenset(
     name.casefold()
@@ -74,7 +81,7 @@ def experimental_rocm_target_for_gpu_name(name: str) -> str | None:
     return _EXPERIMENTAL_RADEON_TARGETS.get(_normalized_gpu_name(name))
 
 
-def _expected_experimental_target() -> str | None:
+def _expected_experimental_target(rocm_build: str | None = None) -> str | None:
     """Accept a verified marker, or an installer-only pre-marker smoke target."""
     marker = Path(sys.prefix) / "qpro-rocm-ready.json"
     try:
@@ -86,7 +93,8 @@ def _expected_experimental_target() -> str | None:
             if (
                 record.get("schema") == 1
                 and record.get("supportTier") == "experimental-rocm-10"
-                and str(record.get("rocmVersion") or "").startswith("10.0")
+                and str(record.get("rocmVersion") or "") in _ROCM_10_RELEASES
+                and (rocm_build is None or record.get("rocmVersion") == rocm_build)
                 and target in _EXPERIMENTAL_RADEON_TARGETS.values()
             ):
                 return target
@@ -106,7 +114,7 @@ def is_supported_rocm_gpu_name(name: str, hip_version: str | None = "7.2.1") -> 
     version = str(hip_version or "")
     if version.startswith("7.2.1"):
         return normalized in _SUPPORTED_RADEON_721
-    if version.startswith("10.0"):
+    if version in _ROCM_10_RELEASES:
         return normalized in _EXPERIMENTAL_RADEON_TARGETS
     return False
 
@@ -120,36 +128,34 @@ def is_rocm_721_torch_build(torch_module: object) -> bool:
 
 
 def is_rocm_10_torch_build(torch_module: object) -> bool:
-    """Match Qpro's pinned ROCm 10 wheel independently of the HIP version.
+    """Match Qpro's current or previous pinned wheel independently of HIP.
 
     ROCm 10.0.0 ships HIP 7.15.26333. New wheels expose the SDK release as
     ``torch.version.rocm``; the exact wheel suffix identifies it when that
     metadata is absent. Explicit conflicting metadata is never accepted.
     """
-    if (
-        str(getattr(torch_module, "__version__", "")) != "2.13.0+rocm10.0.0"
-        or not getattr(torch_module.version, "hip", None)
-    ):
+    release = _ROCM_10_TORCH_BUILDS.get(str(getattr(torch_module, "__version__", "")))
+    if release is None or not getattr(torch_module.version, "hip", None):
         return False
     rocm = getattr(torch_module.version, "rocm", None)
-    return rocm is None or str(rocm) == "10.0.0"
+    return rocm is None or str(rocm) == release
 
 
 def _rocm_build_version(torch_module: object) -> str:
     """Identify the ROCm wheel release; HIP can report its own build number."""
     hip = str(getattr(torch_module.version, "hip", "") or "")
     if is_rocm_10_torch_build(torch_module):
-        return "10.0.0"
+        return _ROCM_10_TORCH_BUILDS[str(torch_module.__version__)]
     if "+rocm10." in str(getattr(torch_module, "__version__", "")):
         return ""
     rocm = getattr(torch_module.version, "rocm", None)
     if rocm is not None:
-        # A different ROCm 10.0 wheel is not the build installed and verified
+        # A different ROCm 10 wheel is not a build installed and verified
         # by Qpro. Keep future/unknown releases outside the device allowlist.
-        return "" if str(rocm).startswith("10.0") else str(rocm)
+        return "" if str(rocm).startswith("10.") else str(rocm)
     if is_rocm_721_torch_build(torch_module):
         return "7.2.1"
-    if hip.startswith("10.0"):
+    if hip.startswith("10."):
         return ""
     return hip
 
@@ -193,8 +199,8 @@ def _supported_rocm_device_at(torch_module: object, index: int, rocm_build: str,
 def rocm_device_diagnostics(torch_module: object) -> str:
     """Describe the adapters Torch can actually query and any rejection."""
     build = _rocm_build_version(torch_module)
-    experimental = build.startswith("10.0")
-    expected_target = _expected_experimental_target() if experimental else None
+    experimental = build in _ROCM_10_RELEASES
+    expected_target = _expected_experimental_target(build) if experimental else None
     details = []
     try:
         count = _rocm_device_count(torch_module)
@@ -235,8 +241,8 @@ def supported_rocm_device_name(torch_module: object) -> str | None:
         if not torch_module.cuda.is_available():
             return None
         rocm_build = _rocm_build_version(torch_module)
-        experimental = rocm_build.startswith("10.0")
-        expected_target = _expected_experimental_target() if experimental else None
+        experimental = rocm_build in _ROCM_10_RELEASES
+        expected_target = _expected_experimental_target(rocm_build) if experimental else None
         if experimental and expected_target is None:
             return None
 
@@ -271,11 +277,12 @@ def require_rocm_device_name(torch_module: object) -> str:
     """Fail before work starts if ROCm cannot see a supported discrete GPU."""
     device = supported_rocm_device_name(torch_module)
     if device is None:
-        experimental = _rocm_build_version(torch_module).startswith("10.0")
-        expected_target = _expected_experimental_target() if experimental else None
+        rocm_build = _rocm_build_version(torch_module)
+        experimental = rocm_build in _ROCM_10_RELEASES
+        expected_target = _expected_experimental_target(rocm_build) if experimental else None
         if experimental and expected_target is None:
             raise RuntimeError(
-                "ROCm 10.0 has no valid Qpro readiness record for a discrete GPU "
+                "ROCm 10 has no valid Qpro readiness record for a discrete GPU "
                 "target. Run Install AMD ROCm again before using this environment. "
                 f"Torch adapters: {rocm_device_diagnostics(torch_module)}"
             )
@@ -314,10 +321,10 @@ def validated_torch_device_name(torch_module: object, requested: str) -> str:
         except Exception as exc:
             raise RuntimeError(f"ROCm device {requested} is unavailable") from exc
         rocm_build = _rocm_build_version(torch_module)
-        experimental = rocm_build.startswith("10.0")
-        expected_target = _expected_experimental_target() if experimental else None
+        experimental = rocm_build in _ROCM_10_RELEASES
+        expected_target = _expected_experimental_target(rocm_build) if experimental else None
         if experimental and expected_target is None:
-            raise RuntimeError("ROCm 10.0 has no valid Qpro readiness record for a discrete GPU target")
+            raise RuntimeError("ROCm 10 has no valid Qpro readiness record for a discrete GPU target")
         if not _supported_rocm_device_at(torch_module, index, rocm_build, expected_target):
             raise RuntimeError(
                 f"ROCm device {requested} ({name}) is not a supported discrete "

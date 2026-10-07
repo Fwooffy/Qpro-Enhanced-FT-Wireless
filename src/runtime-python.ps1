@@ -180,6 +180,21 @@ function Register-QproRocmEnvironment([string]$EnvironmentRoot, [bool]$Legacy, [
             -not [string]::IsNullOrWhiteSpace([string]$previous.$field)) { $record[$field] = [string]$previous.$field }
     }
     $field = if ($Legacy) { 'legacyEnvironment' } else { 'latestEnvironment' }
+    foreach ($tier in @('latest', 'legacy')) {
+        $activeField = $tier + 'Environment'
+        $fallbackField = $tier + 'FallbackEnvironments'
+        $fallbacks = New-Object 'System.Collections.Generic.List[string]'
+        if ($activeField -eq $field -and $record.ContainsKey($activeField) -and $record[$activeField] -ne $EnvironmentRoot) {
+            $fallbacks.Add($record[$activeField])
+        }
+        if ($null -ne $previous -and $previous.PSObject.Properties[$fallbackField]) {
+            foreach ($fallback in @($previous.$fallbackField)) {
+                if ([string]::IsNullOrWhiteSpace([string]$fallback) -or $fallback -eq $EnvironmentRoot -or $fallbacks.Contains([string]$fallback)) { continue }
+                if ($fallbacks.Count -lt 8) { $fallbacks.Add([string]$fallback) }
+            }
+        }
+        if ($fallbacks.Count) { $record[$fallbackField] = @($fallbacks.ToArray()) }
+    }
     $record[$field] = [System.IO.Path]::GetFullPath($EnvironmentRoot)
     New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
     $temporary = $path + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
@@ -200,6 +215,10 @@ function Get-QproRocmCandidates([string]$ReleaseRoot, [string]$LocalAppData = $e
         $prefix = if ($legacy) { '721' } else { '10' }
         $paths = New-Object System.Collections.Generic.List[string]
         if ($null -ne $index -and $index.PSObject.Properties[$field]) { $paths.Add([string]$index.$field) }
+        $fallbackField = if ($legacy) { 'legacyFallbackEnvironments' } else { 'latestFallbackEnvironments' }
+        if ($null -ne $index -and $index.PSObject.Properties[$fallbackField]) {
+            foreach ($fallback in @($index.$fallbackField) | Select-Object -First 8) { $paths.Add([string]$fallback) }
+        }
         # The index keeps custom short storage and repaired slots discoverable.
         # Directory fallback also permits recovery from damaged index metadata.
         if (Test-Path -LiteralPath $storage -PathType Container) {
@@ -214,8 +233,16 @@ function Get-QproRocmCandidates([string]$ReleaseRoot, [string]$LocalAppData = $e
             if ([string]::IsNullOrWhiteSpace($path) -or -not [System.IO.Path]::IsPathRooted($path) -or $path.StartsWith('\\')) { continue }
             try { $absolute = [System.IO.Path]::GetFullPath($path) } catch { continue }
             if (-not $seen.Add($absolute)) { continue }
+            $version = if ($legacy) { '7.2.1' } else { '10' }
+            try {
+                $readyPath = Join-Path $absolute 'qpro-rocm-ready.json'
+                if ((Test-Path -LiteralPath $readyPath -PathType Leaf) -and (Get-Item -LiteralPath $readyPath).Length -le 16384) {
+                    $ready = [System.IO.File]::ReadAllText($readyPath) | ConvertFrom-Json
+                    if ($ready.schema -eq 1 -and $ready.rocmVersion -in @('7.2.1', '10.0.0', '10.1.0')) { $version = [string]$ready.rocmVersion }
+                }
+            } catch { }
             [PSCustomObject]@{
-                Name = if ($legacy) { 'ROCm 7.2.1 fallback' } else { 'AMD ROCm 10.0' }
+                Name = if ($legacy) { 'ROCm 7.2.1 fallback' } else { "AMD ROCm $version" }
                 EnvironmentRoot = $absolute
                 Python = Join-Path $absolute 'Scripts\python.exe'
                 ReadyMarker = Join-Path $absolute 'qpro-rocm-ready.json'

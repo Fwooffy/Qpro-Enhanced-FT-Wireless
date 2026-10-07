@@ -7,6 +7,7 @@ namespace QproFaceTracking.Hub;
 // survive ZIP upgrades, while older release-local environments remain usable.
 internal static class HubRocmRuntime
 {
+    internal const string InstallVersion = "10.1";
     internal static IReadOnlyList<string> Candidates(string releaseRoot, bool legacy, string? localAppData = null)
     {
         localAppData ??= Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -30,9 +31,14 @@ internal static class HubRocmRuntime
             if (File.Exists(index) && new FileInfo(index).Length <= 16384)
             {
                 using var record = JsonDocument.Parse(File.ReadAllText(index));
-                if (record.RootElement.TryGetProperty("schema", out var schema) && schema.GetInt32() == 1 &&
-                    record.RootElement.TryGetProperty(legacy ? "legacyEnvironment" : "latestEnvironment", out var entry))
-                    Add(entry.GetString());
+                if (record.RootElement.TryGetProperty("schema", out var schema) && schema.GetInt32() == 1)
+                {
+                    if (record.RootElement.TryGetProperty(legacy ? "legacyEnvironment" : "latestEnvironment", out var entry))
+                        Add(entry.GetString());
+                    if (record.RootElement.TryGetProperty(legacy ? "legacyFallbackEnvironments" : "latestFallbackEnvironments", out var fallbacks) &&
+                        fallbacks.ValueKind == JsonValueKind.Array)
+                        foreach (var fallback in fallbacks.EnumerateArray().Take(8)) Add(fallback.GetString());
+                }
             }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or FormatException) { }
@@ -52,29 +58,33 @@ internal static class HubRocmRuntime
     }
 
     internal static bool IsReady(string environment, bool legacy, string? gfxTarget)
+        => ReadyVersion(environment, legacy, gfxTarget) is not null;
+
+    internal static string? ReadyVersion(string environment, bool legacy, string? gfxTarget)
     {
-        if (gfxTarget is null || !File.Exists(Path.Combine(environment, "Scripts", "python.exe"))) return false;
+        if (gfxTarget is null || !File.Exists(Path.Combine(environment, "Scripts", "python.exe"))) return null;
         var marker = Path.Combine(environment, "qpro-rocm-ready.json");
         try
         {
-            if (!File.Exists(marker) || new FileInfo(marker).Length > 16384) return false;
+            if (!File.Exists(marker) || new FileInfo(marker).Length > 16384) return null;
             using var ready = JsonDocument.Parse(File.ReadAllText(marker));
-            return ready.RootElement.TryGetProperty("schema", out var schema) && schema.GetInt32() == 1 &&
+            var valid = ready.RootElement.TryGetProperty("schema", out var schema) && schema.GetInt32() == 1 &&
                 ready.RootElement.TryGetProperty("supportTier", out var tier) &&
                 tier.GetString() == (legacy ? "amd-windows-7.2.1" : "experimental-rocm-10") &&
                 ready.RootElement.TryGetProperty("rocmVersion", out var version) &&
-                version.GetString()?.StartsWith(legacy ? "7.2.1" : "10.0", StringComparison.Ordinal) == true &&
+                (legacy ? version.GetString() == "7.2.1" : version.GetString() is "10.0.0" or "10.1.0") &&
                 // Older 7.2.1 markers did not record gfxTarget. The caller
                 // limits that fallback to listed legacy cards; its launch
                 // probe still validates the actual discrete GPU. New markers
-                // and all 10.0 installs must match their recorded target.
+                // and all ROCm 10 installs must match their recorded target.
                 (!ready.RootElement.TryGetProperty("gfxTarget", out var target) || target.ValueKind == JsonValueKind.Null
                     ? legacy
                     : string.Equals(target.GetString(), gfxTarget, StringComparison.OrdinalIgnoreCase));
+            return valid ? ready.RootElement.GetProperty("rocmVersion").GetString() : null;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or FormatException)
         {
-            return false;
+            return null;
         }
     }
 }

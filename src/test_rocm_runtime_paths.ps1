@@ -72,6 +72,14 @@ try {
     Register-QproRocmEnvironment $custom $false $local
     Assert-Equal $custom (Get-QproRocmInstallEnvironment '10' 'gfx1100' '' $local) 'Repeated install reuses routed recovery slot'
     Assert-Equal $custom @(Get-QproRocmCandidates $release $local)[0].EnvironmentRoot 'Custom storage reused by runtime consumers'
+    Assert-Equal $latest (Read-QproRocmRuntimeIndex $local).latestFallbackEnvironments[0] 'Previous environment remains a routed fallback'
+    $nextCustom = Join-Path $fixtureRoot 'second\10-gfx1100-5678abcd'
+    Add-FixtureEnvironment $nextCustom
+    Register-QproRocmEnvironment $nextCustom $false $local
+    $updatedCandidates = @(Get-QproRocmCandidates $release $local)
+    Assert-Equal $nextCustom $updatedCandidates[0].EnvironmentRoot 'Verified update gets priority'
+    Assert-Equal $custom $updatedCandidates[1].EnvironmentRoot 'Custom old runtime outside default storage remains fallback'
+    Assert-Equal $true (Test-Path -LiteralPath (Join-Path $custom 'qpro-rocm-ready.json')) 'Register keeps previous readiness'
     Assert-Equal (Join-Path $shortStore '10-gfx1031') (Get-QproRocmInstallEnvironment '10' 'gfx1031' '' $local) 'Changing GPU uses separate target environment'
     Assert-Equal (Join-Path $fixtureRoot 'explicit\10-gfx1100') (Get-QproRocmInstallEnvironment '10' 'gfx1100' (Join-Path $fixtureRoot 'explicit') $local) 'Explicit storage overrides prior route'
     Set-Content -LiteralPath (Get-QproRocmRuntimeIndexPath $local) -Value '{broken'
@@ -99,6 +107,11 @@ try {
     Assert-Equal $false ($replacement -eq $broken) 'Replacement uses independent slot'
     Assert-Equal $replacement (Initialize-QproRocmEnvironment $replacement 'Invoke-FixtureVenv') 'Working owned replacement reused'
     Assert-Equal 1 $script:fixtureCreateCount 'Reuse does not reinstall private base'
+    Add-FixtureEnvironment $replacement
+    $updateReplacement = Initialize-QproRocmEnvironment $replacement 'Invoke-FixtureVenv' -ForceReplacement
+    Assert-Equal $false ($updateReplacement -eq $replacement) 'Update stages beside an owned working environment'
+    Assert-Equal $true (Test-Path -LiteralPath (Join-Path $replacement 'qpro-rocm-ready.json')) 'Update retains the prior readiness marker'
+    Assert-Equal 2 $script:fixtureCreateCount 'Update creates exactly one replacement environment'
 
     $script:fixtureExit = 1
     $script:fixtureOutput = "ERROR: OSError [Errno 2] missing hipblaslt library`nHINT: This system does not have Windows Long Path support enabled."

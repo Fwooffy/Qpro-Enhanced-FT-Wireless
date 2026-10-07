@@ -9,5 +9,6 @@
   <ItemGroup>
     <Compile Include="Program.cs" />
     <Compile Include="../../qpro-hub/HubRocmRuntime.cs" Link="HubRocmRuntime.cs" />
+    <Compile Include="../../qpro-hub/HubRocmOsPolicy.cs" Link="HubRocmOsPolicy.cs" />
   </ItemGroup>
 </Project>

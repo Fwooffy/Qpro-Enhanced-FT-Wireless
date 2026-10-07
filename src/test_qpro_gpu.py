@@ -82,6 +82,36 @@ def write_experimental_marker(root, target, **overrides):
 
 
 class QproGpuTests(unittest.TestCase):
+    def test_rocm_101_selects_each_mapped_discrete_target_after_integrated(self):
+        for gfx, names in ROCM_10_CARD_TARGETS.items():
+            for name in names:
+                with self.subTest(gfx=gfx, name=name), tempfile.TemporaryDirectory() as root, patch("qpro_gpu.sys.prefix", root):
+                    write_experimental_marker(root, gfx, rocmVersion="10.1.0")
+                    torch = fake_torch(
+                        ["AMD Radeon 780M", f"AMD Radeon {name}"],
+                        hip="7.16.0", rocm="10.1.0", torch_version="2.14.0+rocm10.1.0",
+                        architectures=["gfx1103", gfx + ":xnack-"],
+                    )
+                    self.assertTrue(is_rocm_10_torch_build(torch))
+                    self.assertEqual(preferred_torch_device_name(torch), "cuda:1")
+                    self.assertEqual(require_rocm_device_name(torch), "cuda:1")
+                    self.assertEqual(validated_torch_device_name(torch, "cuda:1"), "cuda:1")
+                    with self.assertRaises(RuntimeError):
+                        validated_torch_device_name(torch, "cuda:0")
+
+    def test_rocm_101_rejects_wrong_architecture_and_previous_release_receipt(self):
+        torch = fake_torch(["AMD Radeon RX6700XT"], hip="7.16.0", rocm="10.1.0",
+                           torch_version="2.14.0+rocm10.1.0", architectures=["gfx1031"])
+        with tempfile.TemporaryDirectory() as root, patch("qpro_gpu.sys.prefix", root):
+            write_experimental_marker(root, "gfx1031")
+            self.assertEqual(preferred_torch_device_name(torch), "cpu")
+            write_experimental_marker(root, "gfx1031", rocmVersion="10.1.0")
+            self.assertEqual(preferred_torch_device_name(torch), "cuda:0")
+            torch.cuda.architectures = ["gfx1036"]
+            self.assertEqual(preferred_torch_device_name(torch), "cpu")
+            with self.assertRaises(RuntimeError):
+                require_rocm_device_name(torch)
+
     def test_rocm_list_rejects_integrated_and_unlisted_cards(self):
         self.assertTrue(is_supported_rocm_gpu_name("AMD Radeon RX 7900 XTX"))
         self.assertTrue(is_supported_rocm_gpu_name("AMD Radeon(TM) RX 7900 XTX"))
