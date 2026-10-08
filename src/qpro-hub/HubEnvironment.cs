@@ -171,7 +171,11 @@ internal sealed class HubEnvironment
     internal string UsbConnectionMessage => _usbConnection.StatusReason;
     internal string? UsbFailureDetail => _usbConnection.FailureDetail;
     internal bool UsbHeadsetRemembered => _usbConnection.RememberedSerial is not null;
-    internal void ForgetUsbHeadset() => _usbConnection.Forget();
+    internal void ForgetUsbHeadset()
+    {
+        _usbConnection.Forget();
+        if (_usbConnection.PersistenceWarning is { } warning) throw new IOException(warning);
+    }
     internal Task<bool> ReconnectUsbAsync() => _usbConnection.ProbeAsync(forceReconnect: true);
 
     internal async Task<bool> HasQuestAsync(bool allowUsbRecovery = false)

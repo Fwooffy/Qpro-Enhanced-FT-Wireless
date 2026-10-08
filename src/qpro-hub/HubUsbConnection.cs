@@ -27,6 +27,7 @@ internal sealed class HubUsbConnection
     private DateTimeOffset? _lastServerStartAttempt;
     private long _selectionGeneration;
     private bool _initialEnumerationComplete;
+    private bool _selectionRequiredAfterForget;
 
     internal HubUsbConnection(string configPath, ProbeRunner probe,
         Func<DateTimeOffset>? clock = null, Func<TimeSpan, Task>? delay = null)
@@ -65,15 +66,22 @@ internal sealed class HubUsbConnection
         await _probeGate.WaitAsync();
         long generation;
         string? remembered;
+        bool selectionRequired;
         lock (_stateLock)
         {
             generation = _selectionGeneration;
             remembered = _rememberedSerial;
+            selectionRequired = _selectionRequiredAfterForget;
             if (forceReconnect) _verifiedSerial = null;
             _failureDetail = null;
         }
         try
         {
+            // A status refresh follows the Forget button. Wait for explicit
+            // reselection instead of immediately remembering the old headset
+            // while the user is still changing cables.
+            if (selectionRequired && !forceReconnect)
+                return Fail(generation, "USB headset selection cleared. Connect the intended Quest Pro, then press Reconnect USB to verify and remember it.");
             var devices = await ListDevicesAsync(generation, remembered, forceReconnect);
             if (devices is null)
                 return Fail(generation, "The ADB server did not finish its USB connection check. Keep the headset awake and use Reconnect USB to retry.");
@@ -162,6 +170,7 @@ internal sealed class HubUsbConnection
                 else if (forceReconnect && _persistenceWarning is not null)
                     _persistenceWarning = SaveRememberedSerial(selected.Serial);
                 _verifiedSerial = selected.Serial;
+                _selectionRequiredAfterForget = false;
                 _failureDetail = null;
                 _statusReason = _persistenceWarning is null ? "USB Quest Pro connected and remembered."
                     : "USB Quest Pro connected. Its selection could not be saved; check folder permissions.";
@@ -184,10 +193,11 @@ internal sealed class HubUsbConnection
             // again after the user clears it.
             _selectionGeneration++;
             _rememberedSerial = _verifiedSerial = null;
+            _selectionRequiredAfterForget = true;
             _lastReconnectAttempt = null;
             _persistenceWarning = null;
             _failureDetail = null;
-            _statusReason = "USB headset selection forgotten. Connect one Quest Pro and check again.";
+            _statusReason = "USB headset selection cleared. Connect the intended Quest Pro, then press Reconnect USB to verify and remember it.";
             try
             {
                 EnsureNoLinks(_configPath);

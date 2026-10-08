@@ -66,6 +66,19 @@ try
     reopened.Forget();
     Check(!File.Exists(path) && reopened.RememberedSerial is null && reopened.VerifiedSerial is null,
         "Forget did not clear the private selection.");
+    var commandsBeforeForgottenPoll = fixture.Commands.Count;
+    Check(!await reopened.ProbeAsync() && fixture.Commands.Count == commandsBeforeForgottenPoll && !File.Exists(path),
+        "A normal status refresh immediately restored a forgotten selection.");
+    Check(reopened.StatusReason.Contains("press Reconnect USB", StringComparison.Ordinal),
+        "Forget did not explain how to explicitly select the intended headset.");
+    reopened.ClearVerification();
+    Check(!await reopened.ProbeAsync() && fixture.Commands.Count == commandsBeforeForgottenPoll,
+        "A connection-mode change bypassed the explicit reselection requirement.");
+    fixture.Devices.Clear();
+    fixture.Devices.Add(new(AdbFixture.Quest, "device", "Quest Pro", "seacliff"));
+    Check(await reopened.ProbeAsync(forceReconnect: true) && File.Exists(path) && reopened.RememberedSerial == AdbFixture.Quest,
+        "Explicit reconnect did not verify and save a new USB selection after Forget.");
+    Check(await reopened.ProbeAsync(), "Explicit successful reselection did not restore normal status checks.");
 
     var unauthorized = new AdbFixture();
     unauthorized.Devices[0] = unauthorized.Devices[0] with { State = "unauthorized" };

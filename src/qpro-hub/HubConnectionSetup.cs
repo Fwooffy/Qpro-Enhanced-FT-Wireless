@@ -84,7 +84,7 @@ internal sealed partial class HubForm
             try
             {
                 _environment.ForgetUsbHeadset();
-                AppendLog("Remembered USB headset cleared. Connect only the Quest Pro you want to use; the next check will verify and remember it.");
+                AppendLog("Remembered USB headset cleared. Connect the Quest Pro you want to use, then press Reconnect USB to verify and remember it.");
                 await RefreshStatusAsync();
             }
             catch (Exception error) { ShowWorkflowFailure("Forget USB headset", error); }
