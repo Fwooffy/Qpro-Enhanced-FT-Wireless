@@ -5,6 +5,12 @@ using System.Text.RegularExpressions;
 
 namespace QproFaceTracking.Hub;
 
+internal enum HubModuleState { Missing, Legacy, WrongSource, Conflict, Invalid, UpdateNeeded, Current, Unreadable }
+internal sealed record HubModuleInspection(HubModuleState State, string Status, string Detail, string ExpectedDirectory)
+{
+    internal bool IsCurrent => State == HubModuleState.Current;
+}
+
 // Match the installer identities. A legacy loose DLL is detected for migration,
 // while current readiness requires one Qpro-owned directory and module card.
 internal static class HubModuleInstallation
@@ -51,44 +57,79 @@ internal static class HubModuleInstallation
     }
 
     internal static bool IsCurrent(string customLibs, string suppliedDll, bool steamLink)
+        => Inspect(customLibs, suppliedDll, steamLink).IsCurrent;
+
+    internal static HubModuleInspection Inspect(string customLibs, string suppliedDll, bool steamLink)
     {
+        var source = steamLink ? "Steam Link" : "Virtual Desktop";
+        var id = steamLink ? SteamLinkId : VirtualDesktopId;
+        var dllName = steamLink ? "000-Qpro.SteamLink.dll" : "000-Qpro.VirtualDesktop.dll";
+        var folder = Path.Combine(customLibs, id);
+        HubModuleInspection Result(HubModuleState state, string status, string detail)
+            => new(state, status, detail, folder);
+        var repair = $"Close VRCFaceTracking, install the Qpro {source} module in First-time setup, then reopen VRCFaceTracking.";
         try
         {
-            var id = steamLink ? SteamLinkId : VirtualDesktopId;
-            var dllName = steamLink ? "000-Qpro.SteamLink.dll" : "000-Qpro.VirtualDesktop.dll";
-            var folder = Path.Combine(customLibs, id);
             var installed = Path.Combine(folder, dllName);
-            if (!RegularPath(folder, directory: true) || !RegularPath(suppliedDll, directory: false) ||
-                !IsQproAssembly(installed)) return false;
             var qproDlls = FindQproDlls(customLibs);
+            if (qproDlls.Count > 1)
+                return Result(HubModuleState.Conflict, "Multiple Qpro modules", "More than one Qpro DLL is installed. " + repair);
+            if (!RegularPath(folder, directory: true) || !IsQproAssembly(installed))
+            {
+                if (Directory.Exists(folder) || File.Exists(folder))
+                    return Result(HubModuleState.Invalid, "Module needs repair", $"The selected module folder has no readable Qpro DLL: {folder}. " + repair);
+                if (qproDlls.Count == 0)
+                    return Result(HubModuleState.Missing, "Setup needed", $"The Qpro {source} module was not found at {folder}. " + repair);
+                if (TryGetInstalledSource(customLibs, steamLink, out var installedSteamLink) && installedSteamLink != steamLink)
+                    return Result(HubModuleState.WrongSource, "Different source installed",
+                        $"The installed Qpro module uses {(installedSteamLink ? "Steam Link" : "Virtual Desktop")}, but this session selects {source}. " + repair);
+                return Result(HubModuleState.Legacy, "Legacy module installed", $"A Qpro DLL is installed outside the current module folder {folder}. " + repair);
+            }
             if (qproDlls.Count != 1 || !Path.GetFullPath(qproDlls[0]).Equals(Path.GetFullPath(installed), StringComparison.OrdinalIgnoreCase))
-                return false;
+                return Result(HubModuleState.Conflict, "Module conflict", "The selected Qpro DLL is not the only installed Qpro module. " + repair);
             // Another file occupying a Qpro-owned slot needs migration/review,
             // even if it was not a readable Qpro assembly during enumeration.
             var alternate = Path.Combine(customLibs, steamLink ? VirtualDesktopId : SteamLinkId);
             if (Directory.Exists(alternate) || File.Exists(alternate) || Directory.Exists(Path.Combine(customLibs, LegacyId)) ||
-                LegacyDlls.Any(name => File.Exists(Path.Combine(customLibs, name)) || Directory.Exists(Path.Combine(customLibs, name)))) return false;
-            if (Directory.EnumerateFiles(folder, "*.dll", SearchOption.TopDirectoryOnly).Count() != 1) return false;
+                LegacyDlls.Any(name => File.Exists(Path.Combine(customLibs, name)) || Directory.Exists(Path.Combine(customLibs, name))))
+                return Result(HubModuleState.Conflict, "Module conflict", "An alternate or legacy module slot is still present. " + repair);
+            if (Directory.EnumerateFiles(folder, "*.dll", SearchOption.TopDirectoryOnly).Count() != 1)
+                return Result(HubModuleState.Invalid, "Module needs repair", $"The module folder contains an unexpected DLL: {folder}. " + repair);
             var metadataPath = Path.Combine(folder, "module.json");
-            if (!RegularPath(metadataPath, directory: false) || new FileInfo(metadataPath).Length > 65536) return false;
+            if (!RegularPath(metadataPath, directory: false) || new FileInfo(metadataPath).Length > 65536)
+                return Result(HubModuleState.Invalid, "Module card needs repair", $"The module card is missing, linked or too large: {metadataPath}. " + repair);
             using var metadata = JsonDocument.Parse(File.ReadAllText(metadataPath), new JsonDocumentOptions { MaxDepth = 8 });
             var data = metadata.RootElement;
-            if (data.ValueKind != JsonValueKind.Object) return false;
+            if (data.ValueKind != JsonValueKind.Object)
+                return Result(HubModuleState.Invalid, "Module card needs repair", "The installed module card is not a JSON object. " + repair);
             var names = new HashSet<string>(StringComparer.Ordinal);
-            if (data.EnumerateObject().Any(property => !names.Add(property.Name)) || names.Count > 32) return false;
+            if (data.EnumerateObject().Any(property => !names.Add(property.Name)) || names.Count > 32)
+                return Result(HubModuleState.Invalid, "Module card needs repair", "The installed module card has duplicate or excessive fields. " + repair);
             if (data.GetProperty("ModuleId").GetString() != id || data.GetProperty("DllFileName").GetString() != dllName ||
                 data.GetProperty("IsLocal").ValueKind != JsonValueKind.True || data.GetProperty("AuthorName").GetString() != "Fwooffy" ||
                 data.GetProperty("ModuleName").GetString() != "QproFaceTracking - " + (steamLink ? "Steam Link" : "Virtual Desktop") ||
-                !Version.TryParse(data.GetProperty("Version").GetString(), out _)) return false;
+                !Version.TryParse(data.GetProperty("Version").GetString(), out _))
+                return Result(HubModuleState.Invalid, "Module card needs repair", "The module card does not match the selected Qpro source. " + repair);
             var recordedHash = data.GetProperty("FileHash").GetString();
             using var installedStream = File.OpenRead(installed);
             var metadataHash = Convert.ToHexString(MD5.HashData(installedStream));
-            if (!metadataHash.Equals(recordedHash, StringComparison.OrdinalIgnoreCase)) return false;
+            if (!metadataHash.Equals(recordedHash, StringComparison.OrdinalIgnoreCase))
+                return Result(HubModuleState.Invalid, "Module card needs repair", "The installed DLL does not match its module card's file hash. " + repair);
+            if (!RegularPath(suppliedDll, directory: false) || !IsQproAssembly(suppliedDll))
+                return Result(HubModuleState.Unreadable, "App package needs repair", "This app's packaged Qpro module is missing or unreadable. Extract the complete release ZIP, then retry.");
             installedStream.Position = 0;
             using var suppliedStream = File.OpenRead(suppliedDll);
-            return SHA256.HashData(installedStream).AsSpan().SequenceEqual(SHA256.HashData(suppliedStream));
+            if (!SHA256.HashData(installedStream).AsSpan().SequenceEqual(SHA256.HashData(suppliedStream)))
+                return Result(HubModuleState.UpdateNeeded, "Module update needed", "The installed Qpro DLL differs from this app's module, even if both show the same version number. " + repair);
+            return Result(HubModuleState.Current, "Installed · input unchecked",
+                $"The Qpro {source} module card and DLL match this app at {folder}. This verifies installed files; confirm live expressions in VRCFaceTracking's preview.");
         }
-        catch (Exception error) when (IsInspectionError(error)) { return false; }
+        catch (Exception error) when (IsInspectionError(error))
+        {
+            if (error is JsonException or KeyNotFoundException or InvalidOperationException)
+                return Result(HubModuleState.Invalid, "Module card needs repair", "The installed module card is incomplete or invalid. " + repair);
+            return Result(HubModuleState.Unreadable, "Module check needs attention", "The module files could not be verified: " + error.Message + " " + repair);
+        }
     }
 
     private static List<string> FindQproDlls(string customLibs)
