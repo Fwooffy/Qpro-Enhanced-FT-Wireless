@@ -430,6 +430,16 @@ internal sealed partial class HubForm
         connectionCard.Controls.Add(connectionPicker);
         _connectionModeNote.Margin = new Padding(0, 2, 0, 8);
         connectionCard.Controls.Add(_connectionModeNote);
+        _usbActions.Margin = new Padding(0, 3, 0, 8);
+        foreach (var button in new[] { _reconnectUsbButton, _forgetUsbButton })
+        {
+            button.Dock = DockStyle.None;
+            button.AutoSize = true;
+            button.MinimumSize = new Size(180, 42);
+        }
+        _usbActions.Controls.Add(_reconnectUsbButton);
+        _usbActions.Controls.Add(_forgetUsbButton);
+        connectionCard.Controls.Add(_usbActions);
         _wirelessSetup.Margin = new Padding(0, 3, 0, 8);
         _wirelessSetup.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         LiveRows(_wirelessSetup, 6);
@@ -1101,7 +1111,7 @@ internal sealed partial class HubForm
                 }
                 _modelList.ItemHeight = Math.Max(Px(40), (int)Math.Ceiling(_modelList.Font.GetHeight()) + Px(12));
                 foreach (var button in new[] { _setupRuntimeButton, _setupBridgeButton, _setupSteamLinkModuleButton, _uninstallBridgeButton,
-                    _setupGazeButton, _recoverGazeButton, _inspectGazeButton, _resetLegacyGazeButton, _setupAmdButton, _enableWirelessButton, _connectWirelessButton,
+                    _setupGazeButton, _recoverGazeButton, _inspectGazeButton, _resetLegacyGazeButton, _setupAmdButton, _enableWirelessButton, _connectWirelessButton, _reconnectUsbButton, _forgetUsbButton,
                     _pairWirelessButton, _disableWirelessButton, _installHandsButton, _removeHandsButton })
                     button.Height = Px(42);
                 FitCheekActions();

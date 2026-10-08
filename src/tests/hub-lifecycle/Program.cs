@@ -37,7 +37,7 @@ internal static class LifecycleTests
             var utility = (Task<bool>)Call("RunUtilityAsync", "Offline regression", "nonexistent-must-not-launch.ps1", Array.Empty<string>())!;
             Check(utility.IsCompletedSuccessfully && !utility.Result, state + " rejects direct utility before launching script");
             Call("UpdateControlState");
-            foreach (var name in new[] { "_setupRuntimeButton", "_setupGazeButton", "_connectWirelessButton", "_pairWirelessButton" })
+            foreach (var name in new[] { "_setupRuntimeButton", "_setupGazeButton", "_connectWirelessButton", "_pairWirelessButton", "_reconnectUsbButton", "_forgetUsbButton" })
                 Check(!((Control)typeof(HubForm).GetField(name, Private)!.GetValue(form)!).Enabled, state + " disables " + name);
             Set(state, false);
         }
@@ -71,7 +71,7 @@ internal static class LifecycleTests
         Check(Pending(), "cheek-only session counts as live tracking without child processes");
         Call("UpdateControlState");
         Check(((Control)typeof(HubForm).GetField("_stop", Private)!.GetValue(form)!).Enabled, "cheek-only session enables Stop");
-        foreach (string field in new[] { "_start", "_connectionMode", "_trackingSourceSetup", "_trackingSourceLive", "_setupRuntimeButton", "_recordCameraCheeks", "_trainCameraCheeks" })
+        foreach (string field in new[] { "_start", "_connectionMode", "_trackingSourceSetup", "_trackingSourceLive", "_setupRuntimeButton", "_recordCameraCheeks", "_trainCameraCheeks", "_reconnectUsbButton", "_forgetUsbButton" })
             Check(!((Control)typeof(HubForm).GetField(field, Private)!.GetValue(form)!).Enabled, "cheek-only session disables " + field);
 
         var stopped = (Task)Call("StopTrackingAsync")!;

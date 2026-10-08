@@ -8,6 +8,9 @@ internal sealed partial class HubForm
 {
     private readonly ComboBox _connectionMode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly Label _connectionModeNote = new() { AutoSize = true, ForeColor = Muted, Tag = "responsive-info" };
+    private readonly FlowLayoutPanel _usbActions = new() { Dock = DockStyle.Top, AutoSize = true, WrapContents = true };
+    private readonly DarkButton _reconnectUsbButton = SetupButton("Reconnect USB");
+    private readonly DarkButton _forgetUsbButton = SetupButton("Forget USB headset");
     private readonly TableLayoutPanel _wirelessSetup = new() { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, Visible = false };
     private readonly TextBox _wirelessAddress = new() { Dock = DockStyle.Fill };
     private readonly TextBox _pairingEndpoint = new() { Dock = DockStyle.Fill };
@@ -73,6 +76,18 @@ internal sealed partial class HubForm
                 _connectionMode.SelectedIndex = _environment.WirelessSelected ? 1 : 0;
                 _connectionSelectionUpdating = false;
             }
+        };
+        _reconnectUsbButton.Click += async (_, _) => await ReconnectUsbHeadsetAsync();
+        _forgetUsbButton.Click += async (_, _) =>
+        {
+            if (_previewOnly || UtilityActionIsBusy() || _compatibilityChecking) return;
+            try
+            {
+                _environment.ForgetUsbHeadset();
+                AppendLog("Remembered USB headset cleared. Connect only the Quest Pro you want to use; the next check will verify and remember it.");
+                await RefreshStatusAsync();
+            }
+            catch (Exception error) { ShowWorkflowFailure("Forget USB headset", error); }
         };
         _enableWirelessButton.Click += async (_, _) => { await RunConnectionStepAsync("Enable wireless ADB from USB", "Enable-QproWireless.ps1"); };
         _connectWirelessButton.Click += async (_, _) =>
@@ -165,10 +180,45 @@ internal sealed partial class HubForm
     private void UpdateConnectionModeUi()
     {
         _wirelessSetup.Visible = _environment.WirelessSelected;
+        _usbActions.Visible = !_environment.WirelessSelected;
         _connectionModeNote.Text = _environment.WirelessSelected
             ? "Enter the Quest's Wi-Fi address below. The headset and PC must be on the same trusted network."
-            : "Connect the rooted Quest by USB and approve its debugging prompt in the headset.";
+            : "Connect the rooted Quest by USB. In its debugging prompt, choose Always allow from this computer. Qpro remembers the verified USB headset; use Reconnect USB if the connection stalls.";
         _connectionModeNote.ForeColor = Muted;
+    }
+
+    private async Task ReconnectUsbHeadsetAsync()
+    {
+        if (_previewOnly || _environment.WirelessSelected || _compatibilityChecking ||
+            !TryBeginSetupProgress("Reconnect USB headset")) return;
+        UpdateControlState();
+        bool connected = false;
+        try
+        {
+            AppendLog("Reconnecting the selected USB Quest Pro. Keep it awake and approve USB debugging if requested.");
+            connected = await _environment.ReconnectUsbAsync();
+            if (_closingInProgress || IsDisposed) return;
+            AppendLog(_environment.UsbConnectionMessage);
+            if (!connected && _environment.UsbFailureDetail is { } detail)
+                AppendLog("[USB reconnect] " + detail);
+            SetActionFeedback(connected ? "USB Quest Pro connected" : "USB connection needs attention",
+                _environment.UsbConnectionMessage,
+                connected ? "Continue setup or start tracking." : "Keep the Quest awake, check its debugging prompt and USB cable, then retry Reconnect USB.",
+                !connected);
+        }
+        catch (Exception error)
+        {
+            if (!_closingInProgress && !IsDisposed) ShowWorkflowFailure("Reconnect USB headset", error);
+        }
+        finally
+        {
+            if (!_closingInProgress && !IsDisposed)
+            {
+                FinishSetupProgress(connected, "Reconnect USB headset");
+                UpdateControlState();
+                await RefreshStatusAsync();
+            }
+        }
     }
 
     private string? NormalizeQuestAddress(string value, bool requirePort = false)

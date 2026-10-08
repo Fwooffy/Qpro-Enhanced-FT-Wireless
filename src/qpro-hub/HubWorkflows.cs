@@ -437,6 +437,8 @@ internal sealed partial class HubForm
         _connectWirelessButton.Enabled = enabled;
         _pairWirelessButton.Enabled = enabled;
         _disableWirelessButton.Enabled = enabled;
+        _reconnectUsbButton.Enabled = enabled && !_compatibilityChecking;
+        _forgetUsbButton.Enabled = _reconnectUsbButton.Enabled && _environment.UsbHeadsetRemembered;
         _setupAmdButton.Enabled = enabled && AmdInstallEligible && BackendReady();
     }
 

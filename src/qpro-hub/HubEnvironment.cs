@@ -16,7 +16,7 @@ namespace QproFaceTracking.Hub;
 internal sealed class HubEnvironment
 {
     private readonly string _root;
-    private string? _usbSerial;
+    private readonly HubUsbConnection _usbConnection;
     private readonly HubAdbSession _adbSession = new();
     private readonly object _runtimeProbeLock = new();
     private readonly RuntimeProbeState _configuredRuntimeProbe = new();
@@ -44,6 +44,14 @@ internal sealed class HubEnvironment
     internal HubEnvironment(string root)
     {
         _root = root;
+        _usbConnection = new HubUsbConnection(Path.Combine(root, "config", "usb-headset.json"),
+            (arguments, timeout) =>
+            {
+                var adb = FindAdb();
+                return adb is null
+                    ? Task.FromResult((false, -1, "ADB executable is missing."))
+                    : RunAdbProbeAsync(adb, arguments, timeout);
+            });
         var modePath = Path.Combine(_root, "config", "connection-mode.txt");
         if (File.Exists(modePath))
         {
@@ -98,7 +106,7 @@ internal sealed class HubEnvironment
         Directory.CreateDirectory(directory);
         File.WriteAllText(Path.Combine(directory, "connection-mode.txt"), wireless ? "wireless" : "usb");
         WirelessSelected = wireless;
-        _usbSerial = null;
+        _usbConnection.ClearVerification();
     }
 
     internal void SelectTrackingSource(bool steamLink)
@@ -140,7 +148,7 @@ internal sealed class HubEnvironment
 
     internal string? GetConfiguredAdbTarget()
     {
-        if (!WirelessSelected) return _usbSerial;
+        if (!WirelessSelected) return _usbConnection.VerifiedSerial;
         var saved = GetSavedWirelessTarget();
         if (!string.IsNullOrWhiteSpace(saved)) return saved;
         foreach (var value in new[] { Environment.GetEnvironmentVariable("QPRO_ADB_TARGET"), Environment.GetEnvironmentVariable("ANDROID_SERIAL") })
@@ -160,22 +168,20 @@ internal sealed class HubEnvironment
         return null;
     }
 
-    internal async Task<bool> HasQuestAsync()
+    internal string UsbConnectionMessage => _usbConnection.StatusReason;
+    internal string? UsbFailureDetail => _usbConnection.FailureDetail;
+    internal bool UsbHeadsetRemembered => _usbConnection.RememberedSerial is not null;
+    internal void ForgetUsbHeadset() => _usbConnection.Forget();
+    internal Task<bool> ReconnectUsbAsync() => _usbConnection.ProbeAsync(forceReconnect: true);
+
+    internal async Task<bool> HasQuestAsync(bool allowUsbRecovery = false)
     {
         var adb = FindAdb();
-        if (adb is null) return false;
         if (!WirelessSelected)
         {
-            var devices = await RunAdbProbeAsync(adb, ["devices"], 3);
-            if (!devices.Completed || devices.ExitCode != 0) return false;
-            var usb = devices.Output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
-                .Select(line => line.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries))
-                .Where(parts => parts.Length >= 2 && parts[1].Equals("device", StringComparison.OrdinalIgnoreCase)
-                    && !parts[0].Contains(':'))
-                .Select(parts => parts[0]).ToArray();
-            _usbSerial = usb.Length == 1 ? usb[0] : null;
-            return _usbSerial is not null;
+            return await _usbConnection.ProbeAsync(allowRecovery: allowUsbRecovery);
         }
+        if (adb is null) return false;
         var target = GetConfiguredAdbTarget();
         if (!string.IsNullOrWhiteSpace(target))
         {
@@ -219,6 +225,8 @@ internal sealed class HubEnvironment
 
     private static string CustomLibsPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "VRCFaceTracking", "CustomLibs");
     internal bool BridgeInstalled() => HubModuleInstallation.HasInstalled(CustomLibsPath);
+    internal HubModuleInspection InspectModuleInstallation() => HubModuleInstallation.Inspect(CustomLibsPath,
+        Path.Combine(_root, "vrcft-gaze-bridge", "bin", "Release", "net10.0", "Qpro.GazeBridge.dll"), SteamLinkSelected);
 
     internal bool CurrentBridgeInstalled()
     {

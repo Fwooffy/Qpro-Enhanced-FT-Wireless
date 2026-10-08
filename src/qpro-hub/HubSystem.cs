@@ -15,6 +15,9 @@ namespace QproFaceTracking.Hub;
 
 internal sealed partial class HubForm
 {
+    private string? _lastModuleInspectionDetail;
+    private string? _lastUsbFailureDetail;
+
     private ProcessStartInfo PowerShellStart(string script, IEnumerable<string> args, bool hidden)
         => _scripts.Create(script, args, hidden);
 
@@ -24,6 +27,8 @@ internal sealed partial class HubForm
         _statusRefreshBusy = true;
         try
         {
+            // Status checks select the remembered transport without resetting it.
+            // Reconnect is an explicit setup action, so it cannot race tracking startup.
             var quest = await HasQuestAsync();
             if (_closingInProgress || IsDisposed || Disposing) return;
             var steam = Process.GetProcessesByName("vrserver").Any();
@@ -31,11 +36,33 @@ internal sealed partial class HubForm
             SetStatus(_usbStatus, quest ? StatusKind.Good : StatusKind.Bad,
                 quest ? (_environment.WirelessSelected ? "Wi-Fi ADB connected" : "USB ADB connected")
                     : (_environment.WirelessSelected ? "Wi-Fi not connected" : "USB not connected"));
+            if (!_environment.WirelessSelected)
+            {
+                _connectionModeNote.Text = _environment.UsbConnectionMessage;
+                _connectionModeNote.ForeColor = quest ? Muted : Warning;
+                _usbStatus.AccessibleDescription = _environment.UsbConnectionMessage;
+                var usbFailure = _environment.UsbFailureDetail;
+                if (usbFailure is not null && usbFailure != _lastUsbFailureDetail)
+                    AppendLog("[USB connection check] " + usbFailure);
+                _lastUsbFailureDetail = usbFailure;
+            }
             SetStatus(_steamStatus, steam ? StatusKind.Good : StatusKind.Bad, steam ? "Running" : "Not running");
             SetStatus(_vrcftStatus, vrcft ? StatusKind.Good : StatusKind.Bad, vrcft ? "Running" : "Not running");
-            var bridgeReady = CurrentBridgeInstalled();
-            SetStatus(_bridgeStatus, bridgeReady ? StatusKind.Good : StatusKind.Warning,
-                bridgeReady ? "Installed · live input unchecked" : BridgeInstalled() ? "Update needed" : "Setup needed");
+            var module = _environment.InspectModuleInstallation();
+            var moduleNeedsRestart = module.IsCurrent && vrcft && _environment.TrackingSourceRequiresVrcftRestart();
+            var moduleDetail = moduleNeedsRestart
+                ? module.Detail + " Restart VRCFaceTracking to load the selected source; its process is still running from before the source changed."
+                : module.Detail;
+            SetStatus(_bridgeStatus, module.IsCurrent && !moduleNeedsRestart ? StatusKind.Good : StatusKind.Warning,
+                moduleNeedsRestart ? "Installed · restart VRCFT" : module.Status);
+            _bridgeStatus.AccessibleDescription = moduleDetail;
+            // Report only transitions so a failed card/hash check names its
+            // cause without filling Activity on every status refresh.
+            if (_lastModuleInspectionDetail != moduleDetail)
+            {
+                _lastModuleInspectionDetail = moduleDetail;
+                AppendLog("[Qpro module check] " + moduleDetail);
+            }
             SetStatus(_runtimeStatus, BackendReady() ? StatusKind.Good : StatusKind.Warning, BackendReady() ? "Ready" : "Setup needed");
             SetStatus(_gazeStatus, StatusKind.Warning, EyeModelReady() ? "Prepared · headset check needed" : "Optional · not prepared");
             UpdateSetupStepStyles();
@@ -159,6 +186,8 @@ internal sealed partial class HubForm
         _cameraPreview.Enabled = sessionEditable;
         _connectionMode.Enabled = !_setupActionRunning && !_utilityActionRunning &&
             !_datasetOperationBusy && !running && !_stopping && !_starting;
+        _reconnectUsbButton.Enabled = _connectionMode.Enabled && !_closingInProgress && !_compatibilityChecking && !_gazeRecoveryRunning;
+        _forgetUsbButton.Enabled = _reconnectUsbButton.Enabled && _environment.UsbHeadsetRemembered;
         _trackingSourceSetup.Enabled = !_setupActionRunning && !_utilityActionRunning &&
             !_datasetOperationBusy && !running && !_stopping && !_starting;
         _trackingSourceLive.Enabled = _trackingSourceSetup.Enabled;

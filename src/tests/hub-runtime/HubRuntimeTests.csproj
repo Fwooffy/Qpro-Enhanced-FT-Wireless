@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
   <ItemGroup>
-    <Compile Include="../../qpro-hub/HubEnvironment.cs;../../qpro-hub/HubAdbSession.cs;../../qpro-hub/HubModuleInstallation.cs;../../qpro-hub/HubProcessResult.cs" Link="Hub/%(Filename)%(Extension)" />
+    <Compile Include="../../qpro-hub/HubEnvironment.cs;../../qpro-hub/HubUsbConnection.cs;../../qpro-hub/HubAdbSession.cs;../../qpro-hub/HubModuleInstallation.cs;../../qpro-hub/HubProcessResult.cs" Link="Hub/%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>
