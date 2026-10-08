@@ -238,24 +238,15 @@ try {
         Write-Host "On the headset, enable Steam Link Advanced Settings > OSC, Share eye tracking, Share face tracking, and set OSC Output Port to 9015."
     }
     if ($vrcftRequired) {
-        $sourceDisplayName = if ($TrackingSource -eq "SteamLink") { "Steam Link" } else { "Virtual Desktop" }
-        $moduleName = if ($TrackingSource -eq "SteamLink") { "000-Qpro.SteamLink.dll" } else { "000-Qpro.VirtualDesktop.dll" }
-        $otherModuleName = if ($TrackingSource -eq "SteamLink") { "000-Qpro.VirtualDesktop.dll" } else { "000-Qpro.SteamLink.dll" }
+        $moduleHelpers = Join-Path $PSScriptRoot "vrcft-module-installation.ps1"
+        if (-not (Test-Path -LiteralPath $moduleHelpers -PathType Leaf)) {
+            throw "The module check helper is missing. Extract the complete release ZIP, then retry."
+        }
+        . $moduleHelpers
         $customLibs = Join-Path $env:APPDATA "VRCFaceTracking\CustomLibs"
-        $qproModule = Join-Path $customLibs $moduleName
         $packagedModule = Join-Path $PSScriptRoot "vrcft-gaze-bridge\bin\Release\net10.0\Qpro.GazeBridge.dll"
-        if (-not (Test-Path -LiteralPath $qproModule -PathType Leaf)) {
-            throw "The Qpro $sourceDisplayName VRCFaceTracking module is not installed. Close VRCFaceTracking, use First-time setup > Install $sourceDisplayName module, then reopen VRCFaceTracking."
-        }
-        if ((Test-Path -LiteralPath (Join-Path $customLibs $otherModuleName)) -or
-            (Test-Path -LiteralPath (Join-Path $customLibs "000-Qpro.IndependentGaze.dll"))) {
-            throw "More than one Qpro VRCFaceTracking module is installed. Close VRCFaceTracking and reinstall the selected $sourceDisplayName module from First-time setup."
-        }
-        if (-not (Test-Path -LiteralPath $packagedModule -PathType Leaf) -or
-            (Get-FileHash -LiteralPath $qproModule -Algorithm SHA256).Hash -ne
-            (Get-FileHash -LiteralPath $packagedModule -Algorithm SHA256).Hash) {
-            throw "The installed Qpro VRCFaceTracking module does not match this build. Close VRCFaceTracking and reinstall the $sourceDisplayName module from First-time setup."
-        }
+        $qproModule = Assert-QproInstalledModule -TrackingSource $TrackingSource -CustomLibs $customLibs -PackagedModule $packagedModule
+        Write-Host "Verified Qpro $((Get-QproModuleIdentity $TrackingSource).Name) module: $qproModule"
     }
     $steamVrRequired = $vrcftRequired -or $EyeCalibration
     $openSourceModelsRequired = $OpenSourcePreview -or $EyeCalibration -or $HybridPreview

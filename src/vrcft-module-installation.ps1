@@ -159,6 +159,93 @@ function Get-QproModuleInventory([string]$CustomLibs) {
     }
 }
 
+function Assert-QproInstalledModule(
+    [ValidateSet("VirtualDesktop", "SteamLink")][string]$TrackingSource,
+    [string]$CustomLibs,
+    [string]$PackagedModule
+) {
+    # Tracking reads the same GUID folder and card that the installer writes.
+    # Hashing and assembly metadata inspection do not load the installed module.
+    $ErrorActionPreference = "Stop"
+    $identity = Get-QproModuleIdentity $TrackingSource
+    $folder = Join-Path $CustomLibs $identity.Id
+    $installed = Join-Path $folder $identity.Dll
+    $repair = "Close VRCFaceTracking, install the Qpro $($identity.Name) module in First-time setup, then reopen VRCFaceTracking."
+    Assert-QproPathWithoutLinks $CustomLibs
+    Assert-QproPathWithoutLinks $installed
+    if (-not (Test-Path -LiteralPath $folder -PathType Container) -or
+        -not (Test-Path -LiteralPath $installed -PathType Leaf)) {
+        throw "The Qpro $($identity.Name) module was not found in its current module folder: $folder. $repair"
+    }
+    if ((Get-QproAssemblyIdentity $installed) -ne "Qpro.GazeBridge") {
+        throw "The selected module folder has no readable Qpro DLL: $folder. $repair"
+    }
+    $alternateId = if ($TrackingSource -eq "SteamLink") { $QproVirtualDesktopId } else { $QproSteamLinkId }
+    foreach ($slot in @($alternateId, $QproLegacyModuleId, "000-Qpro.VirtualDesktop.dll", "000-Qpro.SteamLink.dll", "000-Qpro.IndependentGaze.dll")) {
+        if (Test-Path -LiteralPath (Join-Path $CustomLibs $slot)) {
+            throw "An alternate or legacy Qpro module slot is still present: $slot. $repair"
+        }
+    }
+    $inventory = @(Get-QproModuleInventory $CustomLibs)
+    if ($inventory.Count -ne 1 -or -not $inventory[0].Directory -or
+        $inventory[0].Relative -ne $identity.Id) {
+        throw "The selected Qpro DLL is not the only installed Qpro module. $repair"
+    }
+    if (@(Get-ChildItem -LiteralPath $folder -File -Filter "*.dll").Count -ne 1) {
+        throw "The module folder contains an unexpected DLL: $folder. $repair"
+    }
+    $cardPath = Join-Path $folder "module.json"
+    try {
+        Assert-QproPathWithoutLinks $cardPath
+        $card = Read-QproModuleManifest $cardPath
+        $json = if ($null -ne $card) { [System.IO.File]::ReadAllText($cardPath).Trim() } else { "" }
+        # ConvertFrom-Json can discard duplicate fields in Windows PowerShell.
+        # Walk validated JSON tokens to keep the Hub's card checks consistent.
+        $names = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        $tokens = [regex]::Matches($json, '"(?:[^"\\]|\\.)*"|[{}\[\]:]')
+        $depth = 0
+        for ($i = 0; $i -lt $tokens.Count; $i++) {
+            $token = $tokens[$i].Value
+            if ($token -in @('{', '[')) { $depth++; if ($depth -gt 8) { throw "The module card is nested too deeply." } }
+            elseif ($token -in @('}', ']')) { $depth-- }
+            elseif ($depth -eq 1 -and $token.StartsWith('"') -and $i + 1 -lt $tokens.Count -and $tokens[$i + 1].Value -eq ':') {
+                $name = $token | ConvertFrom-Json -ErrorAction Stop
+                if (-not $names.Add($name) -or $names.Count -gt 32) { throw "The module card has duplicate or excessive fields." }
+            }
+        }
+        $version = $null
+        if (-not $json.StartsWith('{', [StringComparison]::Ordinal) -or
+            -not $json.EndsWith('}', [StringComparison]::Ordinal) -or
+            $card -isnot [pscustomobject] -or @($card.PSObject.Properties).Count -gt 32 -or
+            $card.ModuleId -isnot [string] -or $card.ModuleId -cne $identity.Id -or
+            $card.DllFileName -isnot [string] -or $card.DllFileName -cne $identity.Dll -or
+            $card.IsLocal -isnot [bool] -or -not $card.IsLocal -or
+            $card.AuthorName -isnot [string] -or $card.AuthorName -cne "Fwooffy" -or
+            $card.ModuleName -isnot [string] -or $card.ModuleName -cne ("QproFaceTracking - " + $identity.Name) -or
+            $card.Version -isnot [string] -or -not [System.Version]::TryParse($card.Version, [ref]$version)) {
+            throw "The module card does not match the selected Qpro source."
+        }
+        # FileHash is VRCFaceTracking's MD5 card field. SHA-256 below compares
+        # the installed binary with this app, including same-version test builds.
+        if ($card.FileHash -isnot [string] -or $card.FileHash -notmatch '^[0-9a-fA-F]{32}$' -or
+            $card.FileHash -ne (Get-FileHash -LiteralPath $installed -Algorithm MD5).Hash) {
+            throw "The installed DLL does not match its module card's file hash."
+        }
+    } catch {
+        throw "The installed Qpro module card needs repair: $($_.Exception.Message) $repair"
+    }
+    Assert-QproPathWithoutLinks $PackagedModule
+    if (-not (Test-Path -LiteralPath $PackagedModule -PathType Leaf) -or
+        (Get-QproAssemblyIdentity $PackagedModule) -ne "Qpro.GazeBridge") {
+        throw "This app's packaged Qpro module is missing or unreadable. Extract the complete release ZIP, then retry."
+    }
+    if ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne
+        (Get-FileHash -LiteralPath $PackagedModule -Algorithm SHA256).Hash) {
+        throw "The installed Qpro DLL differs from this app's module, even if both show the same version number. $repair"
+    }
+    return [System.IO.Path]::GetFullPath($installed)
+}
+
 function Get-QproTreeHashes([string]$Path, [bool]$Directory) {
     if (-not $Directory) { return @{ "." = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash } }
     Assert-QproRegularTree $Path
