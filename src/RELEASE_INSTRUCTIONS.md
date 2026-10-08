@@ -64,8 +64,11 @@ Choose **one** connection type on **First-time setup**. If this is your first ti
 ### Option A: USB cable
 
 1. Plug the Quest Pro into the PC and put the headset on.
-2. If a **USB debugging** message appears in the headset, choose **Allow**.
-3. In the Hub, set **Connection type** to **USB cable**. If the Hub says it can see the headset but has no root access, open Magisk on the Quest and allow **Shell / ADB Shell**. Then use **Refresh connection status** on the Live tracking page.
+2. If a **USB debugging** message appears in the headset, choose **Always allow from this computer**, then **Allow**. This approval comes from the headset; the Hub cannot grant it for you.
+3. In the Hub, set **Connection type** to **USB cable**. Qpro remembers the USB headset after checking that it is a Quest Pro. On later starts, leave the cable connected and keep the Quest awake; you should not normally need to unplug it. If the Hub says it can see the headset but has no root access, open Magisk on the Quest and allow **Shell / ADB Shell**. Then use **Refresh connection status** on the Live tracking page.
+4. If the USB connection stalls, stop Qpro tracking and training, then press **Reconnect USB** in **First-time setup**. It retries the selected USB connection and reports whether the Quest needs debugging approval, is offline, or is missing. It does not reconnect other Android devices or change to wireless automatically. A loose cable or missing USB driver still needs to be fixed separately.
+
+To use a different Quest Pro, stop Qpro tracking and press **Forget USB headset**, then connect the intended headset and refresh the connection. If several USB devices are connected before a Quest Pro is remembered, disconnect the other devices for the first check. Qpro does not silently replace a remembered headset with a different one. The saved USB selection stays with this app's connection settings when the updater runs.
 
 ### Option B: Wireless ADB
 
@@ -85,6 +88,8 @@ On **First-time setup**, work down the three numbered cards:
 1. **Connect your Quest Pro:** choose USB or wireless ADB and complete the connection steps in section 4.
 2. **Install the PC runtime:** press **Install runtime** and wait for Activity to confirm completion. This prepares Qpro's private Python and downloads the PC parts needed for tracking. The Hub stays at your current place on the page while it runs. You do not need to install, repair, or remove another Python installation.
 3. **Install your VRCFaceTracking module:** close VRCFaceTracking and wait for its module process to exit. Choose your **Streaming app**, press the matching **Install Virtual Desktop module** or **Install Steam Link module** button, wait for completion, then reopen VRCFaceTracking. Only the selected app's install button is available. Installing one Qpro module uninstalls the other Qpro source module. The module appears under its own Qpro name in VRCFaceTracking. Remove any separate Virtual Desktop or Steam Link source module through VRCFaceTracking before installing Qpro's module.
+
+The **Qpro module** status checks the selected source's installed folder, module card and DLL against this app. **Installed · input unchecked** confirms the files match; it does not prove VRCFaceTracking has loaded them or is receiving expressions. **VRCFaceTracking: Running** only means that app is open. Check its preview for moving face expressions. If the Hub reports a different source, conflicting copy, damaged card or module update, open **Activity** for the reason, close VRCFaceTracking and install the matching module again. Restart VRCFaceTracking after a source change.
 
 After the runtime is ready, press **Check headset compatibility**. It reads the Quest Pro model, exact firmware build, tracking engine and gaze setup without changing headset tracking. **Show firmware details** explains which checks passed and what remains unverified. A recognized engine still needs preparation and a live input check; a successful ADB connection alone does not prove that every feature works.
 
@@ -233,6 +238,9 @@ If Independent Eye Gaze fails to start or stops unexpectedly, the Hub turns it o
 | What you see | What to try |
 | --- | --- |
 | “Root access unavailable” | Keep the Quest awake. In Magisk, allow **Shell / ADB Shell**, then refresh the connection. |
+| USB Quest is offline or the connection stalls | Keep the headset awake. Stop Qpro tracking and training, then use **Reconnect USB** in **First-time setup**. If USB debugging is unauthorized, allow it inside the headset and choose **Always allow from this computer**. Check the cable and Windows USB driver if the device is still missing. |
+| A different USB Quest Pro is connected | Stop Qpro tracking and training, then use **Forget USB headset**. Connect the intended Quest Pro and refresh the connection; temporarily disconnect other USB Android devices for its first check. |
+| VRCFaceTracking is running but the Qpro module needs attention | Open **Activity** for the module check's reason. Close VRCFaceTracking and wait for its module process to exit, then install the matching Qpro module. The running app status does not verify the installed module or live face input. |
 | **Quest connected** pop-up, followed by a pairing error | You are already connected. Skip **Pair and connect** and start tracking. |
 | **Quest connection failed** pop-up | Check the Quest's current Wi-Fi IP and port, wake the headset, and read **Activity** for the specific error. |
 | `protocol fault` during pairing | Use a fresh six-digit code and the **temporary pairing port** shown on the Quest, not the usual `:5555` port. |
