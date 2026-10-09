@@ -8,6 +8,10 @@ Follow the PDF guide included in the ZIP, or use the [text setup instructions](h
 
 ## What's in V2.1.2
 
+- **Activity scrolling:** New output preserves the part of the log you are reading, including while scrolling down and when old history is trimmed. Automatic scrolling follows new messages only when the view is already at the bottom and no text is selected.
+- **Magisk gaze status:** Removed repeated changes between the optional gaze message and the generic setup status. Completed checks remain labeled as the last checked result until a new result or connection change. Setup animation now updates button borders without repeating module checks or rewriting status labels.
+- **GPU camera CPU usage:** Tongue and pupil results use asynchronous GPU readback with sleeping completion checks. This reduces CPU work while waiting for GPU results. Activity now reports `worker_cpu_ms` alongside processing time. CPU-only inference keeps its existing thread configuration, and model weights, precision and freshness checks are preserved.
+- **Controller startup and isolation:** Thumb-rest input waits for the headset reader's readiness message and a validated sensor packet before enabling the add-on. Reader failures include native diagnostics and the reader/ADB exit code. Controller cleanup now uses a separate stop signal, so an optional controller failure with confirmed cleanup does not stop camera or gaze tracking. Missing or failed cleanup remains an error and prevents restarting the controller feature. Live headset confirmation is still needed.
 - **Optional gaze setup:** An active Independent Eye Gaze Magisk module now gets an informational result: skip **Check gaze setup** and **Prepare gaze**, and leave the Hub gaze switch off. Ordinary face, tongue and pupil tracking do not require those steps. The Hub's temporary gaze method still checks compatibility and conflicts before starting. Only an explicit saved **on** preference enables it.
 - **Failure explanations:** Missing, mismatched or duplicate Qpro modules now point to the matching install action instead of incorrectly saying VRCFaceTracking is still open. Missing Python packages, Windows library failures, unavailable headset connections and package downloads have separate explanations. An unexpected camera or pupil worker exit also updates the Activity summary; pressing **Stop tracking** does not produce a failure message.
 - **ROCm first-install progress:** An expected missing-package check in a new environment is shown as a warning while installation continues. Final package, GPU inference and training failures remain errors; readiness still requires all verification checks to pass.
@@ -71,6 +75,14 @@ Use **Calibrate cheek puff** on **Live tracking** and complete all three poses w
 Working tongue models from V2.0 onward can be exported through **Model manager** in the old version and imported into this build as a `.qptonguemodel` file. No tongue retraining is required for these fixes. Preserve your original folder and recordings while testing.
 
 ## Test status
+
+The latest Activity tests use a displayed Windows log control and cover continued output while scrolling, bottom following, selected text, wrapped lines and history trimming. Gaze status tests cover repeated refreshes, pending checks, changed connections and successful or failed recovery. Physical mouse-thumb dragging has not been tested.
+
+All 48 offline controller component tests pass. Local child-process fixtures reproduce an optional controller failure while camera/gaze workers remain active, then verify that explicit Stop reaches both stop signals. They cover delayed output, incomplete cleanup, late readiness, source changes and stop-file write failures. Live headset sensor startup still needs confirmation.
+
+An offline concurrent replay of 192 recorded frames on a Radeon RX 7900 XTX with ROCm 10.1 reduced mean process CPU time from about 30.27 to 25.07 ms per tongue-and-pupil pair (about 17%). Mean elapsed time per pair changed from 14.39 to 14.91 ms. Raw tongue predictions and pupil detections matched exactly. This is a local AMD result; the reported RTX 5060 Ti system and live VRChat frame rates still need confirmation. No training or model replacement was used for this change.
+
+A second replay through the shipping inference workers measured 128 pairs and reduced process CPU time from 25.88 to 17.21 ms per pair (about 34%). Median elapsed time changed from 11.74 to 12.04 ms. Outputs matched exactly, and Stop ended both workers without publishing another result. These measurements cover inference work rather than total PC CPU percentage.
 
 The latest review checked error classifications, final worker output, cancellation and delayed callbacks, plus Magisk guidance and gaze report parsing. The full Hub builds with no warnings or errors. This pass used offline fixtures; no installed components or headset state were changed.
 
