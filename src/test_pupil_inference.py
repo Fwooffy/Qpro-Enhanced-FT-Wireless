@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from pupil_inference import PupilInferenceWorker
+from gpu_readback import GPUReadbackCancelled
 
 
 class Broadcaster:
@@ -56,6 +57,46 @@ def wait_until(predicate, timeout=1.0):
 
 
 class PupilWorkerTests(unittest.TestCase):
+    def test_stop_cancels_gpu_wait_without_cpu_fallback_or_worker_error(self):
+        class CancelledTracker(Tracker):
+            def set_readback_cancelled(self, cancelled):
+                self.cancelled = cancelled
+
+            def update(self, *_):
+                self.entered.set()
+                while not self.cancelled():
+                    time.sleep(.001)
+                raise GPUReadbackCancelled("Stopped GPU wait")
+
+        tracker, broadcaster = CancelledTracker(), Broadcaster()
+        worker = PupilInferenceWorker(tracker, broadcaster)
+        worker.submit(np.zeros((1, 1), np.uint8), [0, 1])
+        self.assertTrue(tracker.entered.wait(1))
+        worker.close()
+        self.assertFalse(worker._thread.is_alive())
+        self.assertIsNone(worker.latest())
+        self.assertIsNone(tracker.cancelled)
+        self.assertEqual(broadcaster.sent, [(None, None)])
+
+    def test_completed_result_reports_worker_cpu_separately_from_wall_time(self):
+        from unittest import mock
+
+        tracker, broadcaster = Tracker(delay_first=True), Broadcaster()
+        with mock.patch("pupil_inference.time.thread_time", side_effect=(1, 1.004)):
+            worker = PupilInferenceWorker(tracker, broadcaster)
+            try:
+                worker.submit(np.zeros((1, 1), np.uint8), [0, 1])
+                self.assertTrue(tracker.entered.wait(1))
+                time.sleep(.025)
+                tracker.release.set()
+                wait_until(lambda: worker.latest() is not None)
+                result = worker.latest()
+                self.assertAlmostEqual(result.worker_cpu_ms, 4.0)
+                self.assertGreater(result.processing_ms, result.worker_cpu_ms)
+            finally:
+                tracker.release.set()
+                worker.close()
+
     def test_only_newest_pending_pair_is_processed(self):
         tracker, broadcaster = Tracker(delay_first=True), Broadcaster()
         worker = PupilInferenceWorker(tracker, broadcaster)

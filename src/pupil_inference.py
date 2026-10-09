@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from pupil_dilation import PupilBroadcaster, RelativePupilTracker
+from gpu_readback import GPUReadbackCancelled
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class PupilResult:
     dropped_frames: int
     completed_at: float
     device_name: str = "CPU"
+    worker_cpu_ms: float = 0.0
 
 
 class PupilInferenceWorker:
@@ -47,6 +49,10 @@ class PupilInferenceWorker:
         self._running = True
         self._broadcaster_lock = threading.Lock()
         self._broadcaster_closed = False
+        self._stop_event = threading.Event()
+        set_cancelled = getattr(tracker, "set_readback_cancelled", None)
+        if set_cancelled is not None:
+            set_cancelled(self._stop_event.is_set)
         self._thread = threading.Thread(target=self._run, name="pupil-inference", daemon=True)
         self._thread.start()
 
@@ -72,6 +78,7 @@ class PupilInferenceWorker:
         return result
 
     def close(self) -> None:
+        self._stop_event.set()
         with self._condition:
             self._running = False
             self._pending = None
@@ -111,10 +118,12 @@ class PupilInferenceWorker:
                 strip, camera_ids, submitted_at = item
                 last_input = submitted_at
                 started = time.perf_counter()
+                cpu_started = time.thread_time()
                 if started - submitted_at > self.maximum_age_seconds:
                     self._send((None, None))
                     continue
                 values = self.tracker.update(strip, camera_ids)
+                worker_cpu_ms = (time.thread_time() - cpu_started) * 1000
                 finished = time.perf_counter()
                 stale = finished - submitted_at > self.maximum_age_seconds
                 result = PupilResult(
@@ -125,14 +134,22 @@ class PupilInferenceWorker:
                     self.tracker.backend, str(self.tracker.device), self.tracker.backend_notice,
                     (finished - started) * 1000, (finished - submitted_at) * 1000,
                     self._dropped, finished, getattr(self.tracker, "device_name", "CPU"),
+                    worker_cpu_ms,
                 )
                 with self._condition:
                     if not self._running:
                         return
                     self._latest = result
                     self._send(result.values)
+        except GPUReadbackCancelled as error:
+            if not self._stop_event.is_set():
+                with self._condition:
+                    self._error = error
         except BaseException as error:
             with self._condition:
                 self._error = error
         finally:
             self._close_broadcaster()
+            set_cancelled = getattr(self.tracker, "set_readback_cancelled", None)
+            if set_cancelled is not None:
+                set_cancelled(None)

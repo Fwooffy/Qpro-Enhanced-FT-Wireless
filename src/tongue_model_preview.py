@@ -22,6 +22,7 @@ from train_tongue_model import create_model
 from qpro_gpu import validated_torch_device_name
 from label_capture import AmbiguousTongueSourceError, native_tongue_out
 from tongue_image_processing import preprocess_stereo_images, resolve_input_preprocessing
+from gpu_readback import GPUReadbackCancelled, copy_to_cpu
 
 
 TONGUE_PACKET = struct.Struct("<4sBBH12f")
@@ -83,6 +84,7 @@ def format_tongue_status(
     return (
         f"TONGUE_STATUS camera_fps={camera_fps:.1f} inference_fps={inference_fps:.1f} "
         f"inference_ms={prediction.inference_ms:.1f} "
+        f"worker_cpu_ms={prediction.worker_cpu_ms:.1f} "
         f"pipeline_ms={prediction.pipeline_ms:.1f} "
         f"result_age_ms={prediction.age_ms:.1f} "
         f"dropped_frames={prediction.dropped_frames} "
@@ -296,6 +298,7 @@ class TonguePrediction:
     age_ms: float = 0.0
     completed_frames: int = 0
     native_status: str = "unavailable"
+    worker_cpu_ms: float = 0.0
 
 
 class TongueVisibilityHold:
@@ -445,6 +448,9 @@ class LiveTongueModelPreview:
         normalized = cameras.astype(np.float32)[None] / 255.0
         return torch.from_numpy(normalized).to(self.device)
 
+    def set_readback_cancelled(self, cancelled) -> None:
+        self._readback_cancelled = cancelled
+
     def predict(
         self,
         strip: np.ndarray,
@@ -471,13 +477,18 @@ class LiveTongueModelPreview:
                         strip, self.direction_image_size,
                         self.direction_input_preprocessing,
                     )
-                direction_values = self.direction_model(direction_inputs)[0].clone()
+                # Preserve the float32 gate value if a custom direction head
+                # emits a lower-precision tensor. Released models use float32.
+                direction_values = self.direction_model(direction_inputs)[0].float().clone()
                 visibility_index = self.target_names.index("visibility")
                 direction_values[visibility_index] = model_values[visibility_index]
                 model_values = direction_values
-            # One CPU copy waits for these results. Device-wide barriers and
-            # a separate gate copy also waited on unrelated pupil GPU work.
-            values = model_values.float().cpu().numpy()
+            # One owned readback covers both heads on the current stream.
+            # Sleeping while it finishes avoids a driver wait occupying a
+            # CPU core and lets Stop cancel before any output is published.
+            values = copy_to_cpu(
+                model_values.float(), cancelled=getattr(self, "_readback_cancelled", None),
+            ).numpy()
         completed_at = time.perf_counter()
         inference_ms = (completed_at - started) * 1000.0
         smoothed = self._motion_filter.update(values, completed_at)
@@ -605,6 +616,10 @@ class TongueInferenceWorker:
         self._next_stale_warning_at = 0.0
         self._reported_stale = False
         self._reported_native_source_unknown = False
+        self._stop_event = threading.Event()
+        set_cancelled = getattr(preview, "set_readback_cancelled", None)
+        if set_cancelled is not None:
+            set_cancelled(self._stop_event.is_set)
         self._thread = threading.Thread(
             target=self._run, name="tongue-inference", daemon=True
         )
@@ -640,6 +655,7 @@ class TongueInferenceWorker:
             ), image
 
     def close(self) -> None:
+        self._stop_event.set()
         with self._condition:
             self._running = False
             self._pending = None
@@ -661,6 +677,7 @@ class TongueInferenceWorker:
                     strip, factory_sample, factory_names, submitted_at = self._pending
                     self._pending = None
                     dropped = self._dropped_frames
+                cpu_started = time.thread_time()
                 prediction = self.preview.predict(
                     strip, factory_sample, factory_names
                 )
@@ -668,6 +685,7 @@ class TongueInferenceWorker:
                     prediction,
                     pipeline_ms=(time.perf_counter() - submitted_at) * 1000.0,
                     dropped_frames=dropped,
+                    worker_cpu_ms=(time.thread_time() - cpu_started) * 1000,
                 )
                 # Stop may arrive while a GPU call is still running. Serialize
                 # publication with close so that call cannot renew an override
@@ -741,8 +759,18 @@ class TongueInferenceWorker:
                     if not self._running:
                         return
                     self._latest = (prediction, self._preview_image)
+        except GPUReadbackCancelled as error:
+            if not self._stop_event.is_set():
+                with self._condition:
+                    self._error = error
+                    self._running = False
+                    self._condition.notify_all()
         except BaseException as error:
             with self._condition:
                 self._error = error
                 self._running = False
                 self._condition.notify_all()
+        finally:
+            set_cancelled = getattr(self.preview, "set_readback_cancelled", None)
+            if set_cancelled is not None:
+                set_cancelled(None)

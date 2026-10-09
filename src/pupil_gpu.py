@@ -10,6 +10,8 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from gpu_readback import copy_to_cpu
+
 
 class TorchPupilPreprocessor:
     """Batch both eyes on Qpro's validated CUDA or ROCm device."""
@@ -26,6 +28,7 @@ class TorchPupilPreprocessor:
         self.backend = "amd-rocm" if torch.version.hip else "nvidia-cuda"
         index = int(selected.split(":", 1)[1]) if ":" in selected else 0
         self.name = str(torch.cuda.get_device_name(index))
+        self.readback_cancelled = None
         self._kernel_rows = {}
         for size in (3, 7):
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
@@ -41,7 +44,11 @@ class TorchPupilPreprocessor:
             padded = torch.nn.functional.pad(pixels[:, None], (3, 3, 3, 3), mode="replicate")
             windows = padded.unfold(2, 7, 1).unfold(3, 7, 1)
             clean = windows.flatten(-2).median(dim=-1).values
-            return clean[:, 0].to(dtype=torch.uint8).cpu().numpy(), clean
+            pixels = copy_to_cpu(
+                clean[:, 0].to(dtype=torch.uint8),
+                cancelled=getattr(self, "readback_cancelled", None),
+            )
+            return pixels.numpy(), clean
 
     def _morph(self, masks: object, size: int, *, erode: bool) -> object:
         torch = self.torch
@@ -75,6 +82,9 @@ class TorchPupilPreprocessor:
             dark = self._morph(dark, 3, erode=True)
             dark = self._morph(dark, 3, erode=False)
             output = dark.reshape(len(thresholds), width, clean.shape[-2], clean.shape[-1])
-            output = output.to(dtype=torch.uint8).mul_(255).cpu().numpy()
+            output = copy_to_cpu(
+                output.to(dtype=torch.uint8).mul_(255),
+                cancelled=getattr(self, "readback_cancelled", None),
+            ).numpy()
         return [[output[eye, index] for index in range(len(values))]
                 for eye, values in enumerate(thresholds)]

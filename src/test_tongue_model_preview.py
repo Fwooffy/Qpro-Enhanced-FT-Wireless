@@ -98,6 +98,20 @@ class TongueModelPreviewInputTests(unittest.TestCase):
         preview.predict(self.strip, None, [])
         self.assertIs(models[0].inputs[0], models[1].inputs[0])
 
+    def test_mixed_precision_direction_head_cannot_truncate_gate_visibility(self):
+        preview, _models = self.load_preview(self.checkpoint(), self.checkpoint())
+        gate = torch.tensor([[0.9123456, 0.1, 0.2]], dtype=torch.float32)
+        direction = torch.tensor([[0.1, 0.41, -0.22]], dtype=torch.float16)
+        preview.model.forward = mock.Mock(return_value=gate)
+        preview.direction_model.forward = mock.Mock(return_value=direction)
+        result = preview.predict(self.strip, None, [])
+        expected = direction[0].float().numpy().copy()
+        expected[0] = gate[0, 0].item()
+        np.testing.assert_array_equal(result.values, expected)
+        self.assertEqual(result.values[0], gate[0, 0].item())
+        self.assertNotEqual(result.values[0], gate[0, 0].half().item())
+        self.assertEqual(direction[0, 0].item(), torch.tensor(0.1, dtype=torch.float16).item())
+
     def test_different_branch_sizes_resize_before_processing(self):
         preview, models = self.load_preview(
             self.checkpoint(size=64, mode="clahe-v1"),

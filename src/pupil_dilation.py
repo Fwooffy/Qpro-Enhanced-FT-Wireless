@@ -16,6 +16,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from gpu_readback import GPUReadbackCancelled
+
 
 CAMERA_WIDTH = 400
 CAMERA_HEIGHT = 400
@@ -248,6 +250,10 @@ class RelativePupilTracker:
             except Exception as exc:
                 self.backend_notice = f"GPU pupil processing unavailable; using CPU: {_error_summary(exc)}"
 
+    def set_readback_cancelled(self, cancelled) -> None:
+        if self._gpu is not None:
+            self._gpu.readback_cancelled = cancelled
+
     def _detect_eyes(self, images: dict[int, np.ndarray]) -> dict[int, PupilDetection | None]:
         results: dict[int, PupilDetection | None] = {eye: None for eye in images}
         valid_rois = {}
@@ -266,6 +272,10 @@ class RelativePupilTracker:
                 clean_batch, gpu_clean = self._gpu.median(list(valid_rois.values()))
                 masks = self._gpu.masks(gpu_clean, [_thresholds(clean) for clean in clean_batch])
                 prepared = list(zip(clean_batch, masks))
+            except GPUReadbackCancelled:
+                # Stop is not a GPU failure. Do not start CPU fallback work
+                # or change this tracker's backend while shutting down.
+                raise
             except Exception as exc:
                 # Discard the incomplete batch. Both eyes use one CPU path,
                 # retaining their existing baselines and smoothing state.

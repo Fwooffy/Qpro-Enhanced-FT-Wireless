@@ -999,6 +999,7 @@ def main() -> int:
                         f"left_state={pupil_result.states[0].replace(' ', '_') if pupil_result else 'warming'} "
                         f"right_state={pupil_result.states[1].replace(' ', '_') if pupil_result else 'warming'} "
                         f"processing_ms={pupil_result.processing_ms:.1f} "
+                        f"worker_cpu_ms={pupil_result.worker_cpu_ms:.1f} "
                         f"age_ms={pupil_result.age_ms:.1f} "
                         f"dropped_frames={pupil_result.dropped_frames}"
                         if pupil_result else "PUPIL_STATUS left=warming/invalid right=warming/invalid "

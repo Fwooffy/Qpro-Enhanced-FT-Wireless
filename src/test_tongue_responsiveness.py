@@ -13,11 +13,60 @@ from tongue_model_preview import (
     LiveTongueModelPreview, TongueBroadcaster, TongueInferenceWorker,
     TongueMotionFilter, TonguePrediction, smooth_tongue_output,
 )
+from gpu_readback import GPUReadbackCancelled
 
 
 class TongueResponsivenessTests(unittest.TestCase):
     names = ["visibility", "extension", "horizontal", "cheekPuffLeft", "cheekPuffRight"]
     default_alpha = 1.0 - 0.88 * 0.55
+
+    def test_stop_cancels_gpu_wait_without_publishing_or_worker_error(self):
+        entered = threading.Event()
+
+        class Preview:
+            target_names = ["extension"]
+
+            def set_readback_cancelled(self, cancelled):
+                self.cancelled = cancelled
+
+            def predict(self, *_):
+                entered.set()
+                while not self.cancelled():
+                    time.sleep(.001)
+                raise GPUReadbackCancelled("Stopped GPU wait")
+
+        preview, broadcaster = Preview(), mock.Mock(enabled=True)
+        worker = TongueInferenceWorker(preview, broadcaster, render_preview=False)
+        worker.submit(np.zeros((1, 1)), None, [])
+        self.assertTrue(entered.wait(1))
+        worker.close()
+        self.assertFalse(worker._thread.is_alive())
+        self.assertEqual(worker.latest(), (None, None))
+        self.assertIsNone(preview.cancelled)
+        broadcaster.send_prediction.assert_not_called()
+
+    def test_completed_result_records_actual_worker_cpu_time(self):
+        class Preview:
+            target_names = ["extension"]
+
+            def predict(self, *_):
+                time.sleep(.02)
+                return TonguePrediction(np.asarray([0.7]), 0, 1, True, 1)
+
+        broadcaster = mock.Mock(enabled=True)
+        with mock.patch("tongue_model_preview.time.thread_time", side_effect=(1, 1.002)):
+            worker = TongueInferenceWorker(Preview(), broadcaster, render_preview=False)
+            try:
+                worker.submit(np.zeros((1, 1)), None, [])
+                deadline = time.monotonic() + 1
+                while worker.latest()[0] is None and time.monotonic() < deadline:
+                    time.sleep(.001)
+                result, _ = worker.latest()
+                self.assertIsNotNone(result)
+                self.assertAlmostEqual(result.worker_cpu_ms, 2.0)
+                self.assertGreater(result.pipeline_ms, result.worker_cpu_ms)
+            finally:
+                worker.close()
 
     def test_large_movement_reaches_target_sooner_without_overshooting(self):
         for fps in (12, 24, 48, 72):

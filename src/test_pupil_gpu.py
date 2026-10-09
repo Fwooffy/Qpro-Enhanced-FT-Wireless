@@ -1,16 +1,54 @@
 """GPU preprocessing math and detection parity; no camera or UDP access."""
 
 import unittest
+from unittest import mock
 
 import cv2
 import numpy as np
 
 from pupil_dilation import RelativePupilTracker, _cpu_masks
 from pupil_gpu import TorchPupilPreprocessor
+from gpu_readback import GPUReadbackCancelled
 from test_pupil_dilation import eye
 
 
 class PupilGpuParityTests(unittest.TestCase):
+    def test_readback_cancellation_does_not_switch_to_cpu(self) -> None:
+        tracker = RelativePupilTracker(backend="cpu")
+        strip = np.hstack((eye(24), eye(24)))
+        for _ in range(12):
+            tracker.update(strip, [0, 1])
+        baselines = tuple(value._baseline for value in tracker.eyes)
+        tracker._gpu = mock.Mock()
+        tracker._gpu.median.side_effect = GPUReadbackCancelled("Tracking stopped")
+        tracker.backend, tracker.device = "nvidia-cuda", "cuda:1"
+        tracker.device_name = "Discrete GPU"
+        tracker.backend_notice = ""
+        with (mock.patch("pupil_dilation.cv2.medianBlur") as cpu_median,
+              self.assertRaises(GPUReadbackCancelled)):
+            tracker.update(strip, [0, 1])
+        cpu_median.assert_not_called()
+        self.assertEqual(tracker.backend, "nvidia-cuda")
+        self.assertEqual(tracker.device, "cuda:1")
+        self.assertEqual(tracker.backend_notice, "")
+        self.assertIsNotNone(tracker._gpu)
+        self.assertEqual(tuple(value._baseline for value in tracker.eyes), baselines)
+
+    def test_readback_timeout_keeps_existing_cpu_fallback_and_baselines(self) -> None:
+        tracker = RelativePupilTracker(backend="cpu")
+        strip = np.hstack((eye(24), eye(24)))
+        for _ in range(12):
+            expected = tracker.update(strip, [0, 1])
+        baselines = tuple(value._baseline for value in tracker.eyes)
+        tracker._gpu = mock.Mock()
+        tracker._gpu.median.side_effect = TimeoutError("GPU readback timeout")
+        tracker.backend, tracker.device = "nvidia-cuda", "cuda:1"
+        self.assertEqual(tracker.update(strip, [0, 1]), expected)
+        self.assertIsNone(tracker._gpu)
+        self.assertEqual((tracker.backend, tracker.device), ("cpu", "cpu"))
+        self.assertEqual(tuple(value._baseline for value in tracker.eyes), baselines)
+        self.assertIn("GPU readback timeout", tracker.backend_notice)
+
     def test_median_and_elliptical_morphology_match_opencv(self) -> None:
         try:
             import torch

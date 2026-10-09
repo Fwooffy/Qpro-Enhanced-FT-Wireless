@@ -149,6 +149,7 @@ $runtimeFiles = @(
     "receiver.py",
     "companion_lifecycle.py",
     "qpro_gpu.py",
+    "gpu_readback.py",
     "pupil_dilation.py",
     "pupil_gpu.py",
     "pupil_inference.py",
