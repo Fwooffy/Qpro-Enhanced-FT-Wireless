@@ -1,3 +1,6 @@
+using System.Runtime.InteropServices;
+using System.Text;
+
 namespace QproFaceTracking.Hub;
 
 internal sealed partial class HubForm
@@ -31,46 +34,85 @@ internal sealed partial class HubForm
     {
         var selectionStart = _log.SelectionStart;
         var selectionLength = _log.SelectionLength;
-        var followTail = selectionLength == 0 && selectionStart >= _log.TextLength;
-        foreach (var line in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+        var caretAtTail = selectionStart >= _log.TextLength;
+        var firstVisible = (int)ActivityMessage(_log.Handle, 0xCE, 0, 0); // EM_GETFIRSTVISIBLELINE
+        var firstCharacter = Math.Max(0, _log.GetFirstCharIndexFromLine(firstVisible));
+        var scroll = new ActivityScrollInfo { Size = (uint)Marshal.SizeOf<ActivityScrollInfo>(), Mask = 7 };
+        // A scrollbar thumb's reported position can lag while the mouse is
+        // held. Preserve the live viewport throughout that interaction too.
+        var followTail = selectionLength == 0 && Control.MouseButtons == MouseButtons.None &&
+            (!GetActivityScrollInfo(_log.Handle, 1, ref scroll) ||
+            scroll.Position >= scroll.Maximum - Math.Max((long)scroll.Page - 1, 0) - 1);
+        // Batch formatting and painting; do not expose the intermediate end
+        // selection to the reader while output is arriving.
+        var suspendRedraw = _log.Visible;
+        if (suspendRedraw) ActivityMessage(_log.Handle, 0xB, 0, 0); // WM_SETREDRAW
+        try
         {
-            var level = severity ?? _activityClassifier.Classify(line);
-            _log.Select(_log.TextLength, 0);
-            _log.SelectionColor = ActivityColor(level);
-            _log.AppendText(string.IsNullOrWhiteSpace(line) ? Environment.NewLine
-                : $"{timestamp}  [{ActivityName(level)}] {line}{Environment.NewLine}");
-        }
-
-        // Remove whole old lines without replacing Text, which would discard
-        // the remaining colors. A very long single line still stays bounded.
-        var removed = 0;
-        if (_log.TextLength > ActivityCharacterLimit)
-        {
-            var textToTrim = _log.Text;
-            var minimumRemoval = textToTrim.Length - ActivityCharactersToKeep;
-            var lineEnd = textToTrim.IndexOf('\n', minimumRemoval);
-            removed = lineEnd >= 0 && lineEnd < textToTrim.Length - 1 ? lineEnd + 1 : minimumRemoval;
-            _log.Select(0, removed);
-            var readOnly = _log.ReadOnly;
-            try
+            var run = new StringBuilder();
+            ActivitySeverity? runLevel = null;
+            void AppendRun()
             {
-                // RichEdit can reject a selection deletion while read-only.
-                // This synchronous edit does not pump input or expose typing.
-                _log.ReadOnly = false;
-                _log.SelectedText = string.Empty;
+                if (run.Length == 0) return;
+                _log.Select(_log.TextLength, 0);
+                _log.SelectionColor = ActivityColor(runLevel!.Value);
+                _log.AppendText(run.ToString());
+                run.Clear();
             }
-            finally { _log.ReadOnly = readOnly; }
-        }
-        if (followTail)
-        {
-            _log.Select(_log.TextLength, 0);
-            _log.ScrollToCaret();
-        }
-        else
-        {
-            var start = Math.Clamp(selectionStart - removed, 0, _log.TextLength);
+            foreach (var line in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+            {
+                var level = severity ?? _activityClassifier.Classify(line);
+                if (runLevel != level) AppendRun();
+                runLevel = level;
+                if (!string.IsNullOrWhiteSpace(line))
+                    run.Append(timestamp).Append("  [").Append(ActivityName(level)).Append("] ").Append(line);
+                run.AppendLine();
+            }
+            AppendRun();
+
+            // Remove whole old lines without replacing Text, which would discard
+            // the remaining colors. A very long single line still stays bounded.
+            var removed = 0;
+            if (_log.TextLength > ActivityCharacterLimit)
+            {
+                var textToTrim = _log.Text;
+                var minimumRemoval = textToTrim.Length - ActivityCharactersToKeep;
+                var lineEnd = textToTrim.IndexOf('\n', minimumRemoval);
+                removed = lineEnd >= 0 && lineEnd < textToTrim.Length - 1 ? lineEnd + 1 : minimumRemoval;
+                _log.Select(0, removed);
+                var readOnly = _log.ReadOnly;
+                try
+                {
+                    // RichEdit can reject a selection deletion while read-only.
+                    // This synchronous edit does not pump input or expose typing.
+                    _log.ReadOnly = false;
+                    _log.SelectedText = string.Empty;
+                }
+                finally { _log.ReadOnly = readOnly; }
+            }
+            var start = followTail && caretAtTail ? _log.TextLength
+                : Math.Clamp(selectionStart - removed, 0, _log.TextLength);
             var end = Math.Clamp(selectionStart + selectionLength - removed, start, _log.TextLength);
             _log.Select(start, end - start);
+            if (followTail)
+                ActivityMessage(_log.Handle, 0x115, 7, 0); // WM_VSCROLL, SB_BOTTOM
+            else
+            {
+                // Restore the viewport after selection. Display-line anchors
+                // survive wrapping and trimming without 16-bit pixel limits.
+                var anchor = Math.Clamp(firstCharacter - removed, 0, _log.TextLength);
+                var line = _log.GetLineFromCharIndex(anchor);
+                var current = (int)ActivityMessage(_log.Handle, 0xCE, 0, 0);
+                ActivityMessage(_log.Handle, 0xB6, 0, line - current); // EM_LINESCROLL
+            }
+        }
+        finally
+        {
+            if (suspendRedraw)
+            {
+                ActivityMessage(_log.Handle, 0xB, 1, 0);
+                _log.Invalidate();
+            }
         }
     }
 
@@ -79,4 +121,18 @@ internal sealed partial class HubForm
         _log.Clear();
         _activityClassifier.Reset();
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ActivityScrollInfo
+    {
+        public uint Size, Mask;
+        public int Minimum, Maximum;
+        public uint Page;
+        public int Position, TrackPosition;
+    }
+    [DllImport("user32.dll", EntryPoint = "SendMessageW")]
+    private static extern nint ActivityMessage(nint window, uint message, nint wParam, nint lParam);
+    [DllImport("user32.dll", EntryPoint = "GetScrollInfo")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetActivityScrollInfo(nint window, int bar, ref ActivityScrollInfo scroll);
 }
