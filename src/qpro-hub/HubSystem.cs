@@ -302,9 +302,9 @@ internal sealed partial class HubForm
         _recordCameraCheeks.Enabled = canStart;
         _trainCameraCheeks.Enabled = canStart && _cheekCameraBaseModels.SelectedItem is FileChoice &&
             _cheekCameraDatasets.SelectedItem is DatasetChoice;
-        _start.Enabled = canStart;
+        _start.Enabled = canStart && !ControllerRestartBlocked;
         _stop.Enabled = (running || _starting) && !_stopping;
-        StyleRunButton(_start, canStart);
+        StyleRunButton(_start, _start.Enabled);
         StyleRunButton(_stop, (running || _starting) && !_stopping);
         UpdateCameraCheekAvailability();
         UpdateControllerInputAvailability();

@@ -760,7 +760,7 @@ internal sealed partial class HubForm
         _runStatus.Text = "● Stopping cleanly…"; _runStatus.ForeColor = Warning;
         try
         {
-            File.WriteAllText(_stopFile, DateTimeOffset.Now.ToString("O"));
+            RequestTrackingStop();
             var deadline = DateTime.UtcNow.AddSeconds(18);
             while (_trackingProcesses.Any(p => !p.HasExited) && DateTime.UtcNow < deadline)
                 await Task.Delay(250);
@@ -782,19 +782,24 @@ internal sealed partial class HubForm
                     return;
                 }
                 _trackingCleanupPending = false;
+                await FinishControllerRestorationAsync();
                 gazeRestoreFailed = !_gazeRecoveryConfirmed && _trackingProcesses.Any(process =>
                     process.StartInfo.ArgumentList.Any(argument =>
                         argument.EndsWith("native-eye-local-branch-test.ps1", StringComparison.OrdinalIgnoreCase)));
                 File.Delete(_stopFile);
-                AppendLog(gazeRestoreFailed
-                    ? "Qpro live processes stopped, but eye-model recovery was not confirmed. Use Recover Qpro gaze in First-time setup and check Activity before starting gaze again."
-                    : "Qpro live overrides stopped; native cheek values restored. Saved eyebrow and smirk adjustments and any Magisk modules remain active.");
+                if (!ControllerCleanupUnconfirmed) File.Delete(ControllerStopFile);
+                if (ControllerCleanupUnconfirmed)
+                    AppendLog("Controller restoration remains unconfirmed. Other Qpro live processes stopped and native cheek values were restored. Keep controller input off; stop SteamVR, restart the headset and reopen the Hub before checking controller compatibility.");
+                if (gazeRestoreFailed)
+                    AppendLog("Qpro live processes stopped, but eye-model recovery was not confirmed. Use Recover Qpro gaze in First-time setup and check Activity before starting gaze again.");
+                else if (!ControllerCleanupUnconfirmed)
+                    AppendLog("Qpro live overrides stopped; native cheek values restored. Saved eyebrow and smirk adjustments and any Magisk modules remain active.");
             }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             stopRequestFailed = true;
-            AppendLog($"Stop request failed while writing or removing the local stop file: {error.Message}");
+            AppendLog($"Stop request failed: {error.Message}");
             MessageBox.Show(this,
                 "Qpro could not send the stop request. Check Activity, then close the camera preview with Q if it is open. Keep the Hub open until the tracking processes finish.",
                 "Tracking could not stop cleanly", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -806,8 +811,9 @@ internal sealed partial class HubForm
             _runStatus.Text = stopRequestFailed ? "● Stop request failed — check Activity"
                 : _trackingCleanupPending || _trackingProcesses.Count != 0 ? "● Waiting for tracking cleanup"
                 : gazeRestoreFailed ? "● Eye-model restore unconfirmed — check Activity"
+                : ControllerCleanupUnconfirmed ? "● Qpro stopped — controller cleanup needs attention"
                 : "● Idle — Qpro live overrides off";
-            _runStatus.ForeColor = _trackingProcesses.Count == 0 && !gazeRestoreFailed && !stopRequestFailed ? Good : Warning;
+            _runStatus.ForeColor = _trackingProcesses.Count == 0 && !gazeRestoreFailed && !stopRequestFailed && !ControllerCleanupUnconfirmed ? Good : Warning;
             if (_trackingProcesses.Count == 0) ResetInferenceStatus();
             UpdateControlState();
         }
@@ -820,6 +826,11 @@ internal sealed partial class HubForm
         params string[] arguments)
     {
         var start = PowerShellStart(script, arguments, hidden: true);
+        return StartManagedProcess(label, start, out exitResult);
+    }
+
+    private Process StartManagedProcess(string label, ProcessStartInfo start, out Task<HubTrackingExitFeedback?> exitResult)
+    {
         start.RedirectStandardOutput = true; start.RedirectStandardError = true;
         // Keep a parent pipe open so hand adapters also stop if the Hub exits.
         start.RedirectStandardInput = label == "Hand/controller input";
@@ -829,12 +840,20 @@ internal sealed partial class HubForm
         var recentOutput = new System.Collections.Concurrent.ConcurrentQueue<string>();
         var outputClosed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var errorClosed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var controllerResult = label == "Hand/controller input" ? new HubControllerUtilityResult() : null;
+        var controllerCompletion = controllerResult is null ? null : new TaskCompletionSource<HubControllerFeedback>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (controllerCompletion is not null)
+        {
+            _controllerProcess = process;
+            _controllerRestoration = controllerCompletion.Task;
+        }
         void ReportLine(string line)
         {
             try
             {
                 recentOutput.Enqueue(line.Length <= 4096 ? line : line[..4096] + " …");
                 while (recentOutput.Count > 60) recentOutput.TryDequeue(out _);
+                controllerResult?.Observe(line);
                 AppendLog($"[{label}] {line}");
                 PostProcessUpdate(label, () =>
                 {
@@ -870,10 +889,11 @@ internal sealed partial class HubForm
                 AppendLog($"[{label}] Exit status could not be read: {error.Message}");
                 completedResult.TrySetResult(new(label + " exit status is unverified", "The worker's exit status could not be read.",
                     "Review Activity and finish Stop tracking before retrying.", true));
+                controllerCompletion?.TrySetResult(controllerResult!.CompleteRestoration(false));
                 return;
             }
             var outputDrained = true;
-            if (label is "Camera tracking" or "Pupil tracking")
+            if (label is "Camera tracking" or "Pupil tracking" or "Hand/controller input")
             {
                 // Exited can arrive before the final stderr callbacks. Drain
                 // asynchronously so the summary uses the actual failure, while
@@ -889,6 +909,8 @@ internal sealed partial class HubForm
             // its own drained result even when Stop subsequently removes it.
             completedResult.TrySetResult(HubTrackingExitFeedback.Complete(label, exitCode, false,
                 outputDrained, string.Join("\n", recentOutput)));
+            var controllerRestoration = controllerResult?.CompleteRestoration(outputDrained);
+            if (controllerRestoration is not null) controllerCompletion!.TrySetResult(controllerRestoration);
             PostProcessUpdate(label, () =>
             {
                     AppendLog($"[{label}] exited with code {exitCode}.");
@@ -898,6 +920,11 @@ internal sealed partial class HubForm
                     if (!_trackingProcesses.Contains(process)) return;
                     if (!_starting && !_nativeCheekOnlySession && !_trackingProcesses.Any(p => !p.HasExited))
                         EndCheekTrackingSession();
+                    if (controllerRestoration is not null)
+                    {
+                        CompleteControllerInputExit(process, controllerRestoration, stopWasRequested || _stopping || _closingInProgress);
+                        return;
+                    }
                     if (label == "Independent gaze" && !stopWasRequested && !_stopping && !_closingInProgress)
                     {
                         if (!_gazeStartupInProgress && !_gazeFailureHandled)
@@ -936,7 +963,15 @@ internal sealed partial class HubForm
         }
         catch
         {
-            if (!_trackingProcesses.Contains(process)) process.Dispose();
+            if (!_trackingProcesses.Contains(process))
+            {
+                if (ReferenceEquals(_controllerProcess, process))
+                {
+                    _controllerProcess = null;
+                    _controllerRestoration = null;
+                }
+                process.Dispose();
+            }
             throw;
         }
     }

@@ -113,6 +113,7 @@ internal sealed class HubControllerUtilityResult
     private HubControllerFeedback? _check;
     private HubControllerFeedback? _cleanup;
     private HubControllerFeedback? _failure;
+    private HubControllerFeedback? _cleanupFailure;
 
     internal void Observe(string line)
     {
@@ -134,8 +135,25 @@ internal sealed class HubControllerUtilityResult
             else if (line.StartsWith(HubControllerFeedback.CleanupPrefix, StringComparison.Ordinal))
             {
                 _cleanup = HubControllerFeedback.ParseCleanupLine(line);
-                if (_cleanup.IsError) _failure ??= _cleanup;
+                if (_cleanup.IsError)
+                {
+                    _failure ??= _cleanup;
+                    _cleanupFailure ??= _cleanup;
+                }
             }
+        }
+    }
+
+    internal HubControllerFeedback CompleteRestoration(bool outputDrained)
+    {
+        lock (_sync)
+        {
+            if (_cleanupFailure is not null) return _cleanupFailure;
+            if (outputDrained && _cleanup?.State == ControllerFeedbackState.Restored) return _cleanup;
+            return new(ControllerFeedbackState.NeedsAttention, "Controller restoration is unconfirmed",
+                !outputDrained ? "The controller worker exited before its final output could be read completely."
+                    : "The controller worker exited without a complete final restoration report.",
+                "Keep controller input off and copy diagnostics. Stop other tracking, close SteamVR, restart the headset and reopen the Hub before checking controller compatibility.", true);
         }
     }
 

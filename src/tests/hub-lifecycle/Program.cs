@@ -6,8 +6,9 @@ internal static class LifecycleTests
 {
     const BindingFlags Private = BindingFlags.NonPublic | BindingFlags.Instance;
     [STAThread]
-    static void Main()
+    static void Main(string[] args)
     {
+        if (ControllerLifecycleFixtures.TryRunWorker(args)) return;
         try { Run(); }
         catch (Exception error)
         {
@@ -189,7 +190,8 @@ internal static class LifecycleTests
         typeof(HubForm).GetField("_cheekTrackingSession", Private)!.SetValue(form, closingSession);
         form.Dispose();
         Check(!CheekTrackingSession.IsActive(closingName), "disposing the Hub releases its cheek session");
-        Console.WriteLine("PASS: Hub lifecycle and cheek-only session checks completed without live processes.");
+        ControllerLifecycleFixtures.Run(fixtureRoot);
+        Console.WriteLine("PASS: Hub lifecycle, cheek session and isolated controller-worker checks completed without headset actions.");
     }
 
     static string? ReadPreference(string path) => File.Exists(path) ? Convert.ToBase64String(File.ReadAllBytes(path)) : null;

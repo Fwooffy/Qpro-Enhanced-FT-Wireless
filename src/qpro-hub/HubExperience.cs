@@ -40,11 +40,17 @@ internal sealed partial class HubForm
         var cameras = _tongue.Checked || _cameraCheekPuff.Checked || _pupil.Checked;
         var missing = new List<string>();
         if (cameras && !_cameraInputReady) missing.Add("camera frames");
-        if (_hybridHands.Checked && !_handsReady) missing.Add("optical fingers");
-        if (_controllerTouchpad.Checked && !_touchpadReady) missing.Add("thumb-rest input");
+        if (!_controllerInputStopped && _hybridHands.Checked && !_handsReady) missing.Add("optical fingers");
+        if (!_controllerInputStopped && _controllerTouchpad.Checked && !_touchpadReady) missing.Add("thumb-rest input");
         _runStatus.Text = missing.Count > 0 ? "● Waiting for " + string.Join(" and ", missing) + "…"
             : cameras ? "● Camera input received · check tracking in VRCFaceTracking" : "● Selected tracking features active";
         _runStatus.ForeColor = missing.Count > 0 ? Warning : Good;
+        if (ControllerCleanupUnconfirmed)
+        {
+            _runStatus.Text += " · controller cleanup needs attention";
+            _runStatus.ForeColor = Warning;
+        }
+        else if (_controllerInputStopped) _runStatus.Text += " · controller input off";
     }
 
     private Control BuildFeedbackCard()
