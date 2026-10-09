@@ -47,6 +47,51 @@ Expect("device unauthorized", "permission");
 Expect("Grant Magisk Superuser access", "root access");
 Expect("Unsupported tracking-engine size", "not compatible");
 Expect("Controller ABI is ambiguous", "not compatible");
+foreach (var conflict in new[]
+{
+    "An active Magisk gaze module was found (independent_gaze). Use one independent gaze method at a time. Leave Independent Eye Gaze off in the Hub while that module is active, or disable the module in Magisk and reboot before preparing the Hub's temporary method. No headset tracking was changed.",
+    "Another headset gaze method is enabled in Magisk: independent_gaze. Leave Independent Eye Gaze unchecked in the Hub, or disable that gaze module in Magisk and reboot before using the Hub method. No tracking was changed."
+})
+{
+    Expect(conflict, "Another gaze method", "Local gaze preparation");
+    var result = HubActionFailure.Explain("Local gaze preparation", "exit 1", conflict);
+    if (!result.NextStep.Contains("Independent Eye Gaze off", StringComparison.Ordinal) ||
+        !result.NextStep.Contains("Skip Check gaze setup and Prepare gaze", StringComparison.Ordinal) ||
+        !result.NextStep.Contains("disable the Magisk gaze module and reboot", StringComparison.Ordinal))
+        throw new Exception("Magisk conflicts must explain both choices without requiring Hub gaze checks: " + result);
+}
+foreach (var setting in new[] { "hand_tracking_enabled", "multimodal_hands_and_controllers_enabled" })
+    Expect("HANDS_INCOMPATIBLE {\"error\":\"Enable headset hand tracking and Singularity's Simultaneous Hands & Controllers; could not verify " + setting + ".\"}",
+        "settings could not be verified", "Hand/controller input");
+foreach (var setting in new[] { "hand_tracking_enabled", "multimodal_hands_and_controllers_enabled", "simultaneous_hands_and_controllers_mode" })
+    Expect("Could not read one supported current-user value for " + setting + ". Check the headset connection and root access, then check compatibility again.",
+        "settings could not be verified", "Hand/controller compatibility");
+Expect("Headset current-user setting simultaneous_hands_and_controllers_mode must be 1. In Singularity, turn on Simultaneous Hands & Controllers, then check compatibility again.",
+    "settings could not be verified", "Hand/controller compatibility");
+var handSettings = HubActionFailure.Explain("Hand/controller input", "exit 4",
+    "HANDS_INCOMPATIBLE {\"error\":\"could not verify multimodal_hands_and_controllers_enabled.\"}");
+if (!handSettings.NextStep.Contains("Live optical input and adapter checks still need to pass", StringComparison.Ordinal))
+    throw new Exception("Enabling hand settings must not promise tracking compatibility: " + handSettings);
+Expect("Enable headset hand tracking; could not verify hand_tracking_enabled.\nHANDS_INCOMPATIBLE {\"error\":\"controller-selection adapter validation failed: Error: Controller ABI is ambiguous or unsupported (0 validated callers)\"}",
+    "not compatible", "Hand/controller input");
+Expect("Could not read one supported current-user value for hand_tracking_enabled.\nThis Virtual Desktop Streamer driver has no validated hand profile.",
+    "not compatible", "Hand/controller compatibility");
+Expect("Headset reports hand_tracking_enabled inactive before startup; Qpro will check live optical input after requesting Virtual Desktop multimodal mode.\nAn unrelated worker error.",
+    "did not complete", "Hand/controller input");
+var cacheError = "This prepared tongue cache uses an older native TongueOut mapping. Regenerate the cache from its original .qpcap, .qplabel.jsonl and .qpsession.json files before training. The Hub rebuilds it when you retry training; command-line users should rerun the matching prepare_tongue_stills.py or prepare_tongue_training.py command. Existing trained checkpoints remain usable.";
+Expect(cacheError, "training cache needs to be refreshed", "Lower-face training");
+var sourceError = "The factory TongueOut layout is ambiguous: this older label file does not identify Virtual Desktop or Steam Link. Regenerate its cache with --tracking-source VirtualDesktop or --tracking-source SteamLink, choosing the app used for that recording. For a new capture, update the matching Qpro module and record again.";
+Expect(sourceError, "streaming source is unknown", "Lower-face training");
+Expect("The native tongue source override conflicts with the recorded trackingSource", "source does not match", "Lower-face training");
+Expect("The alternate Virtual Desktop tongue layout needs the full 70-channel factory schema. Restart the matching Qpro module and record the capture again.",
+    "factory reference is incomplete", "Lower-face training");
+foreach (var error in new[] { cacheError, sourceError })
+{
+    var result = HubActionFailure.Explain("Lower-face training", "exit 1", error);
+    if (result.NextStep.Contains("Install runtime", StringComparison.OrdinalIgnoreCase) ||
+        result.NextStep.Contains("reinstall", StringComparison.OrdinalIgnoreCase))
+        throw new Exception("Capture mapping errors must not send users to runtime installation: " + result);
+}
 Expect("Close VRCFaceTracking and wait", "still open");
 Expect("Qpro modules were removed, but saved-module recovery needs attention", "saved module needs attention");
 Expect("Controller removal failed. Keep SteamVR closed.", "Controller removal needs attention");

@@ -17,8 +17,28 @@ internal sealed record HubActionFailure(string Title, string Detail, string Next
         if (Has("root access was not granted") || Has("Grant Magisk Superuser access") ||
             Has("could not verify Magisk root") || Has("Superuser permission denied"))
             return new("Headset root access is needed", "Qpro could not verify Magisk root permission.", "Open Magisk, allow Shell / ADB Shell Superuser access, and retry with the headset awake.");
-        if (Has("Unsupported tracking-engine") || Has("validated eye profile") || Has("Controller ABI") || Has("HANDS_INCOMPATIBLE"))
+        if (Has("An active Magisk gaze module was found") || Has("Another headset gaze method is enabled in Magisk"))
+            return new("Another gaze method is already active", "The Magisk gaze method conflicts with the Hub's temporary gaze method. This action stopped before changing headset tracking.",
+                "Leave Independent Eye Gaze off in the Hub. Skip Check gaze setup and Prepare gaze, and confirm the Magisk module's eye tracking in VRCFaceTracking's preview. To use the Hub method instead, disable the Magisk gaze module and reboot first.");
+        var unsupportedHands = Has("Controller ABI") || Has("no validated hand profile");
+        if (!unsupportedHands && (Has("Enable headset hand tracking") ||
+            Matches(@"could not verify (?:hand_tracking_enabled|multimodal_hands_and_controllers_enabled)|Could not read one supported current-user value for (?:hand_tracking_enabled|multimodal_hands_and_controllers_enabled|simultaneous_hands_and_controllers_mode)|Headset current-user setting simultaneous_hands_and_controllers_mode must be 1")))
+            return new("Hand/controller settings could not be verified", "Qpro could not confirm the headset settings needed for simultaneous hands and controllers. This result does not establish that the tracking adapter is unsupported.",
+                "Check the headset connection and root access. Enable Quest hand tracking and Singularity's Simultaneous Hands & Controllers, reconnect Virtual Desktop, then check compatibility again. Live optical input and adapter checks still need to pass.");
+        if (Has("Unsupported tracking-engine") || Has("validated eye profile") || unsupportedHands || Has("HANDS_INCOMPATIBLE"))
             return new(action + " is not compatible with this version", "The exact runtime version or engine has not passed this feature's compatibility checks.", "Keep this feature off and copy diagnostics with the exact build. Other tracking features have their own checks.");
+        if (Has("This prepared tongue cache uses an older native TongueOut mapping"))
+            return new("The training cache needs to be refreshed", "The prepared capture uses an older native tongue mapping. Existing trained checkpoints remain usable.",
+                "Keep the original .qpcap, .qplabel.jsonl and .qpsession.json files, then retry training in the Hub to rebuild the cache. For command-line training, rerun the matching prepare_tongue_stills.py or prepare_tongue_training.py command.");
+        if (Has("The factory TongueOut layout is ambiguous"))
+            return new("The recording's streaming source is unknown", "This older label file does not identify whether Virtual Desktop or Steam Link supplied its factory reference.",
+                "Identify the streaming app used for that recording. For command-line preparation, rebuild its cache with --tracking-source VirtualDesktop or --tracking-source SteamLink accordingly. If the original source is unknown, update the matching Qpro module and make a new capture; keep the original recording.");
+        if (Has("The native tongue source override conflicts with the recorded trackingSource"))
+            return new("The training source does not match the recording", "The requested source override differs from the streaming app saved with the capture.",
+                "Correct or omit the command-line --tracking-source override, then prepare the capture again using its recorded streaming app. Keep the original capture and labels.");
+        if (Has("The alternate Virtual Desktop tongue layout needs the full 70-channel factory schema"))
+            return new("The capture's factory reference is incomplete", "This Virtual Desktop recording lacks the full factory expression data needed to interpret its tongue reference.",
+                "Close VRCFaceTracking, update its matching Qpro Virtual Desktop module, reopen VRCFaceTracking and record a new capture. Keep existing recordings and trained models.");
         // A repair instruction is not proof that the app is open. Module
         // preflight errors also say to close VRCFT before reinstalling.
         if (Has("packaged Qpro module is missing or unreadable"))
