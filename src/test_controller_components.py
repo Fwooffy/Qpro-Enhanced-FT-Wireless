@@ -45,6 +45,44 @@ class GatedOutput:
         self.closed = True
 
 
+class ReaderProcess(FakeWorker):
+    def __init__(self, output='QPTP_LISTENING address=127.0.0.1 port=27063 rate=60\n', code=None):
+        super().__init__(output, code)
+        self.waited = False
+
+    def wait(self, timeout):
+        self.waited = True
+        if self.returncode is None:
+            self.returncode = 0
+        return self.returncode
+
+
+class RelayStream:
+    def __init__(self, reads):
+        self.reads = iter(reads)
+        self.closed = False
+
+    def recv(self, _length):
+        value = next(self.reads)
+        if callable(value):
+            return value()
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    def settimeout(self, timeout):
+        self.timeout = timeout
+
+    def close(self):
+        self.closed = True
+
+
+class CloseFailureOutput(io.StringIO):
+    def close(self):
+        super().close()
+        raise OSError('fixture close failed')
+
+
 class ComponentTests(unittest.TestCase):
     def create_addon(self, local):
         hands, addon = module.managed_paths(local)
@@ -162,9 +200,283 @@ class ComponentTests(unittest.TestCase):
                  if line.startswith('CONTROLLER_CLEANUP ')]
         return json.loads(lines[-1].partition(' ')[2])
 
-    def packet(self, sequence=1, flags=3, x=.25, force=.7):
-        return module.PACKET.pack(b'QPTP', 1, 64, sequence, 100, flags, x, -.5, force, 50,
+    def packet(self, sequence=1, flags=3, x=.25, force=.7, timestamp=100):
+        return module.PACKET.pack(b'QPTP', 1, 64, sequence, timestamp, flags, x, -.5, force, 50,
                                   1, 0, 0, 0, 0)
+
+    def run_relay(self, native, stream=None, parent_closed=None, connect_check=None, send_check=None):
+        self.relay_activity = io.StringIO()
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+            local = Path(temporary)
+            self.create_addon(local)
+            root = local / 'root'
+            reader = root / 'controller-input' / 'qpro-controller-input'
+            reader.parent.mkdir(parents=True)
+            reader.touch()
+            stop = local / 'stop'
+            self.relay_stop = stop
+            enabled = []
+            def input_enabled(_addon, state, _mode):
+                enabled.append(state)
+                self.relay_enabled = enabled
+            forwards = []
+            def execute(args, **_kwargs):
+                if args[-1] == 'id':
+                    return 'uid=0'
+                if args[-2:] == ['forward', '--list']:
+                    forwards.append(True)
+                    return '' if len(forwards) == 1 else 'quest tcp:27063 tcp:27063'
+                return ''
+            def connect(*_args, **_kwargs):
+                if connect_check:
+                    connect_check()
+                return stream
+            self.relay_commands = []
+            def record_command(args, **kwargs):
+                self.relay_commands.append(args)
+                return execute(args, **kwargs)
+            self.sent_packets = []
+            def send(packet, _destination):
+                self.sent_packets.append(packet)
+                if send_check:
+                    send_check()
+            output = SimpleNamespace(sendto=send, close=lambda: None)
+            with patch.object(module, 'command', side_effect=record_command), \
+                 patch.object(module, 'set_input_enabled', side_effect=input_enabled), \
+                 patch.object(module.subprocess, 'Popen', return_value=native) as launch, \
+                 patch.object(module.socket, 'socket', return_value=output), \
+                 patch.object(module.socket, 'create_connection', side_effect=connect) as socket_connect, \
+                 contextlib.redirect_stdout(self.relay_activity):
+                self.reader_launch = launch
+                self.reader_connect = socket_connect
+                module.relay(root, local, Path('fake-adb'), 'quest', stop, 'trackpad', parent_closed)
+
+    def test_native_readiness_requires_its_exact_flushed_marker(self):
+        process = ReaderProcess('QPTP_PROFILE build=fixture\n'
+                                'QPTP_LISTENING address=127.0.0.1 port=27062 rate=60\n')
+        monitor = module.NativeReaderOutput(process)
+        with contextlib.redirect_stdout(io.StringIO()):
+            monitor.start()
+            self.assertTrue(monitor.closed.wait(1))
+            with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary, \
+                 self.assertRaisesRegex(RuntimeError, 'closed its output before listening'):
+                monitor.wait_listening(Path(temporary) / 'stop', threading.Event(), timeout=.01)
+            monitor.finish()
+        self.assertFalse(monitor.listening.is_set())
+
+    def test_native_output_close_failure_is_recorded_and_always_latched(self):
+        for started in (True, False):
+            with self.subTest(started=started):
+                process = ReaderProcess()
+                process.stdout = CloseFailureOutput('fixture output\n')
+                monitor = module.NativeReaderOutput(process)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    if started:
+                        monitor.start()
+                    monitor.finish()
+                self.assertTrue(monitor.closed.is_set())
+                self.assertEqual(monitor.error, 'fixture close failed')
+                self.assertFalse(monitor.thread.is_alive())
+
+    def test_native_diagnostics_are_bounded_and_include_exit_code(self):
+        process = ReaderProcess('\n'.join(['x' * 2000 for _ in range(30)]) +
+                                '\nQPTP_UNSUPPORTED build=fixture\n', code=3)
+        monitor = module.NativeReaderOutput(process)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            monitor.start()
+            monitor.finish()
+            with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary, \
+                 self.assertRaisesRegex(RuntimeError, 'exit: 3.*QPTP_UNSUPPORTED'):
+                monitor.wait_listening(Path(temporary) / 'stop', threading.Event())
+        diagnostic = json.loads(next(line.partition(' ')[2] for line in output.getvalue().splitlines()
+                                     if line.startswith('CONTROLLER_READER ')))
+        self.assertEqual(diagnostic['exitCode'], 3)
+        self.assertLessEqual(len(diagnostic['diagnostic']), 8 * 1024 + 7 * 3)
+        self.assertEqual(module.failure_reason('CONTROLLER_READER ' + json.dumps(diagnostic)),
+                         diagnostic['message'])
+
+    def test_native_reader_cause_survives_later_cleanup_error(self):
+        output = ('CONTROLLER_READER {"message": "Native diagnostic: QPTP_SOURCE_UNAVAILABLE"}\n'
+                  'CONTROLLER_CLEANUP {"reader": "unconfirmed", "problems": ["fixture cleanup failed"]}\n'
+                  'CONTROLLER_ERROR {"message": "cleanup needs attention"}\n')
+        with self.assertRaisesRegex(RuntimeError, 'cleanup was not confirmed.*QPTP_SOURCE_UNAVAILABLE'):
+            self.run_workers([FakeWorker(output)], hands=False, touchpad=True)
+        self.assertFalse(self.aggregate()['confirmed'])
+
+    def test_relay_waits_for_native_marker_before_connecting_or_enabling(self):
+        output = GatedOutput(first='QPTP_PROFILE build=fixture\n',
+                             final='QPTP_LISTENING address=127.0.0.1 port=27063 rate=60\n')
+        native = ReaderProcess(output)
+        closed = threading.Event()
+        def stop_after_packet():
+            closed.set()
+            return b''
+        stream = RelayStream([self.packet(), stop_after_packet])
+        timer = threading.Timer(.02, output.release.set)
+        self.addCleanup(output.release.set)
+        timer.start()
+        def connect_check():
+            self.assertTrue(output.release.is_set())
+            self.assertNotIn(True, getattr(self, 'relay_enabled', []))
+        self.run_relay(native, stream, parent_closed=closed, connect_check=connect_check)
+        timer.join()
+        self.assertEqual(self.relay_enabled, [True, False])
+        self.assertTrue(native.waited and stream.closed and output.closed)
+        self.assertIn('TOUCHPAD_READY ', self.relay_activity.getvalue())
+        self.assertEqual(self.reader_connect.call_count, 1)
+        self.assertEqual(self.reader_launch.call_args.kwargs['stderr'], module.subprocess.STDOUT)
+        self.assertTrue(self.reader_launch.call_args.kwargs['text'])
+
+    def test_relay_native_build_failure_is_not_retried_or_enabled(self):
+        native = ReaderProcess('QPTP_UNSUPPORTED build=fixture profile=legacy\n', code=3)
+        with self.assertRaisesRegex(RuntimeError, 'exited before listening.*exit: 3.*QPTP_UNSUPPORTED'):
+            self.run_relay(native)
+        self.reader_connect.assert_not_called()
+        self.assertEqual(self.relay_enabled, [False])
+        self.assertTrue(native.waited)
+        self.assertIn('"reader": "stopped"', self.relay_activity.getvalue())
+
+    def test_relay_eof_before_first_packet_never_enables_inputs(self):
+        native = ReaderProcess()
+        with self.assertRaisesRegex(RuntimeError, 'disconnected during tracking.*still running'):
+            self.run_relay(native, RelayStream([b'']))
+        self.assertEqual(self.relay_enabled, [False])
+        self.assertEqual(self.reader_connect.call_count, 1)
+        self.assertIn('QPTP_LISTENING', self.relay_activity.getvalue())
+
+    def test_relay_invalid_first_packet_never_enables_inputs(self):
+        native = ReaderProcess()
+        with self.assertRaisesRegex(ValueError, 'Invalid protocol'):
+            self.run_relay(native, RelayStream([b'x' * module.PACKET.size]))
+        self.assertEqual(self.relay_enabled, [False])
+        self.assertTrue(native.waited)
+
+    def test_relay_neutral_first_packet_does_not_enable_or_send_input(self):
+        native = ReaderProcess()
+        closed = threading.Event()
+        neutral = module.PACKET.pack(b'QPTP', 1, 64, 1, 100, *([0] * 10))
+        def stopped():
+            closed.set()
+            return b''
+        self.run_relay(native, RelayStream([neutral, stopped]), parent_closed=closed)
+        self.assertEqual(self.relay_enabled, [False])
+        self.assertEqual(self.sent_packets, [])
+        self.assertNotIn('TOUCHPAD_READY ', self.relay_activity.getvalue())
+
+    def test_relay_neutral_packets_after_ready_still_clear_input(self):
+        native = ReaderProcess()
+        closed = threading.Event()
+        neutral = module.PACKET.pack(b'QPTP', 1, 64, 2, 101, *([0] * 10))
+        def stopped():
+            closed.set()
+            return b''
+        valid = self.packet()
+        self.run_relay(native, RelayStream([valid, neutral, stopped]), parent_closed=closed)
+        self.assertEqual(self.relay_enabled, [True, False])
+        self.assertEqual(self.sent_packets, [valid, neutral])
+
+    def test_relay_established_disconnect_is_not_reconnected(self):
+        native = ReaderProcess()
+        with self.assertRaisesRegex(RuntimeError, 'disconnected during tracking'):
+            self.run_relay(native, RelayStream([self.packet(), b'']))
+        self.assertEqual(self.relay_enabled, [True, False])
+        self.assertEqual(self.reader_connect.call_count, 1)
+
+    def test_relay_socket_read_error_retains_native_diagnostic(self):
+        native = ReaderProcess()
+        with self.assertRaisesRegex(RuntimeError, 'sensor connection failed: fixture reset.*QPTP_LISTENING'):
+            self.run_relay(native, RelayStream([OSError('fixture reset')]))
+        self.assertEqual(self.relay_enabled, [False])
+        self.assertTrue(native.waited)
+
+    def test_relay_socket_close_failure_still_stops_reader_and_removes_owned_forward(self):
+        native = ReaderProcess()
+        stream = RelayStream([b''])
+        def fail_close():
+            stream.closed = True
+            raise OSError('fixture socket close failed')
+        stream.close = fail_close
+        with self.assertRaisesRegex(RuntimeError,
+            'cleanup needs attention.*socket close failed.*Original failure:.*disconnected'):
+            self.run_relay(native, stream)
+        self.assertTrue(native.waited and native.stdout.closed and stream.closed)
+        self.assertIn(['fake-adb', '-s', 'quest', 'forward', '--remove', 'tcp:27063'], self.relay_commands)
+        self.assertIn('"reader": "unconfirmed"', self.relay_activity.getvalue())
+
+    def test_relay_reader_wait_error_still_removes_owned_forward_and_keeps_cause(self):
+        native = ReaderProcess()
+        def fail_wait(timeout):
+            raise OSError('fixture wait failed')
+        native.wait = fail_wait
+        with self.assertRaisesRegex(RuntimeError, 'cleanup needs attention.*wait failed.*Original failure:.*disconnected'):
+            self.run_relay(native, RelayStream([b'']))
+        self.assertIn(['fake-adb', '-s', 'quest', 'forward', '--remove', 'tcp:27063'], self.relay_commands)
+
+    def test_relay_explicit_stop_during_recv_eof_is_normal_cleanup(self):
+        closed = threading.Event()
+        def stop_during_recv():
+            closed.set()
+            return b''
+        native = ReaderProcess()
+        self.run_relay(native, RelayStream([stop_during_recv]), parent_closed=closed)
+        self.assertEqual(self.relay_enabled, [False])
+        self.assertNotIn('CONTROLLER_READER ', self.relay_activity.getvalue())
+        self.assertTrue(native.waited)
+
+    def test_relay_stop_racing_first_packet_does_not_enable_input(self):
+        closed = threading.Event()
+        def stopped_packet():
+            closed.set()
+            return self.packet()
+        native = ReaderProcess()
+        self.run_relay(native, RelayStream([stopped_packet]), parent_closed=closed)
+        self.assertEqual(self.relay_enabled, [False])
+        self.assertNotIn('TOUCHPAD_READY ', self.relay_activity.getvalue())
+
+    def test_relay_stop_during_validation_does_not_enable_or_send(self):
+        closed = threading.Event()
+        validate = module.validate_packet
+        def stopped_validation(packet, previous):
+            result = validate(packet, previous)
+            closed.set()
+            return result
+        with patch.object(module, 'validate_packet', side_effect=stopped_validation):
+            self.run_relay(ReaderProcess(), RelayStream([self.packet()]), parent_closed=closed)
+        self.assertEqual(self.relay_enabled, [False])
+        self.assertEqual(self.sent_packets, [])
+
+    def test_relay_stop_during_coalesced_packets_does_not_send_the_remainder(self):
+        closed = threading.Event()
+        first = self.packet()
+        second = self.packet(sequence=2, timestamp=101)
+        self.run_relay(ReaderProcess(), RelayStream([first + second]), parent_closed=closed,
+                       send_check=closed.set)
+        self.assertEqual(self.sent_packets, [first])
+        self.assertEqual(self.relay_enabled, [True, False])
+
+    def test_relay_explicit_stop_before_readiness_does_not_connect(self):
+        closed = threading.Event()
+        closed.set()
+        native = ReaderProcess()
+        self.run_relay(native, parent_closed=closed)
+        self.reader_connect.assert_not_called()
+        self.assertEqual(self.relay_enabled, [False])
+        self.assertTrue(native.waited)
+
+    def test_native_readiness_timeout_is_bounded_without_connecting(self):
+        output = GatedOutput(final='QPTP_STOPPED\n')
+        native = ReaderProcess(output)
+        monitor = module.NativeReaderOutput(native)
+        self.addCleanup(output.release.set)
+        with contextlib.redirect_stdout(io.StringIO()):
+            monitor.start()
+            self.assertTrue(output.waiting.wait(1))
+            with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary, \
+                 self.assertRaisesRegex(RuntimeError, 'did not report readiness'):
+                monitor.wait_listening(Path(temporary) / 'stop', threading.Event(), timeout=.01)
+            output.release.set()
+            monitor.finish()
+        self.assertFalse(monitor.listening.is_set())
 
     def test_roundtrip_and_replay(self):
         self.assertEqual(len(self.packet()), 64)
@@ -174,7 +486,8 @@ class ComponentTests(unittest.TestCase):
 
     def test_invalid_packet_never_becomes_input(self):
         for packet in (self.packet(flags=4), self.packet(flags=2), self.packet(x=math.nan),
-                       self.packet(x=1.01), self.packet(force=-.1), b'x' * 64,
+                       self.packet(x=1.01), self.packet(force=-.1), self.packet(sequence=0),
+                       self.packet(timestamp=0), b'x' * 64,
                        self.packet() + b'x', self.packet()[:-1]):
             with self.subTest(packet=packet), self.assertRaises(ValueError):
                 module.validate_packet(packet, 0)

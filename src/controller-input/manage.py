@@ -5,6 +5,7 @@ Importing this module performs no installation, ADB call, or process attachment.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import hashlib
 import json
 import lzma
@@ -68,7 +69,7 @@ def forward_output(output):
 def failure_reason(line):
     stage, _, payload = line.partition(' ')
     if stage not in ('HANDS_CHECK', 'HANDS_FAILED', 'HANDS_INCOMPATIBLE',
-                     'HANDS_STOP_CAUSE', 'HANDS_CLEANUP_FAILED', 'CONTROLLER_ERROR'):
+                     'HANDS_STOP_CAUSE', 'HANDS_CLEANUP_FAILED', 'CONTROLLER_READER', 'CONTROLLER_ERROR'):
         return None
     try:
         result = json.loads(payload)
@@ -82,7 +83,7 @@ def failure_reason(line):
             reasons = [problem for problem in problems if isinstance(problem, str) and problem.strip()]
             return '; '.join(reasons) or None
         return None
-    reason = result.get('message' if stage == 'CONTROLLER_ERROR' else 'error')
+    reason = result.get('message' if stage in ('CONTROLLER_ERROR', 'CONTROLLER_READER') else 'error')
     return reason if isinstance(reason, str) and reason.strip() else None
 
 
@@ -254,7 +255,7 @@ def validate_packet(data: bytes, previous: int):
     if len(data) != PACKET.size:
         raise ValueError('Wrong packet length')
     values = PACKET.unpack(data)
-    if values[:3] != (b'QPTP', 1, 64) or values[3] <= previous:
+    if values[:3] != (b'QPTP', 1, 64) or values[3] == 0 or values[4] == 0 or values[3] <= previous:
         raise ValueError('Invalid protocol or replayed packet')
     for start in (5, 10):
         flags, x, y, force, size = values[start:start + 5]
@@ -286,6 +287,86 @@ def parent_closed_event(watch: bool):
     return closed
 
 
+class NativeReaderOutput:
+    """Drain the foreground reader and retain bounded startup/exit evidence.
+
+    An ADB forward accepting a local socket does not prove the remote server
+    is listening. Only the reader's flushed marker follows its source checks.
+    """
+    def __init__(self, process):
+        self.process = process
+        self.listening = threading.Event()
+        self.closed = threading.Event()
+        self.error = None
+        self._lines = deque(maxlen=8)
+        self._lock = threading.Lock()
+        self.thread = threading.Thread(target=self._read, daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def _read(self):
+        try:
+            for raw in self.process.stdout:
+                line = raw.rstrip('\r\n')
+                with self._lock:
+                    self._lines.append(line[-1024:])
+                forward_output(line)
+                if line == 'QPTP_LISTENING address=127.0.0.1 port=27063 rate=60':
+                    self.listening.set()
+        except (OSError, ValueError) as error:
+            self.error = str(error)
+        finally:
+            self._close_output()
+
+    def _close_output(self):
+        try:
+            self.process.stdout.close()
+        except (OSError, ValueError) as error:
+            self.error = str(error)
+        finally:
+            self.closed.set()
+
+    def finish(self):
+        if self.thread.ident is not None:
+            self.thread.join(timeout=1)
+        else:
+            self._close_output()
+
+    def failure(self, message):
+        code = self.process.poll()
+        if code is not None:
+            self.finish()
+        with self._lock:
+            detail = ' | '.join(self._lines)
+        code_text = str(code) if code is not None else 'still running'
+        message = (message + ' Reader/ADB exit: ' + code_text + '.' +
+                   (' Native diagnostic: ' + detail if detail else '') +
+                   (' Output read failed: ' + self.error if self.error else '') +
+                   ' Thumb-rest input is disabled; check the reader diagnostic before retrying.')
+        report('CONTROLLER_READER', phase='failed', exitCode=code,
+               listening=self.listening.is_set(), diagnostic=detail,
+               outputError=self.error, message=message)
+        return RuntimeError(message)
+
+    def wait_listening(self, stop_file, parent_closed, timeout=12):
+        deadline = time.monotonic() + timeout
+        while not stop_file.exists() and not parent_closed.is_set():
+            if self.error:
+                raise self.failure('The headset sensor reader output could not be read.')
+            if self.process.poll() is not None:
+                raise self.failure('The headset sensor reader exited before listening.')
+            if self.listening.is_set():
+                return True
+            if self.closed.is_set():
+                raise self.failure('The headset sensor reader closed its output before listening.')
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise self.failure('The headset sensor reader did not report readiness within 12 seconds.')
+            self.listening.wait(min(.1, remaining))
+        return False
+
+
 def relay(root: Path, local: Path, adb: Path, target: str, stop_file: Path, mode: str, parent_closed=None):
     parent_closed = parent_closed or threading.Event()
     _, addon = managed_paths(local)
@@ -305,6 +386,7 @@ def relay(root: Path, local: Path, adb: Path, target: str, stop_file: Path, mode
     process = None
     stream = None
     output = None
+    reader_output = None
     forwarded = False
     try:
         command(base + ['forward', '--no-rebind', 'tcp:27063', 'tcp:27063'])
@@ -312,7 +394,13 @@ def relay(root: Path, local: Path, adb: Path, target: str, stop_file: Path, mode
         output = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         command(base + ['shell', 'rm', '-f', REMOTE_STOP])
         process = subprocess.Popen(base + ['shell', 'su', '-c', shlex.quote(READER_PATH + ' --profile ' + PROFILE +
-                                          ' --port 27063 --rate 60 --stop-file ' + REMOTE_STOP)], creationflags=NO_WINDOW)
+                                          ' --port 27063 --rate 60 --stop-file ' + REMOTE_STOP)],
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   text=True, bufsize=1, creationflags=NO_WINDOW)
+        reader_output = NativeReaderOutput(process)
+        reader_output.start()
+        if not reader_output.wait_listening(stop_file, parent_closed):
+            return
         deadline = time.monotonic() + 12
         while not stop_file.exists() and not parent_closed.is_set() and time.monotonic() < deadline:
             try:
@@ -320,12 +408,14 @@ def relay(root: Path, local: Path, adb: Path, target: str, stop_file: Path, mode
                 break
             except OSError:
                 if process.poll() is not None:
-                    raise RuntimeError('The headset sensor reader exited before connecting.')
+                    raise reader_output.failure('The headset sensor reader exited before connecting.')
                 time.sleep(.1)
         if not stream:
-            raise RuntimeError('The thumb-rest reader did not connect. No controller input was enabled.')
+            if stop_file.exists() or parent_closed.is_set():
+                return
+            raise reader_output.failure('The thumb-rest reader did not connect within 12 seconds.')
         stream.settimeout(.25)
-        set_input_enabled(addon, True, mode)
+        enabled = False
         previous = -1
         buffer = bytearray()
         ready = False
@@ -334,32 +424,63 @@ def relay(root: Path, local: Path, adb: Path, target: str, stop_file: Path, mode
             try:
                 block = stream.recv(4096)
             except socket.timeout:
+                if stop_file.exists() or parent_closed.is_set():
+                    break
+                if process.poll() is not None:
+                    raise reader_output.failure('The headset sensor reader exited during tracking.')
                 if time.monotonic() - last_valid > 2:
-                    raise RuntimeError('Thumb-rest sensor feed stopped; custom input is being disabled.')
+                    raise reader_output.failure('The thumb-rest sensor feed stopped for more than two seconds.')
                 continue
+            except OSError as error:
+                if stop_file.exists() or parent_closed.is_set():
+                    break
+                raise reader_output.failure('The headset sensor connection failed: ' + str(error)) from error
+            if stop_file.exists() or parent_closed.is_set():
+                break
             if not block:
-                raise RuntimeError('Headset sensor reader disconnected.')
+                raise reader_output.failure('The headset sensor reader disconnected during tracking.')
             buffer.extend(block)
             while len(buffer) >= PACKET.size:
+                if stop_file.exists() or parent_closed.is_set():
+                    break
                 packet = bytes(buffer[:PACKET.size])
                 del buffer[:PACKET.size]
                 previous = validate_packet(packet, previous)
-                output.sendto(packet, ('127.0.0.1', 27064))
-                last_valid = time.monotonic()
+                if stop_file.exists() or parent_closed.is_set():
+                    break
                 fields = PACKET.unpack(packet)
+                last_valid = time.monotonic()
+                if not enabled:
+                    # Neither a listening marker nor a local forward alone is
+                    # input data. Require a fresh side before enabling input;
+                    # later neutral packets still clear an active controller.
+                    if not (fields[5] & 1 or fields[10] & 1):
+                        continue
+                    set_input_enabled(addon, True, mode)
+                    enabled = True
+                if stop_file.exists() or parent_closed.is_set():
+                    break
+                output.sendto(packet, ('127.0.0.1', 27064))
                 if not ready and (fields[5] & 1 or fields[10] & 1):
                     report('TOUCHPAD_READY', protocol='QPTP-v1', mode=mode)
                     ready = True
     finally:
+        original_error = sys.exc_info()[1]
         failures = []
         try:
             set_input_enabled(addon, False, mode)
         except (OSError, ValueError, RuntimeError) as error:
             failures.append(str(error))
         if stream:
-            stream.close()
+            try:
+                stream.close()
+            except OSError as error:
+                failures.append('Reader socket close: ' + str(error))
         if output:
-            output.close()
+            try:
+                output.close()
+            except OSError as error:
+                failures.append('Controller output socket close: ' + str(error))
         if process:
             try:
                 command(base + ['shell', 'touch', REMOTE_STOP], timeout=8)
@@ -376,6 +497,14 @@ def relay(root: Path, local: Path, adb: Path, target: str, stop_file: Path, mode
                 except (OSError, subprocess.SubprocessError) as error:
                     failures.append(str(error))
                 failures.append('The reader exit was not confirmed; check the headset before restarting.')
+            except (OSError, subprocess.SubprocessError) as error:
+                failures.append('Reader wait: ' + str(error))
+        if reader_output:
+            reader_output.finish()
+            if reader_output.thread.is_alive():
+                failures.append('The reader diagnostic stream did not close after cleanup.')
+            if reader_output.error:
+                failures.append('Reader diagnostic output: ' + reader_output.error)
         try:
             # Remove only the forward we created for this selected target.
             forwards = command([adb, 'forward', '--list'])
@@ -385,7 +514,8 @@ def relay(root: Path, local: Path, adb: Path, target: str, stop_file: Path, mode
             failures.append(str(error))
         if failures:
             report('CONTROLLER_CLEANUP', reader='unconfirmed', problems=failures)
-            raise RuntimeError('Controller cleanup needs attention: ' + '; '.join(failures))
+            raise RuntimeError('Controller cleanup needs attention: ' + '; '.join(failures) +
+                               (' Original failure: ' + str(original_error) if original_error else ''))
         report('CONTROLLER_CLEANUP', reader='stopped', inputs='disabled')
 
 
