@@ -130,13 +130,23 @@ internal sealed class DarkButton : Button
     private int _outlineWidth = 1;
     private HubIcon _icon;
     [DefaultValue(HubIcon.None)]
-    public HubIcon Icon { get => _icon; set { _icon = value; Invalidate(); } }
+    public HubIcon Icon { get => _icon; set { if (_icon == value) return; _icon = value; Invalidate(); } }
     [DefaultValue(false)]
-    public bool Emphasized { get => _emphasized; set { _emphasized = value; Invalidate(); } }
+    public bool Emphasized { get => _emphasized; set { if (_emphasized == value) return; _emphasized = value; Invalidate(); } }
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden), Browsable(false)]
-    public Color OutlineColor { get => _outlineColor; set { _outlineColor = value; Invalidate(); } }
+    public Color OutlineColor { get => _outlineColor; set { if (_outlineColor == value) return; _outlineColor = value; Invalidate(); } }
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden), Browsable(false)]
-    public int OutlineWidth { get => _outlineWidth; set { _outlineWidth = Math.Clamp(value, 1, 4); Invalidate(); } }
+    public int OutlineWidth
+    {
+        get => _outlineWidth;
+        set
+        {
+            var width = Math.Clamp(value, 1, 4);
+            if (_outlineWidth == width) return;
+            _outlineWidth = width;
+            Invalidate();
+        }
+    }
 
     public DarkButton()
     {

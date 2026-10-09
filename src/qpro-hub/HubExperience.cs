@@ -215,9 +215,7 @@ internal sealed partial class HubForm
         _compatibilityNext.Text = report.NextStep;
         // A report is an observation, never permission to bypass the launcher's
         // exact engine, stock model and recovery checks on the next session.
-        SetStatus(_gazeStatus, report.HasActiveMagiskGaze ? StatusKind.Good : StatusKind.Warning,
-            report.HasActiveMagiskGaze ? "Magisk gaze detected · leave Hub gaze off" :
-                report.CanPrepareGaze ? "Hub method checked · preparation optional" : "Hub method unavailable · other features separate");
+        RememberGazeCompatibility(report);
         SetActionFeedback("Headset compatibility checked", report.Summary, report.NextStep,
             severity: report.NeedsAttention ? ActivitySeverity.Warning : ActivitySeverity.Normal);
     }

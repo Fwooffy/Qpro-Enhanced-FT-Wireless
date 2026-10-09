@@ -1004,6 +1004,7 @@ internal sealed partial class HubForm
         try
         {
             var succeeded = await RunUtilityAsync("Qpro gaze recovery", "native-eye-local-branch-test.ps1", "-RestoreIfActive");
+            CompleteGazeStatusRecovery(succeeded);
             _runStatus.Text = succeeded ? "● Idle — Qpro gaze recovery checked" : "● Gaze recovery unconfirmed — check Activity";
             _runStatus.ForeColor = succeeded ? Good : Warning;
         }
@@ -1017,6 +1018,7 @@ internal sealed partial class HubForm
         _gazeInspectionResult = null;
         var succeeded = await RunUtilityAsync("Gaze setup check", "native-eye-local-branch-test.ps1", "-InspectOnly");
         var result = _gazeInspectionResult;
+        if (succeeded && result is not null) RememberGazeInspection(result);
         if (succeeded && result is { HasActiveMagiskGaze: true, NeedsAttention: false })
             SetActionFeedback("Magisk gaze module detected", "The optional gaze check found an active Magisk gaze module.",
                 "Leave Independent Eye Gaze off in the Hub. Skip Check gaze setup and Prepare gaze; choose your other features on Live tracking.",
@@ -1037,6 +1039,7 @@ internal sealed partial class HubForm
         _legacyGazeResetConfirmed = false;
         var succeeded = await RunUtilityAsync("Legacy gaze reset", "native-eye-local-branch-test.ps1", "-ResetLegacySelection", "-ConfirmLegacyReset");
         if (succeeded) _gaze.Checked = false;
+        CompleteGazeStatusRecovery(succeeded);
         _runStatus.Text = succeeded ? "● Normal gaze selection checked" : "● Legacy gaze reset unconfirmed — check Activity";
         _runStatus.ForeColor = succeeded ? Good : Warning;
     }

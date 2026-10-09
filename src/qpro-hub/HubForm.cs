@@ -174,6 +174,7 @@ internal sealed partial class HubForm : Form
             if (_previewOnly) return;
             try { _environment.SelectIndependentGaze(_gaze.Checked); }
             catch (Exception error) { AppendLog("Could not save independent gaze preference: " + error.Message); }
+            UpdateGazeSetupStatus();
             UpdateControlState();
         };
         _tongue.CheckedChanged += (_, _) => UpdateControlState();
@@ -325,7 +326,7 @@ internal sealed partial class HubForm : Form
         timer.Tick += async (_, _) => await RefreshStatusAsync();
         if (!previewOnly) timer.Start();
         var pulseTimer = new System.Windows.Forms.Timer { Interval = 550 };
-        pulseTimer.Tick += (_, _) => { _setupPulseOn = !_setupPulseOn; UpdateSetupStepStyles(); };
+        pulseTimer.Tick += (_, _) => PulseSetupAttention();
         if (!previewOnly) pulseTimer.Start();
         var setupProgressTimer = new System.Windows.Forms.Timer { Interval = 45 };
         setupProgressTimer.Tick += (_, _) => { if (_setupProgress.IsIndeterminate) _setupProgress.AdvanceAnimation(); };

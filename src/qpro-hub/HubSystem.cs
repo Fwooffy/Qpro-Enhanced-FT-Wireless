@@ -17,6 +17,10 @@ internal sealed partial class HubForm
 {
     private string? _lastModuleInspectionDetail;
     private string? _lastUsbFailureDetail;
+    private readonly Dictionary<DarkButton, (bool Complete, bool Attention)> _setupButtonStyles = [];
+    private sealed record GazeStatusObservation(HubCompatibilityReport? Compatibility, HubGazeInspection? Inspection,
+        string? Target, bool Wireless);
+    private GazeStatusObservation? _lastGazeStatusObservation;
 
     private ProcessStartInfo PowerShellStart(string script, IEnumerable<string> args, bool hidden)
         => _scripts.Create(script, args, hidden);
@@ -64,8 +68,6 @@ internal sealed partial class HubForm
                 AppendLog("[Qpro module check] " + moduleDetail);
             }
             SetStatus(_runtimeStatus, BackendReady() ? StatusKind.Good : StatusKind.Warning, BackendReady() ? "Ready" : "Setup needed");
-            SetStatus(_gazeStatus, _gaze.Checked ? StatusKind.Warning : StatusKind.Good,
-                !_gaze.Checked ? "Hub gaze off · optional" : EyeModelReady() ? "Prepared · validated at start" : "Hub gaze needs preparation");
             UpdateSetupStepStyles();
             UpdateControlState();
         }
@@ -86,10 +88,7 @@ internal sealed partial class HubForm
         _setupBridgeStatus.Text = ready[1] ? "● Complete" : next == 1 ? "● Next step" : "○ Waiting";
         _setupBridgeStatus.ForeColor = ready[1] ? Good : next == 1 ? Warning : Muted;
         _uninstallBridgeButton.Enabled = !_setupActionRunning && BridgeUninstallAvailable();
-        StyleSetupStep(_setupGazeButton, _setupGazeStatus, "Prepare gaze", EyeModelReady(), false);
-        _setupGazeStatus.Text = !_gaze.Checked ? "Optional · skip for Magisk gaze" :
-            EyeModelReady() ? "Prepared · validated at start" : "Prepare only for Hub gaze";
-        _setupGazeStatus.ForeColor = !_gaze.Checked ? Muted : EyeModelReady() ? Good : Warning;
+        UpdateGazeSetupStatus();
         var installedVersion = LatestRocmInstalledVersion();
         var latestReady = installedVersion is not null;
         var offeredVersionReady = installedVersion?.StartsWith(HubRocmRuntime.InstallVersion + ".", StringComparison.Ordinal) == true;
@@ -107,9 +106,81 @@ internal sealed partial class HubForm
         _setupAmdButton.Text = offeredVersionReady ? $"Repair ROCm {HubRocmRuntime.InstallVersion}" :
             latestReady || legacyReady ? $"Upgrade to ROCm {HubRocmRuntime.InstallVersion}" :
             latestEnvironmentExists ? $"Verify / repair ROCm {HubRocmRuntime.InstallVersion}" : $"Install ROCm {HubRocmRuntime.InstallVersion}";
-        _setupAmdButton.OutlineColor = offeredVersionReady ? Good : AmdInstallEligible && _setupPulseOn ? Accent : Border;
-        _setupAmdButton.OutlineWidth = offeredVersionReady || AmdInstallEligible && _setupPulseOn ? 2 : 1;
+        TrackSetupButtonBorder(_setupAmdButton, offeredVersionReady, AmdInstallEligible);
         SetSetupButtonsEnabled(true);
+    }
+
+    private void RememberGazeCompatibility(HubCompatibilityReport report)
+    {
+        _lastGazeStatusObservation = new(report, null, GetConfiguredAdbTarget(), _environment.WirelessSelected);
+        UpdateGazeSetupStatus();
+    }
+
+    private void RememberGazeInspection(HubGazeInspection report)
+    {
+        _lastGazeStatusObservation = new(null, report, GetConfiguredAdbTarget(), _environment.WirelessSelected);
+        UpdateGazeSetupStatus();
+    }
+
+    private void CompleteGazeStatusRecovery(bool confirmed)
+    {
+        if (!confirmed) return;
+        // A confirmed recovery changes the state described by the last check.
+        // Clear that observation without claiming a fresh stock-tracking check.
+        _lastGazeStatusObservation = null;
+        UpdateGazeSetupStatus();
+    }
+
+    private void UpdateGazeSetupStatus()
+    {
+        var observed = _lastGazeStatusObservation;
+        var target = GetConfiguredAdbTarget();
+        if (observed is not null && (observed.Wireless != _environment.WirelessSelected ||
+            target is not null && observed.Target != target))
+            observed = _lastGazeStatusObservation = null;
+        // Keep the last completed observation during unrelated refreshes and
+        // pending checks. It describes that check, never runtime authorization.
+        var magisk = observed?.Compatibility?.HasActiveMagiskGaze == true || observed?.Inspection?.HasActiveMagiskGaze == true;
+        var needsRecovery = observed?.Inspection?.NeedsAttention == true;
+        var incompatible = observed?.Compatibility is { HasActiveMagiskGaze: false, CanPrepareGaze: false };
+        var prepared = EyeModelReady();
+        string setupText, statusText;
+        Color setupColor;
+        StatusKind status;
+        if (needsRecovery)
+        {
+            setupText = "Last gaze check needs attention · see Activity";
+            statusText = "Recovery or gaze selection needs attention";
+            setupColor = Warning; status = StatusKind.Warning;
+        }
+        else if (magisk)
+        {
+            setupText = _gaze.Checked ? "Magisk gaze detected · turn Hub gaze off" : "Last check: Magisk gaze · skip Hub setup";
+            statusText = _gaze.Checked ? "Magisk gaze active · turn Hub gaze off" : "Magisk gaze · last check";
+            setupColor = _gaze.Checked ? Warning : Muted;
+            status = _gaze.Checked ? StatusKind.Warning : StatusKind.Good;
+        }
+        else if (incompatible)
+        {
+            setupText = "Hub gaze unavailable · see compatibility details";
+            statusText = "Hub method unavailable · other features separate";
+            setupColor = Warning; status = StatusKind.Warning;
+        }
+        else
+        {
+            setupText = !_gaze.Checked ? "Optional · skip for Magisk gaze" :
+                prepared ? "Prepared · validated at start" : "Prepare only for Hub gaze";
+            statusText = !_gaze.Checked ? "Hub gaze off · optional" :
+                prepared ? "Prepared · validated at start" : "Hub gaze needs preparation";
+            setupColor = !_gaze.Checked ? Muted : prepared ? Good : Warning;
+            status = _gaze.Checked ? StatusKind.Warning : StatusKind.Good;
+        }
+        // Do not write Complete/Waiting before the final optional-gaze message.
+        // Auto-sized labels would otherwise relayout twice on every pulse.
+        StyleSetupButton(_setupGazeButton, "Prepare gaze", prepared && !magisk && !needsRecovery && !incompatible, false);
+        if (_setupGazeStatus.Text != setupText) _setupGazeStatus.Text = setupText;
+        if (_setupGazeStatus.ForeColor != setupColor) _setupGazeStatus.ForeColor = setupColor;
+        SetStatus(_gazeStatus, status, statusText);
     }
 
     private void StyleSetupStep(DarkButton button, Label status, string label, bool complete, bool attention)
@@ -121,10 +192,34 @@ internal sealed partial class HubForm
 
     private void StyleSetupButton(DarkButton button, string label, bool complete, bool attention)
     {
-        button.Text = complete ? "✓  " + label : label;
-        button.OutlineColor = complete ? Good : attention && _setupPulseOn ? Accent : Border;
-        button.OutlineWidth = complete || attention && _setupPulseOn ? 2 : 1;
-        button.Invalidate();
+        var text = complete ? "✓  " + label : label;
+        if (button.Text != text) button.Text = text;
+        TrackSetupButtonBorder(button, complete, attention);
+    }
+
+    private void TrackSetupButtonBorder(DarkButton button, bool complete, bool attention)
+    {
+        _setupButtonStyles[button] = (complete, attention);
+        ApplySetupButtonBorder(button, complete, attention);
+    }
+
+    private void ApplySetupButtonBorder(DarkButton button, bool complete, bool attention)
+    {
+        var color = complete ? Good : attention && _setupPulseOn ? Accent : Border;
+        var width = complete || attention && _setupPulseOn ? 2 : 1;
+        if (button.OutlineColor != color) button.OutlineColor = color;
+        if (button.OutlineWidth != width) button.OutlineWidth = width;
+    }
+
+    private void PulseSetupAttention()
+    {
+        // Animation uses the readiness snapshot. It performs no module hashes,
+        // runtime probes, ROCm inventory reads, status writes or layout changes.
+        var active = _setupButtonStyles.Where(item => !item.Value.Complete && item.Value.Attention &&
+            item.Key.Visible && item.Key.Enabled).ToArray();
+        if (active.Length == 0) { _setupPulseOn = false; return; }
+        _setupPulseOn = !_setupPulseOn;
+        foreach (var item in active) ApplySetupButtonBorder(item.Key, false, true);
     }
 
     private void UpdateModuleInstallButtonState(bool enabled)

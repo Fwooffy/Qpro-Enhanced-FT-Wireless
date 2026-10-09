@@ -50,6 +50,83 @@ internal static class LifecycleTests
         Check(compatibility.Text.Contains("Magisk") && compatibility.Text.Contains("skipped"),
             "Magisk compatibility result explicitly skips Hub gaze setup");
         Check(setupGaze.Text.Contains("Skip Hub gaze setup"), "Magisk setup preview does not request a gaze check");
+        // Exercise the actual status presenter and animation separately. A pulse
+        // must not rewrite labels or perform the full setup readiness pass.
+        Call("UpdateGazeSetupStatus");
+        var confirmedGazeText = setupGaze.Text;
+        var gazeTextChanges = 0;
+        setupGaze.TextChanged += (_, _) => gazeTextChanges++;
+        using var pulseButton = new DarkButton { Visible = true, Enabled = true };
+        Call("StyleSetupButton", pulseButton, "Offline pending step", false, true);
+        var pulseTextChanges = 0;
+        pulseButton.TextChanged += (_, _) => pulseTextChanges++;
+        for (var pulse = 0; pulse < 8; pulse++)
+        {
+            Call("PulseSetupAttention");
+            Call("UpdateGazeSetupStatus");
+        }
+        Check(gazeTextChanges == 0 && setupGaze.Text == confirmedGazeText,
+            "repeated gaze updates and pulses retain one Magisk status without Complete/Waiting transitions");
+        Check(pulseTextChanges == 0, "setup animation changes borders without rewriting button captions");
+        var gazeStatus = (Label)typeof(HubForm).GetField("_gazeStatus", Private)!.GetValue(form)!;
+        Set("_compatibilityChecking", true);
+        typeof(HubForm).GetField("_gazeInspectionResult", Private)!.SetValue(form, null);
+        Call("UpdateGazeSetupStatus");
+        Check(setupGaze.Text == confirmedGazeText && gazeTextChanges == 0,
+            "a pending check retains the last completed Magisk observation");
+        Set("_compatibilityChecking", false);
+        gaze.Checked = true;
+        Call("UpdateGazeSetupStatus");
+        Check(setupGaze.Text.Contains("turn Hub gaze off"), "selecting Hub gaze still warns about the Magisk conflict");
+        gaze.Checked = false;
+        Call("UpdateGazeSetupStatus");
+        Check(setupGaze.Text == confirmedGazeText, "unchecking Hub gaze restores the stable Magisk status");
+        form.ApplyPreviewScenario("unsupported", "VirtualDesktop");
+        Call("UpdateGazeSetupStatus");
+        Check(setupGaze.Text.Contains("unavailable") && gazeStatus.Text.Contains("unavailable"),
+            "an unsupported Hub engine remains unavailable during status updates");
+
+        // Synthetic verified targets exercise display scoping only. No probe or
+        // headset action runs, and no serial is written to a user config file.
+        var hubEnvironment = (HubEnvironment)typeof(HubForm).GetField("_environment", Private)!.GetValue(form)!;
+        var usb = (HubUsbConnection)typeof(HubEnvironment).GetField("_usbConnection", Private)!.GetValue(hubEnvironment)!;
+        var verifiedSerial = typeof(HubUsbConnection).GetField("_verifiedSerial", Private)!;
+        verifiedSerial.SetValue(usb, "synthetic-gaze-usb-a");
+        Call("RememberGazeInspection", new HubGazeInspection("fixture-build", "false", false,
+            ["fixture-independent-gaze"], []));
+        var scopedMagiskText = setupGaze.Text;
+        verifiedSerial.SetValue(usb, null);
+        Call("UpdateGazeSetupStatus");
+        Check(setupGaze.Text == scopedMagiskText && setupGaze.Text.Contains("Last check"),
+            "a transient USB probe gap retains the labeled last check");
+        verifiedSerial.SetValue(usb, "synthetic-gaze-usb-b");
+        Call("UpdateGazeSetupStatus");
+        Check(!setupGaze.Text.Contains("Last check"), "a different USB headset cannot inherit confirmed Magisk status");
+        verifiedSerial.SetValue(usb, null);
+        Call("RememberGazeInspection", new HubGazeInspection("fixture-build", "false", false,
+            ["fixture-independent-gaze"], []));
+        verifiedSerial.SetValue(usb, "synthetic-gaze-usb-c");
+        Call("UpdateGazeSetupStatus");
+        Check(!setupGaze.Text.Contains("Last check"), "an unscoped observation does not transfer to a newly verified headset");
+        Call("RememberGazeInspection", new HubGazeInspection("fixture-build", "false", false,
+            ["fixture-independent-gaze"], []));
+        hubEnvironment.SelectConnection(true);
+        Call("UpdateGazeSetupStatus");
+        Check(!setupGaze.Text.Contains("Last check"), "changing USB to wireless clears the prior gaze observation");
+        hubEnvironment.SelectConnection(false);
+        Call("RememberGazeInspection", new HubGazeInspection("fixture-build", "true", true, [], []));
+        Check(setupGaze.Text.Contains("needs attention"), "a recorded Qpro session retains its recovery warning");
+        Call("CompleteGazeStatusRecovery", false);
+        Check(setupGaze.Text.Contains("needs attention"), "an unconfirmed recovery cannot clear the last gaze warning");
+        Call("CompleteGazeStatusRecovery", true);
+        Check(!setupGaze.Text.Contains("needs attention") && gazeStatus.Text.Contains("Hub gaze off") &&
+            !gazeStatus.Text.Contains("stock", StringComparison.OrdinalIgnoreCase),
+            "confirmed recovery clears stale inspection without claiming a fresh stock-tracking check");
+        pulseButton.Visible = false;
+        var hiddenOutline = pulseButton.OutlineColor;
+        Call("PulseSetupAttention");
+        Check(pulseButton.OutlineColor == hiddenOutline, "hidden setup actions are not animated");
+        form.ApplyPreviewScenario("magisk", "VirtualDesktop");
         Check(!Pending(), "idle permits shutdown");
         foreach (var state in new[] { "_starting", "_stopping" })
         {
