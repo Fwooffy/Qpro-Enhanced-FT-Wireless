@@ -15,6 +15,7 @@ import numpy as np
 from capture_format import inspect_capture, scan_stereo_mouth_stills
 from cheek_still_capture import CHEEK_TARGET_NAMES, LOWER_FACE_SESSION_TYPES
 from dataset_inspect import load_labels
+from label_capture import NATIVE_TONGUE_MAPPING, TRACKING_SOURCES, native_tongue_out
 from prepare_training import nearest_label_indices
 from prepare_tongue_training import FACE_HEIGHT
 from prepare_cheek_stills import validate_cheek_session
@@ -91,6 +92,8 @@ def main() -> int:
     parser.add_argument("--session")
     parser.add_argument("--output")
     parser.add_argument("--size", type=int, default=224)
+    parser.add_argument("--tracking-source", choices=TRACKING_SOURCES,
+                        help="App used to record a legacy sidecar without source identity")
     arguments = parser.parse_args()
     if not 128 <= arguments.size <= 320:
         parser.error("--size must be between 128 and 320")
@@ -167,6 +170,14 @@ def main() -> int:
             f"Worst tongue still/factory-label alignment is {float(np.max(tongue_errors_ms)):.2f} ms"
         )
 
+    # Validate the source-dependent scalar before replacing any cache arrays.
+    native_references = np.asarray([
+        (native_tongue_out(labels[int(index)], names,
+                           tracking_source=arguments.tracking_source) or 0.0)
+        if not cheek_frames[frame] else 0.0
+        for frame, index in enumerate(label_indices)
+    ], dtype=np.float32)
+
     output.mkdir(parents=True, exist_ok=True)
     shape = (frame_count, 2, arguments.size, arguments.size)
     images = np.lib.format.open_memmap(
@@ -179,7 +190,6 @@ def main() -> int:
     trainable = np.ones(frame_count, dtype=np.bool_)
     cheek_targets = np.zeros((frame_count, len(CHEEK_TARGET_NAMES)), dtype=np.float32) if lower_face else None
     cheek_trainable = np.zeros(frame_count, dtype=np.bool_) if lower_face else None
-    tongue_index = names.index("TongueOut")
 
     started = time.monotonic()
     with capture_path.open("rb", buffering=4 * 1024 * 1024) as capture:
@@ -203,7 +213,7 @@ def main() -> int:
                 targets[index, target_index] = float(sample.get("targets", {}).get(name, 0.0))
             factory = np.asarray(labels[int(label_index)]["values"], dtype=np.float32)
             native_expressions[index] = factory
-            native[index] = factory[tongue_index]
+            native[index] = native_references[index]
             step_ids[index] = int(sample["promptIndex"])
             permitted = not bool(sample.get("excluded", False))
             trainable[index] = permitted and not cheek_frames[index]
@@ -225,7 +235,9 @@ def main() -> int:
         np.save(output / "cheek_targets.npy", cheek_targets)
         np.save(output / "cheek_trainable.npy", cheek_trainable)
     metadata = {
-        "version": 2,
+        "version": 3,
+        "nativeTongueMapping": NATIVE_TONGUE_MAPPING,
+        "nativeTongueSourceOverride": arguments.tracking_source,
         "datasetType": "manual-stereo-stills",
         "sessionType": session.get("sessionType"),
         "complete": bool(session.get("completed")),

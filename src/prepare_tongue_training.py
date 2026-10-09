@@ -17,6 +17,10 @@ from calibration import CalibrationStep, target_activation
 from calibration_inspect import step_intervals
 from capture_format import FILE_HEADER, FILE_MAGIC, FRAME_HEADER, FRAME_MAGIC, TRANSPORT_HEADER
 from dataset_inspect import load_labels
+from label_capture import (
+    NATIVE_TONGUE_MAPPING, TRACKING_SOURCES,
+    native_tongue_out as read_native_tongue_out,
+)
 from prepare_training import nearest_label_indices
 from tongue_calibration import TONGUE_TARGET_NAMES
 
@@ -196,6 +200,8 @@ def main() -> int:
     parser.add_argument("--label-overrides")
     parser.add_argument("--output")
     parser.add_argument("--size", type=int, default=160)
+    parser.add_argument("--tracking-source", choices=TRACKING_SOURCES,
+                        help="App used to record a legacy sidecar without source identity")
     arguments = parser.parse_args()
     if not 96 <= arguments.size <= 256:
         parser.error("--size must be between 96 and 256")
@@ -228,9 +234,13 @@ def main() -> int:
     names, labels = load_labels(label_path)
     if "TongueOut" not in names:
         raise ValueError("Factory label stream has no TongueOut channel")
-    tongue_out_index = names.index("TongueOut")
     label_times = [int(value["arrivalMonotonicNs"]) for value in labels]
     label_indices, errors_ms = nearest_label_indices(frame_times, label_times)
+    native_references = np.asarray([
+        read_native_tongue_out(labels[int(index)], names,
+                              tracking_source=arguments.tracking_source) or 0.0
+        for index in label_indices
+    ], dtype=np.float32)
     if float(np.max(errors_ms)) > 20.0:
         raise ValueError(f"Worst camera/label alignment is {float(np.max(errors_ms)):.2f} ms")
 
@@ -277,7 +287,7 @@ def main() -> int:
             )
             factory = np.asarray(labels[int(label_index)]["values"], dtype=np.float32)
             native_expressions[index] = factory
-            native_tongue_out[index] = factory[tongue_out_index]
+            native_tongue_out[index] = native_references[index]
             if (index + 1) % 500 == 0 or index + 1 == frame_count:
                 rate = (index + 1) / max(0.001, time.monotonic() - started)
                 print(f"Prepared {index + 1}/{frame_count} frames ({rate:.1f}/s)")
@@ -285,7 +295,9 @@ def main() -> int:
     for array in (images, targets, native_tongue_out, native_expressions):
         array.flush()
     metadata = {
-        "version": 1,
+        "version": 2,
+        "nativeTongueMapping": NATIVE_TONGUE_MAPPING,
+        "nativeTongueSourceOverride": arguments.tracking_source,
         "complete": True,
         "capture": str(capture_path),
         "labels": str(label_path),

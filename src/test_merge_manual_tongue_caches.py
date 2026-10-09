@@ -8,6 +8,7 @@ from unittest import mock
 import numpy as np
 
 import merge_manual_tongue_caches
+from label_capture import NATIVE_TONGUE_MAPPING
 
 
 class MergeManualTongueCacheTests(unittest.TestCase):
@@ -17,6 +18,7 @@ class MergeManualTongueCacheTests(unittest.TestCase):
         frames = len(trainable)
         metadata = {
             "datasetType": "manual-stereo-stills",
+            "nativeTongueMapping": NATIVE_TONGUE_MAPPING,
             "targetNames": ["visibility", "horizontal"],
             "factoryExpressionNames": ["TongueOut"],
         }
@@ -49,6 +51,24 @@ class MergeManualTongueCacheTests(unittest.TestCase):
             self.assertTrue(set(step_ids[:3]).isdisjoint(set(step_ids[3:])))
             self.assertEqual(int(images[0, 0, 0, 0]), 10)
             self.assertEqual(int(images[-1, 0, 0, 0]), 20)
+            metadata = json.loads((output / "metadata.json").read_text())
+            self.assertEqual(metadata["nativeTongueMapping"], NATIVE_TONGUE_MAPPING)
+
+    def test_old_cache_is_rejected_before_output_is_created(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "source", root / "output"
+            self._cache(source, 10, [True, True])
+            metadata_path = source / "metadata.json"
+            metadata = json.loads(metadata_path.read_text())
+            del metadata["nativeTongueMapping"]
+            metadata_path.write_text(json.dumps(metadata))
+            original = metadata_path.read_bytes()
+            with mock.patch.object(sys, "argv", ["merge", str(source), "--output", str(output)]):
+                with self.assertRaisesRegex(ValueError, "Regenerate the cache"):
+                    merge_manual_tongue_caches.main()
+            self.assertFalse(output.exists())
+            self.assertEqual(metadata_path.read_bytes(), original)
 
 
 if __name__ == "__main__":

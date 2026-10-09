@@ -137,7 +137,8 @@ while (!cancellation.IsCancellationRequested)
 
     if (now >= schemaDeadline)
     {
-        Send(udp, new { V = 1, Type = "schema", Names = expressionNames }, jsonOptions);
+        Send(udp, new { V = 1, Type = "schema", Names = expressionNames,
+            TrackingSource = "VirtualDesktop" }, jsonOptions);
         schemaDeadline = now + Stopwatch.Frequency * 2;
     }
 
@@ -151,6 +152,7 @@ while (!cancellation.IsCancellationRequested)
         {
             V = 1,
             Type = "sample",
+            TrackingSource = "VirtualDesktop",
             Sequence = ++sequence,
             Qpc = now,
             QpcFrequency = Stopwatch.Frequency,

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from label_capture import NATIVE_TONGUE_MAPPING, require_current_tongue_cache
 
 
 ARRAY_FILES = (
@@ -27,6 +28,7 @@ def load_cache(path: Path) -> dict[str, object]:
     metadata = json.loads((path / "metadata.json").read_text(encoding="utf-8"))
     if metadata.get("datasetType") != "manual-stereo-stills":
         raise ValueError(f"Not an exact-still tongue cache: {path}")
+    require_current_tongue_cache(metadata)
     values: dict[str, object] = {"path": path, "metadata": metadata}
     for filename in ARRAY_FILES:
         values[filename[:-4]] = np.load(path / filename, mmap_mode="r")
@@ -108,6 +110,7 @@ def main() -> int:
     np.save(output / "trainable.npy", np.ones(total, dtype=np.bool_))
     metadata = {
         "version": 1,
+        "nativeTongueMapping": NATIVE_TONGUE_MAPPING,
         "datasetType": "manual-stereo-stills",
         "sessionType": "merged-personal-corrections-v1",
         "complete": True,

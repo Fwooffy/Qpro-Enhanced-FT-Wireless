@@ -9,10 +9,11 @@ from unittest import mock
 import cv2
 import numpy as np
 import torch
+import test_label_capture
 
 from capture_format import CaptureWriter, TRANSPORT_HEADER
 from developer_tongue_training import (
-    ModelPair, _complete_curriculum, curriculum_issues, evaluate_pair,
+    ModelPair, _check_cache, _complete_curriculum, curriculum_issues, evaluate_pair,
     fresh_output_dir, load_manifest, promotion_gate, refinement_command,
     rebuild_training_cache_from_raw, resize_training_cache, summarize, validate_public_checkpoint_metadata,
     validate_refinement_parent,
@@ -20,6 +21,7 @@ from developer_tongue_training import (
 from tongue_calibration import TONGUE_TARGET_NAMES
 from tongue_still_capture import TONGUE_ARC_PROMPTS, TONGUE_STILL_PROMPTS
 from tongue_image_processing import preprocess_stereo_images
+from label_capture import NATIVE_TONGUE_MAPPING
 from train_tongue_model import StereoTongueModel, parent_checkpoint_metadata
 
 
@@ -73,6 +75,7 @@ class DeveloperTongueTrainingTests(unittest.TestCase):
         }), encoding="utf-8")
         (cache / "metadata.json").write_text(json.dumps({
             "datasetType": "manual-stereo-stills",
+            "nativeTongueMapping": NATIVE_TONGUE_MAPPING,
             "sessionType": "tongue-stereo-stills-v1",
             "complete": True,
             "imageSize": 128,
@@ -93,6 +96,47 @@ class DeveloperTongueTrainingTests(unittest.TestCase):
         np.save(cache / "step_ids.npy", np.asarray([0] * 4 + [1] * 4, np.int16))
         np.save(cache / "trainable.npy", np.ones(8, np.bool_))
         return cache
+
+    def test_source_dependent_scalar_integrity_preserves_raw_factory_values(self):
+        for source, expected in (("VirtualDesktop", 0.15), ("SteamLink", 0.85), (None, 0.85)):
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                cache = self.make_cache(root, "first")
+                labels = root / "first.qplabel.jsonl"
+                names = test_label_capture.NativeTongueLayoutTests.names
+                values = [0.0] * 70
+                values[63], values[68] = 0.15, 0.85
+                records = [json.loads(line) for line in labels.read_text().splitlines()]
+                records[0]["names"] = names
+                for record in records[1:]:
+                    record.update(values=values, faceFlags=3)
+                    if source:
+                        record["trackingSource"] = source
+                labels.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+                metadata_path = cache / "metadata.json"
+                metadata = json.loads(metadata_path.read_text())
+                metadata["factoryExpressionNames"] = names
+                if source is None:
+                    metadata["nativeTongueSourceOverride"] = "SteamLink"
+                metadata_path.write_text(json.dumps(metadata))
+                np.save(cache / "native_expressions.npy", np.tile(np.asarray(values, np.float32), (8, 1)))
+                np.save(cache / "native_tongue_out.npy", np.full(8, expected, np.float32))
+                _check_cache(cache)
+                # The other slot is deliberately different, so a slot68-only
+                # integrity check would reject the valid alternate VD cache.
+                np.save(cache / "native_tongue_out.npy", np.full(8, 1 - expected, np.float32))
+                with self.assertRaisesRegex(ValueError, "differs from the sidecar"):
+                    _check_cache(cache)
+
+    def test_old_mapping_cache_requires_repreparation_before_provenance_check(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = self.make_cache(Path(directory), "first")
+            metadata_path = cache / "metadata.json"
+            metadata = json.loads(metadata_path.read_text())
+            metadata.pop("nativeTongueMapping")
+            metadata_path.write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(ValueError, "Regenerate the cache"):
+                _check_cache(cache)
 
     def test_manifest_requires_explicit_consent_and_distinct_captures(self):
         with tempfile.TemporaryDirectory() as directory:

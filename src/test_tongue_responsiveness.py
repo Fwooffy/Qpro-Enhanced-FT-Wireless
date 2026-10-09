@@ -190,7 +190,7 @@ class TongueResponsivenessTests(unittest.TestCase):
                 class Model(torch.nn.Module):
                     def __init__(self):
                         super().__init__()
-                        self.frames = iter(((0.6, [0.9, 0.8, -0.7]), (0.01, [0, 0, 0])))
+                        self.frames = iter(((0.6, [0.9, 0.8, -0.7]), (0.01, [0, 0, 0])) * 3)
 
                     def forward(self, _inputs):
                         delay, values = next(self.frames)
@@ -210,10 +210,11 @@ class TongueResponsivenessTests(unittest.TestCase):
                     broadcaster = TongueBroadcaster(enabled=True)
                 sent = []
                 broadcaster._send = lambda values, *, enabled: sent.append((enabled, values.copy()))
-                with mock.patch("tongue_model_preview.time.perf_counter", side_effect=lambda: clock[0]):
+                with (mock.patch("tongue_model_preview.time.perf_counter", side_effect=lambda: clock[0]),
+                      mock.patch("tongue_model_preview.print") as status_log):
                     worker = TongueInferenceWorker(preview, broadcaster, render_preview=False)
                     try:
-                        for frame in (1, 2):
+                        for frame in range(1, 7):
                             worker.submit(np.zeros((400, 800), np.uint8), None, [])
                             deadline = time.monotonic() + 1
                             while time.monotonic() < deadline:
@@ -223,10 +224,16 @@ class TongueResponsivenessTests(unittest.TestCase):
                                 time.sleep(0.001)
                             else:
                                 self.fail("Inference did not finish")
-                        self.assertEqual([enabled for enabled, _ in sent], [False, True])
+                        self.assertEqual([enabled for enabled, _ in sent], [False, True] * 3)
                         self.assertFalse(prediction.visible)
                         np.testing.assert_array_equal(prediction.values, [0, 0, 0])
                         np.testing.assert_array_equal(sent[-1][1], np.zeros(12))
+                        messages = [str(call.args[0]) for call in status_log.call_args_list]
+                        self.assertEqual(sum("TONGUE_OUTPUT_STALE" in value for value in messages), 1)
+                        self.assertEqual(sum("TONGUE_OUTPUT_RECOVERED" in value for value in messages), 1)
+                        # Repeated slow/fresh alternation within five seconds
+                        # must not flood Activity with warning/recovery pairs.
+                        self.assertTrue(any("native tongue values" in value for value in messages))
                     finally:
                         worker.close()
                         broadcaster.close()
@@ -262,6 +269,37 @@ class TongueResponsivenessTests(unittest.TestCase):
         finally:
             release.set()
             worker.close()
+
+    def test_ambiguous_native_source_warns_once_only_when_tongue_output_is_enabled(self):
+        class Preview:
+            target_names = ["extension"]
+
+            def predict(self, *_):
+                return TonguePrediction(np.asarray([0.7]), 0, 1, True, 1,
+                                        native_status="source-unknown")
+
+        broadcaster = mock.Mock(enabled=False)
+        with mock.patch("tongue_model_preview.print") as status_log:
+            worker = TongueInferenceWorker(Preview(), broadcaster, render_preview=False)
+            try:
+                for frame in range(1, 5):
+                    broadcaster.enabled = frame > 1
+                    worker.submit(np.zeros((1, 1)), None, [])
+                    deadline = time.monotonic() + 1
+                    while time.monotonic() < deadline:
+                        prediction, _ = worker.latest()
+                        if prediction is not None and prediction.completed_frames == frame:
+                            break
+                        time.sleep(0.001)
+                    else:
+                        self.fail("Inference did not finish")
+                    if frame == 1:
+                        status_log.assert_not_called()
+                messages = [str(call.args[0]) for call in status_log.call_args_list]
+                self.assertEqual(sum("TONGUE_NATIVE_SOURCE_UNKNOWN" in value for value in messages), 1)
+                self.assertTrue(any("native TongueOut reference is omitted" in value for value in messages))
+            finally:
+                worker.close()
 
     def test_preview_throttling_keeps_every_completed_prediction(self):
         class Preview:

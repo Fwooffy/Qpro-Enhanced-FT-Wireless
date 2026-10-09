@@ -471,7 +471,8 @@ public sealed class TrackingModule : ExtTrackingModule
             {
                 SendSteamLabel(new
                 {
-                    V = 1, Type = "schema", Names = SteamOscSource.ExpressionNames
+                    V = 1, Type = "schema", Names = SteamOscSource.ExpressionNames,
+                    TrackingSource = "SteamLink"
                 });
                 _nextSteamSchemaTick = qpc + Stopwatch.Frequency * 2;
             }
@@ -488,6 +489,7 @@ public sealed class TrackingModule : ExtTrackingModule
             {
                 V = 1,
                 Type = "sample",
+                TrackingSource = "SteamLink",
                 Sequence = ++_steamLabelSequence,
                 Qpc = qpc,
                 QpcFrequency = Stopwatch.Frequency,

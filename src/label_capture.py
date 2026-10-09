@@ -13,6 +13,86 @@ import time
 from pathlib import Path
 
 
+NATIVE_TONGUE_MAPPING = "source-flags-v2"
+TRACKING_SOURCES = ("VirtualDesktop", "SteamLink")
+_STANDARD_TONGUE_CHANNELS = (
+    "TongueTipInterdental", "TongueTipAlveolar", "TongueFrontDorsalPalate",
+    "TongueMidDorsalPalate", "TongueBackDorsalVelar", "TongueOut", "TongueRetreat",
+)
+
+
+def require_current_tongue_cache(metadata: dict[str, object]) -> None:
+    """Older scalar native labels cannot prove which VD layout they used."""
+    if metadata.get("nativeTongueMapping") != NATIVE_TONGUE_MAPPING:
+        raise ValueError(
+            "This prepared tongue cache uses an older native TongueOut mapping. "
+            "Regenerate the cache from its original .qpcap, .qplabel.jsonl and "
+            ".qpsession.json files before training. The Hub rebuilds it when "
+            "you retry training; command-line users should rerun the matching "
+            "prepare_tongue_stills.py or prepare_tongue_training.py command. "
+            "Existing trained checkpoints remain usable."
+        )
+
+
+class AmbiguousTongueSourceError(ValueError):
+    """A legacy packet uses flags whose meaning depends on its producer."""
+
+
+def native_tongue_out(
+    sample: dict[str, object], names: list[str], *, tracking_source: str | None = None,
+) -> float | None:
+    """Read a scalar tongue reference without rewriting raw expressions.
+
+    VD's alternate tongue layout uses slot 63 for TongueOut while the label
+    stream retains the 70 XR_FB channel names. Older Steam Link packets also
+    set flag 2 but still use the named TongueOut slot, so that flag alone is
+    insufficient. An explicit override is only for legacy capture sidecars.
+    """
+    flags = sample.get("faceFlags", 1)
+    if not isinstance(flags, int) or isinstance(flags, bool) or not flags & 1:
+        return None
+    declared_source = sample.get("trackingSource")
+    if declared_source is not None and declared_source not in TRACKING_SOURCES:
+        raise ValueError("The factory tongue sample has an unsupported trackingSource")
+    if tracking_source is not None and tracking_source not in TRACKING_SOURCES:
+        raise ValueError("The native tongue source override is unsupported")
+    if (declared_source is not None and tracking_source is not None
+            and declared_source != tracking_source):
+        raise ValueError("The native tongue source override conflicts with the recorded trackingSource")
+    source = declared_source or tracking_source
+    if flags & 2 and source is None:
+        raise AmbiguousTongueSourceError(
+            "The factory TongueOut layout is ambiguous: this older label file "
+            "does not identify Virtual Desktop or Steam Link. Regenerate its "
+            "cache with --tracking-source VirtualDesktop or --tracking-source "
+            "SteamLink, choosing the app used for that recording. For a new "
+            "capture, update the matching Qpro module and record again."
+        )
+    if flags & 2 and source == "VirtualDesktop":
+        if (len(names) != 70 or tuple(names[63:]) != _STANDARD_TONGUE_CHANNELS
+                or len(set(names)) != 70):
+            raise ValueError(
+                "The alternate Virtual Desktop tongue layout needs the full "
+                "70-channel factory schema. Restart the matching Qpro module "
+                "and record the capture again."
+            )
+        index = 63
+    else:
+        if names.count("TongueOut") != 1:
+            raise ValueError("The factory schema needs exactly one TongueOut channel")
+        index = names.index("TongueOut")
+    values = sample.get("values")
+    if not isinstance(values, (list, tuple)) or len(values) != len(names):
+        raise ValueError("The factory tongue sample does not match its channel schema")
+    try:
+        value = float(values[index])
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError("The factory TongueOut reference is not a number") from error
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise ValueError("The factory TongueOut reference must be a finite value in 0..1")
+    return value
+
+
 class LabelSidecarRecorder:
     def __init__(self, path: str | Path | None, port: int = 27274) -> None:
         self.path = Path(path).resolve() if path is not None else None
@@ -22,6 +102,7 @@ class LabelSidecarRecorder:
         self.sample_count = 0
         self.invalid_count = 0
         self.schema_names: list[str] = []
+        self.schema_tracking_source: str | None = None
         self.last_sample_monotonic_ns: int | None = None
         self.source_change_sequence = 0
         self.source_unchanged_ms: float | None = None
@@ -85,16 +166,29 @@ class LabelSidecarRecorder:
                             or any(not isinstance(name, str) or not name
                                    for name in names)):
                         raise ValueError("invalid schema")
+                    source = message.get("trackingSource")
+                    if source is not None and source not in TRACKING_SOURCES:
+                        raise ValueError("invalid tracking source")
                     self.schema_names = names
+                    self.schema_tracking_source = source
                     self._write(
                         {
                             "type": "schema",
                             "arrivalMonotonicNs": arrival_monotonic_ns,
                             "arrivalWallNs": arrival_wall_ns,
                             "names": names,
+                            **({"trackingSource": source} if source else {}),
                         }
                     )
                 elif message_type == "sample":
+                    # A source-tagged schema cannot certify an untagged packet
+                    # from another producer sharing this localhost port.
+                    source = message.get("trackingSource")
+                    if source is not None and source not in TRACKING_SOURCES:
+                        raise ValueError("invalid tracking source")
+                    if (source is not None and self.schema_tracking_source is not None
+                            and source != self.schema_tracking_source):
+                        raise ValueError("sample source does not match schema")
                     values = message.get("values")
                     if (not isinstance(values, list)
                             or len(values) > 512
@@ -128,6 +222,7 @@ class LabelSidecarRecorder:
                         "sourceChangeSequence": source_change_sequence,
                         "sourceUnchangedMs": source_unchanged_ms,
                         "values": numeric_values,
+                        **({"trackingSource": source} if source else {}),
                         "faceFlags": int(message.get("faceFlags", 0)),
                         "isEyeFollowingBlendshapesValid": bool(
                             message.get("isEyeFollowingBlendshapesValid", False)

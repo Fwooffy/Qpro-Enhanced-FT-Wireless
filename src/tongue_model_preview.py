@@ -20,6 +20,7 @@ if torch.version.hip:
 
 from train_tongue_model import create_model
 from qpro_gpu import validated_torch_device_name
+from label_capture import AmbiguousTongueSourceError, native_tongue_out
 from tongue_image_processing import preprocess_stereo_images, resolve_input_preprocessing
 
 
@@ -29,6 +30,67 @@ TONGUE_VERSION = 1
 # Match TongueTimeoutMs in the VRCFT bridge. A late frame must not reacquire
 # the tongue override after the bridge has already restored native tracking.
 TONGUE_MAX_PIPELINE_MS = 300.0
+TONGUE_MAX_NATIVE_AGE_MS = 300.0
+
+
+def _native_tongue_reference(
+    sample: dict[str, object] | None, names: list[str], now_ns: int
+) -> tuple[float, str]:
+    """Use only a recent, valid lower-face sample for the visibility gate.
+
+    The label recorder retains its nearest packet after a source disconnects.
+    Its old TongueOut value must not keep affecting a new camera pose. Missing
+    evidence contributes zero to the existing calibrated weighted formula;
+    changing that formula would need a separately validated camera threshold.
+    """
+    if sample is None or "TongueOut" not in names:
+        return 0.0, "unavailable"
+    try:
+        arrival = sample["arrivalMonotonicNs"]
+        flags = sample["faceFlags"]
+        if (not isinstance(arrival, int) or isinstance(arrival, bool)
+                or not isinstance(flags, int) or isinstance(flags, bool)
+                or not flags & 1):
+            return 0.0, "invalid"
+        age_ms = (now_ns - arrival) / 1_000_000.0
+        if not 0.0 <= age_ms <= TONGUE_MAX_NATIVE_AGE_MS:
+            return 0.0, "stale"
+        native = native_tongue_out(sample, names)
+        if native is None:
+            return 0.0, "invalid"
+        return native, "available"
+    except AmbiguousTongueSourceError:
+        return 0.0, "source-unknown"
+    except (KeyError, IndexError, TypeError, ValueError, OverflowError):
+        return 0.0, "invalid"
+
+
+def tongue_output_state(prediction: "TonguePrediction", enabled: bool) -> str:
+    """Describe what the module can receive, rather than only the toggle."""
+    if not enabled:
+        return "off"
+    if (not np.isfinite(prediction.pipeline_ms)
+            or not 0.0 <= prediction.pipeline_ms <= TONGUE_MAX_PIPELINE_MS):
+        return "stale"
+    return "visible" if prediction.visible else "hidden"
+
+
+def format_tongue_status(
+    prediction: "TonguePrediction", *, camera_fps: float,
+    inference_fps: float, enabled: bool,
+) -> str:
+    """Keep the periodic Activity result useful when output is not visible."""
+    return (
+        f"TONGUE_STATUS camera_fps={camera_fps:.1f} inference_fps={inference_fps:.1f} "
+        f"inference_ms={prediction.inference_ms:.1f} "
+        f"pipeline_ms={prediction.pipeline_ms:.1f} "
+        f"result_age_ms={prediction.age_ms:.1f} "
+        f"dropped_frames={prediction.dropped_frames} "
+        f"requested_output={'on' if enabled else 'off'} "
+        f"output_state={tongue_output_state(prediction, enabled)} "
+        f"native_status={prediction.native_status} "
+        f"fused_visibility={prediction.fused_visibility:.3f}"
+    )
 
 
 def _prepare_inference_model(model: torch.nn.Module, device: torch.device) -> torch.nn.Module:
@@ -233,6 +295,7 @@ class TonguePrediction:
     dropped_frames: int = 0
     age_ms: float = 0.0
     completed_frames: int = 0
+    native_status: str = "unavailable"
 
 
 class TongueVisibilityHold:
@@ -418,9 +481,9 @@ class LiveTongueModelPreview:
         completed_at = time.perf_counter()
         inference_ms = (completed_at - started) * 1000.0
         smoothed = self._motion_filter.update(values, completed_at)
-        native = 0.0
-        if factory_sample is not None and "TongueOut" in factory_names:
-            native = float(factory_sample["values"][factory_names.index("TongueOut")])
+        native, native_status = _native_tongue_reference(
+            factory_sample, factory_names, time.monotonic_ns()
+        )
         visibility = float(smoothed[self.target_names.index("visibility")])
         if self.visibility_mode == "camera":
             fused = visibility
@@ -445,6 +508,7 @@ class LiveTongueModelPreview:
             fused_visibility=fused,
             visible=visible,
             inference_ms=inference_ms,
+            native_status=native_status,
         )
 
     def render(
@@ -537,6 +601,10 @@ class TongueInferenceWorker:
         self._preview_image: np.ndarray | None = None
         self._preview_rendered_at = 0.0
         self._preview_interval = 1.0 / 12.0
+        self._output_state: str | None = None
+        self._next_stale_warning_at = 0.0
+        self._reported_stale = False
+        self._reported_native_source_unknown = False
         self._thread = threading.Thread(
             target=self._run, name="tongue-inference", daemon=True
         )
@@ -618,6 +686,40 @@ class TongueInferenceWorker:
                     self.broadcaster.send_prediction(
                         prediction, self.preview.target_names
                     )
+                    output_state = tongue_output_state(prediction, self.broadcaster.enabled)
+                    # Hidden is an ordinary tongue pose. Report only slow-frame
+                    # transitions and recovery, rather than every appearance.
+                    if (output_state == "stale" and self._output_state != "stale"
+                            and time.perf_counter() >= self._next_stale_warning_at):
+                        print(
+                            "WARNING: TONGUE_OUTPUT_STALE "
+                            f"pipeline_ms={prediction.pipeline_ms:.1f} "
+                            f"limit_ms={TONGUE_MAX_PIPELINE_MS:.0f}. "
+                            "Camera tongue output paused because this frame is too old; "
+                            "the module uses native tongue values. Check the selected GPU "
+                            "runtime and reduce other camera work before retrying.",
+                            flush=True,
+                        )
+                        self._next_stale_warning_at = time.perf_counter() + 5.0
+                        self._reported_stale = True
+                    elif output_state != "stale" and self._reported_stale:
+                        print(
+                            f"TONGUE_OUTPUT_RECOVERED state={output_state}. "
+                            "Fresh camera results are available again.", flush=True,
+                        )
+                        self._reported_stale = False
+                    self._output_state = output_state
+                    if (self.broadcaster.enabled
+                            and prediction.native_status == "source-unknown"
+                            and not self._reported_native_source_unknown):
+                        print(
+                            "WARNING: TONGUE_NATIVE_SOURCE_UNKNOWN. The factory "
+                            "label feed does not identify its streaming app; its "
+                            "native TongueOut reference is omitted. Close "
+                            "VRCFaceTracking, update the matching Qpro module "
+                            "in First-time setup, then reopen it and retry.", flush=True,
+                        )
+                        self._reported_native_source_unknown = True
                     if self.cheek_broadcaster is not None:
                         self.cheek_broadcaster.send_prediction(prediction, self.preview.target_names)
                     self._completed_frames += 1

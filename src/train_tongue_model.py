@@ -22,6 +22,7 @@ from tongue_visibility_calibration import (
     choose_visibility_gate, classification_at_threshold, f1_at_threshold,
 )
 from qpro_gpu import validated_torch_device_name
+from label_capture import require_current_tongue_cache
 from tongue_image_processing import (
     MODES, preprocess_stereo_images, resolve_input_preprocessing,
 )
@@ -729,6 +730,7 @@ def main() -> int:
     random.seed(seed)
     cache = Path(arguments.cache).resolve()
     metadata = json.loads((cache / "metadata.json").read_text(encoding="utf-8"))
+    require_current_tongue_cache(metadata)
     target_names = list(metadata["targetNames"])
     initial = None
     if arguments.initial_checkpoint:

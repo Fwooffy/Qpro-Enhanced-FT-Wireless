@@ -97,6 +97,7 @@ class TongueTrainingTests(unittest.TestCase):
         (root / "metadata.json").write_text(json.dumps({
             "targetNames": ["visibility", "horizontal", "vertical", "extension"],
             "datasetType": "manual-stereo-stills", "imageSize": 128,
+            "nativeTongueMapping": "source-flags-v2",
         }), encoding="utf-8")
         return images
 
@@ -113,6 +114,24 @@ class TongueTrainingTests(unittest.TestCase):
                 self.assertTrue(torch.equal(actual, expected))
                 for array in (dataset.images, dataset.targets, dataset.native):
                     array._mmap.close()
+            np.testing.assert_array_equal(np.load(cache / "images.npy"), original)
+
+    def test_old_native_mapping_cache_fails_before_training_or_output(self):
+        import train_tongue_model
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory)
+            original = self.make_preprocessing_cache(cache)
+            metadata_path = cache / "metadata.json"
+            metadata = json.loads(metadata_path.read_text())
+            del metadata["nativeTongueMapping"]
+            metadata_path.write_text(json.dumps(metadata))
+            output = cache / "candidate.pt"
+            with (mock.patch.object(sys, "argv", ["train", str(cache), "--output", str(output)]),
+                  mock.patch.object(train_tongue_model, "create_model") as create):
+                with self.assertRaisesRegex(ValueError, "Regenerate the cache"):
+                    train_tongue_model.main()
+            create.assert_not_called()
+            self.assertFalse(output.exists())
             np.testing.assert_array_equal(np.load(cache / "images.npy"), original)
 
     def test_refinement_inherits_processing_and_persists_explicit_override(self):

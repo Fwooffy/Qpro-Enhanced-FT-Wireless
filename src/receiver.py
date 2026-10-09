@@ -769,6 +769,7 @@ def main() -> int:
                 LiveTongueModelPreview,
                 TongueBroadcaster,
                 TongueInferenceWorker,
+                format_tongue_status,
             )
 
             tongue_model_preview = LiveTongueModelPreview(
@@ -1070,14 +1071,10 @@ def main() -> int:
                         (tongue_prediction.completed_frames - last_tongue_completed)
                         / (now - last_tongue_status)
                     )
-                    print(
-                        f"TONGUE_STATUS camera_fps={fps:.1f} inference_fps={inference_fps:.1f} "
-                        f"inference_ms={tongue_prediction.inference_ms:.1f} "
-                        f"pipeline_ms={tongue_prediction.pipeline_ms:.1f} "
-                        f"result_age_ms={tongue_prediction.age_ms:.1f} "
-                        f"dropped_frames={tongue_prediction.dropped_frames} "
-                        f"requested_output={'on' if tongue_broadcaster.enabled else 'off'}", flush=True,
-                    )
+                    print(format_tongue_status(
+                        tongue_prediction, camera_fps=fps, inference_fps=inference_fps,
+                        enabled=tongue_broadcaster.enabled,
+                    ), flush=True)
                     last_tongue_status = now
                     last_tongue_completed = tongue_prediction.completed_frames
                 if (cheek_broadcaster is not None and tongue_prediction is not None

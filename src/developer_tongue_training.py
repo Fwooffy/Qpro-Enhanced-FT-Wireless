@@ -24,6 +24,7 @@ from torch.nn import functional as F
 
 from capture_format import scan_stereo_mouth_stills
 from dataset_inspect import load_labels
+from label_capture import native_tongue_out, require_current_tongue_cache
 from prepare_training import nearest_label_indices
 from prepare_tongue_training import FACE_HEIGHT
 from qpro_gpu import validated_torch_device_name
@@ -123,7 +124,6 @@ def _verify_source_frames(
         raise ValueError(f"Capture/label alignment exceeds 35 ms: {label_path}")
     if not np.array_equal(arrays["timestamps"], np.asarray(frame_times, dtype=np.int64)):
         raise ValueError(f"Prepared timestamps differ from the raw capture: {capture_path}")
-    tongue_index = names.index("TongueOut")
     image_size = int(metadata["imageSize"])
     with capture_path.open("rb", buffering=4 * 1024 * 1024) as capture:
         for index, ((payload_offset, _timestamp), label_index) in enumerate(zip(entries, label_indices)):
@@ -138,9 +138,13 @@ def _verify_source_frames(
                 if not np.array_equal(arrays["images"][index, view], expected):
                     raise ValueError(f"Prepared image {index} differs from the raw capture: {capture_path}")
             factory = np.asarray(labels[int(label_index)]["values"], dtype=np.float32)
+            native = native_tongue_out(
+                labels[int(label_index)], names,
+                tracking_source=metadata.get("nativeTongueSourceOverride"),
+            ) or 0.0
             if (len(factory) != len(names)
                     or not np.array_equal(arrays["native_expressions"][index], factory)
-                    or not np.isclose(arrays["native_tongue_out"][index], factory[tongue_index], atol=1e-6)):
+                    or not np.isclose(arrays["native_tongue_out"][index], native, atol=1e-6)):
                 raise ValueError(f"Prepared native label {index} differs from the sidecar: {label_path}")
 
 
@@ -148,6 +152,7 @@ def _check_cache(cache: Path) -> tuple[dict[str, object], tuple[str, ...], int, 
     metadata = _read_json(cache / "metadata.json")
     if metadata.get("datasetType") != "manual-stereo-stills" or not metadata.get("complete"):
         raise ValueError(f"Only completed exact-still caches are eligible: {cache}")
+    require_current_tongue_cache(metadata)
     if metadata.get("sessionType") not in ALLOWED_SESSION_TYPES:
         raise ValueError(f"Unsupported capture session type in {cache}")
     if list(metadata.get("targetNames", [])) != list(TONGUE_TARGET_NAMES):
