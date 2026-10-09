@@ -128,20 +128,31 @@ import base64, importlib, importlib.metadata as metadata, json, sys, traceback
 packages = json.loads(base64.b64decode(sys.argv[1]))
 target = sys.argv[2]
 experimental = sys.argv[3] == '1'
+repair_expected = len(sys.argv) > 4 and sys.argv[4] == 'repair'
+
+def report_probe_error(context, error):
+    if repair_expected:
+        # First-time setup expects missing packages. Keep the exact reason,
+        # but do not present a pre-install check as a final installation error.
+        print(f'WARNING: Existing ROCm packages need installation or repair: {context} {type(error).__name__}: {error}. Setup will continue.', flush=True)
+    else:
+        print(context, flush=True)
+        traceback.print_exc()
+
 try:
     for spec in packages:
         name, expected = spec.split('==', 1)
         actual = metadata.version(name)
         if actual != expected:
             raise RuntimeError(f'{name}: expected {expected}, found {actual}')
-except Exception:
-    print('AMD package set is incomplete or has a different version.', flush=True)
-    traceback.print_exc()
+except Exception as error:
+    report_probe_error('AMD package set is incomplete or has a different version.', error)
     sys.exit(11)
 if experimental:
     extras = metadata.metadata('torch').get_all('Provides-Extra') or []
     if f'device-{target}' not in extras:
-        print(f'Installed torch metadata is incomplete: missing device-{target}.', flush=True)
+        message = f'Installed torch metadata is incomplete: missing device-{target}.'
+        print(f'WARNING: {message} Setup will repair this package.' if repair_expected else message, flush=True)
         sys.exit(12)
 try:
     torch = importlib.import_module('torch')
@@ -150,20 +161,19 @@ try:
         # to download from PyPI or copy from another environment.
         for name in ('torchgen', 'torchvision', 'torchaudio'):
             importlib.import_module(name)
-except Exception:
-    print('AMD PyTorch import failed before GPU detection.', flush=True)
-    traceback.print_exc()
+except Exception as error:
+    report_probe_error('AMD PyTorch import failed before GPU detection.', error)
     sys.exit(12)
 try:
     import cv2, numpy
     from qpro_gpu import is_rocm_10_torch_build, is_rocm_721_torch_build
-except Exception:
-    print('Qpro runtime dependency import failed before GPU detection.', flush=True)
-    traceback.print_exc()
+except Exception as error:
+    report_probe_error('Qpro runtime dependency import failed before GPU detection.', error)
     sys.exit(13)
 build_matches = is_rocm_10_torch_build(torch) if experimental else is_rocm_721_torch_build(torch)
 if not build_matches:
-    print('Unexpected AMD PyTorch build:', torch.__version__, getattr(torch.version, 'rocm', None), torch.version.hip, flush=True)
+    prefix = 'WARNING: Existing PyTorch build will be replaced:' if repair_expected else 'Unexpected AMD PyTorch build:'
+    print(prefix, torch.__version__, getattr(torch.version, 'rocm', None), torch.version.hip, flush=True)
     sys.exit(11)
 print('AMD packages and Python imports verified.', flush=True)
 '@
@@ -333,7 +343,7 @@ $qproPackageProbeArguments = @(
     $(if ($qproExperimental) { '1' } else { '0' })
 )
 Write-Host 'Checking existing ROCm packages and Python imports...'
-$qproPackageProbe = Invoke-QproRocmPythonProbe $qproRocmPython $qproPackageProbeCode $qproPackageProbeArguments
+$qproPackageProbe = Invoke-QproRocmPythonProbe $qproRocmPython $qproPackageProbeCode ($qproPackageProbeArguments + @('repair'))
 $qproRuntimeReady = $qproPackageProbe.ExitCode -eq 0
 if (-not $qproRuntimeReady) {
     foreach ($line in $qproPackageProbe.Output) { Write-Host $line }

@@ -43,10 +43,12 @@ import base64, importlib, importlib.metadata as metadata, json, sys
 from email.message import Message
 from types import ModuleType, SimpleNamespace
 fixture_packages = dict(item.split('==', 1) for item in json.loads(base64.b64decode(sys.argv[1])))
-fixture_case = sys.argv[4]
+fixture_case = sys.argv[-1]
 fixture_target = sys.argv[2]
 if fixture_case == 'missing_device':
     fixture_packages.pop('amd-torch-device-' + fixture_target)
+if fixture_case == 'missing_torch':
+    fixture_packages.pop('torch')
 if fixture_case == 'wrong_version':
     fixture_packages['torch'] = '2.9.1+rocm7.2.1'
 def fixture_version(name):
@@ -80,10 +82,12 @@ if fixture_case == 'missing_cv2':
     sys.modules['cv2'] = None
 '@
 
-function Test-PackageProbe([string]$Target, [string]$Case, [int]$ExpectedExit, [string]$ExpectedOutput = '') {
+function Test-PackageProbe([string]$Target, [string]$Case, [int]$ExpectedExit, [string]$ExpectedOutput = '', [switch]$RepairExpected) {
     $specs = @(Get-QproRocm10Packages $Target)
     $encodedSpecs = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $specs -Compress)))
-    $arguments = @($encodedSpecs, $Target, '1', $Case)
+    $arguments = @($encodedSpecs, $Target, '1')
+    if ($RepairExpected) { $arguments += 'repair' }
+    $arguments += $Case
     $result = Invoke-QproRocmPythonProbe $Python ($fixturePrelude + "`n" + $probeCode) $arguments
     Assert-Equal $ExpectedExit $result.ExitCode "Package probe $Target/$Case"
     if ($ExpectedOutput -and ($result.Output -join "`n") -notlike "*$ExpectedOutput*") {
@@ -100,6 +104,18 @@ Test-PackageProbe 'gfx1100' 'wrong_version' 11 'expected 2.14.0+rocm10.1.0' | Ou
 Test-PackageProbe 'gfx1100' 'missing_extra' 12 'Installed torch metadata is incomplete' | Out-Null
 $torchgenFailure = Test-PackageProbe 'gfx1100' 'missing_torchgen' 12 "No module named 'torchgen'"
 Test-PackageProbe 'gfx1100' 'missing_cv2' 13 'Qpro runtime dependency import failed before GPU detection' | Out-Null
+
+# Expected pre-install probes retain the cause without a red traceback. The
+# same errors after installation must retain full fatal diagnostics.
+foreach ($case in @('missing_torch', 'missing_device', 'wrong_version', 'missing_extra', 'missing_torchgen', 'missing_cv2')) {
+    $expectedExit = if ($case -eq 'missing_cv2') { 13 } elseif ($case -in @('missing_extra', 'missing_torchgen')) { 12 } else { 11 }
+    $repairResult = Test-PackageProbe 'gfx1031' $case $expectedExit 'WARNING:' -RepairExpected
+    Assert-Equal $false (($repairResult.Output -join "`n").Contains('Traceback (most recent call last):')) "Pre-install repair probe $case"
+    $finalResult = Test-PackageProbe 'gfx1031' $case $expectedExit
+    if ($case -ne 'missing_extra') {
+        Assert-Equal $true (($finalResult.Output -join "`n").Contains('Traceback (most recent call last):')) "Final probe preserves fatal traceback $case"
+    }
+}
 
 $legacyArguments = @([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('[]')), '-', '0', 'complete')
 $legacyResult = Invoke-QproRocmPythonProbe $Python ($fixturePrelude + "`n" + $probeCode) $legacyArguments
