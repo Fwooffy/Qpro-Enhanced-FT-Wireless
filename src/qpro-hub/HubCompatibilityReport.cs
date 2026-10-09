@@ -10,25 +10,29 @@ internal sealed record HubCompatibilityReport(
     bool EngineSupported, string? EngineProfile, string? EngineProfileValidation,
     string? EngineCompatibilityReason, bool GazePreflightPassed,
     string? GazeEnvironmentError, string? ModelPath, bool? ModelPathMounted,
-    string? ModelDiscoveryError)
+    string? ModelDiscoveryError, bool HasActiveMagiskGaze)
 {
     internal const string Format = "qpro-gaze-compatibility-diagnostic-v1";
     internal string Build => BuildIncremental;
     internal string FirmwareLabel => BuildDisplayId.Length == 0 ? Model : $"{Model} · {BuildDisplayId}";
-    internal bool CanPrepareGaze => EngineSupported && GazePreflightPassed &&
+    internal bool CanPrepareGaze => !HasActiveMagiskGaze && EngineSupported && GazePreflightPassed &&
         ModelPath is not null && ModelPathMounted == false && ModelDiscoveryError is null;
-    internal bool NeedsAttention => !CanPrepareGaze || EngineProfileValidation != "live-reference";
+    internal bool NeedsAttention => !HasActiveMagiskGaze && (!CanPrepareGaze || EngineProfileValidation != "live-reference");
     internal string EngineValidationLabel => !EngineSupported ? "No validated engine profile" :
         EngineProfileValidation == "live-reference" ? "Live reference profile" : "Firmware analysis only";
-    internal string Summary => !EngineSupported
-        ? "Independent gaze is unavailable for this tracking engine. Other features have separate checks."
+    internal string Summary => HasActiveMagiskGaze
+        ? "An active Magisk gaze module was detected. The Hub's temporary gaze method is not needed."
+        : !EngineSupported
+        ? "The Hub's independent gaze method is unavailable for this tracking engine. Other features have separate checks."
         : !GazePreflightPassed ? "The tracking engine is recognized, but the current gaze setup needs attention."
         : ModelDiscoveryError is not null || ModelPath is null ? "The engine is recognized, but its eye model could not be selected."
         : ModelPathMounted != false ? "An eye-model overlay is present; gaze preparation is unavailable."
         : EngineProfileValidation == "firmware-analysis"
             ? "The engine passed firmware analysis. Live behavior is not yet verified; the eye patch is not prepared."
             : "The engine matches a live reference profile. The eye patch still needs preparation and a live input check.";
-    internal string NextStep => !EngineSupported
+    internal string NextStep => HasActiveMagiskGaze
+        ? "Leave Independent Eye Gaze off in the Hub. Skip Check gaze setup and Prepare gaze; choose your other features on Live tracking. Confirm your Magisk module's eye tracking in VRCFaceTracking's preview. To switch to the Hub method, disable the Magisk gaze module and reboot first."
+        : !EngineSupported
         ? "Leave Independent Eye Gaze off. Copy this report with the exact firmware build. Check a Magisk gaze module's support before using it."
         : !GazePreflightPassed
             ? "Use one gaze method at a time. Leave Hub gaze off while a Magisk gaze module is active; disable that module and reboot before using the Hub method. See the detailed result."
@@ -86,30 +90,31 @@ internal sealed record HubCompatibilityReport(
             var environment = root.GetProperty("gazeEnvironment");
             var environmentError = ReportJson.NullableText(root.GetProperty("gazeEnvironmentError"), 16384, multiline: true);
             var preflight = ReportJson.Boolean(root.GetProperty("gazePreflightPassed"));
+            bool activeMagiskGaze = false;
             if (environment.ValueKind == JsonValueKind.Null)
             {
                 if (preflight || environmentError is null) return false;
             }
             else
             {
-                var stockSelection = ValidateEnvironment(environment);
+                var stockSelection = ValidateEnvironment(environment, out activeMagiskGaze);
                 if (preflight != (environmentError is null) || preflight && !stockSelection) return false;
             }
             report = new(model, product, build, display, firmwareApproved,
-                supported, profile, validation, reason, preflight, environmentError, path, mounted, modelError);
+                supported, profile, validation, reason, preflight, environmentError, path, mounted, modelError, activeMagiskGaze);
             return true;
         }
         catch (Exception error) when (error is JsonException or KeyNotFoundException or InvalidOperationException or
             FormatException or ArgumentException or OverflowException) { return false; }
     }
 
-    private static bool ValidateEnvironment(JsonElement environment)
+    private static bool ValidateEnvironment(JsonElement environment, out bool activeGazeModule)
     {
         ReportJson.RequireKeys(environment, "scanComplete", "modules", "relevantMounts", "transparentOverlayMounts",
             "overlayfsOdmUpperState", "overlayfsOdmUpperInspectedPath", "experimentalModelProperty");
         if (!ReportJson.Boolean(environment.GetProperty("scanComplete"))) throw new FormatException("Incomplete scan.");
         var modules = ReportJson.Array(environment.GetProperty("modules"), 128);
-        bool activeGazeModule = false;
+        activeGazeModule = false;
         foreach (var module in modules.EnumerateArray())
         {
             ReportJson.RequireKeys(module, "directory", "id", "name", "enabled", "pendingRemoval", "gazeRelevant", "relevantFiles");

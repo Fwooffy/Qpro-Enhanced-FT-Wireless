@@ -44,6 +44,12 @@ foreach (var line in new[]
     "[PC runtime setup] [ERROR] Connection lost", "Could not copy diagnostics: access denied",
     "[Setup] Get-Item : The path was not found.", "[Setup] setup.ps1 : The package was not found.",
     "[Setup] python : Traceback (most recent call last):", "ERROR: GPU failed; falling back to CPU",
+    "[Camera tracking] At C:\\QproFixture\\build-and-run.ps1:248 char:13",
+    "The Qpro Virtual Desktop module was not found in its current module folder: C:\\QproFixture\\CustomLibs.",
+    "[Camera tracking] The installed Qpro module card needs repair: The installed DLL does not match its module card's file hash.",
+    "The installed Qpro DLL differs from this app's module, even if both show the same version number.",
+    "An alternate or legacy Qpro module slot is still present: 000-Qpro.SteamLink.dll.",
+    "This app's packaged Qpro module is missing or unreadable. Extract the complete release ZIP, then retry.",
     "[Camera tracking] receiver.py: error: unrecognized arguments: --camera-preview",
     "ERROR: no errors during download; verification failed", "START FAILED: Unsupported GPU",
     "ERROR: Connection lost; 0 warnings"
@@ -60,7 +66,9 @@ foreach (var line in new[]
     "No errors; GPU fallback active", "No warnings; cleanup remains unverified", "[WARN] Slow GPU",
     "[Compatibility] This version is not compatible with independent gaze",
     "[Compatibility] Independent gaze engine not validated · sample.", "No validated eye profile found.",
-    "2 warnings", "WARNING: GPU initialization failed; continuing on CPU", "ERROR: no errors, GPU fallback active"
+    "2 warnings", "WARNING: GPU initialization failed; continuing on CPU", "ERROR: no errors, GPU fallback active",
+    "WARNING: Existing ROCm packages need installation or repair: AMD package set is incomplete or has a different version. PackageNotFoundError: No package metadata was found for torch. Setup will continue.",
+    "[AMD ROCm and PyTorch] WARNING: Existing ROCm packages need installation or repair: AMD PyTorch import failed before GPU detection. ModuleNotFoundError: No module named 'torchgen'. Setup will continue."
 }) Check(new(), line, ActivitySeverity.Warning);
 
 // Windows PowerShell multi-line records, including interleaved independent output.

@@ -46,7 +46,7 @@ internal sealed class HubActivityClassifier
         if (Regex.IsMatch(text, @"^(?:\+\s*)?(?:CategoryInfo|FullyQualifiedErrorId)\s*:", IgnoreCase) ||
             Regex.IsMatch(text, @"^(?:.+\.ps1|&|[A-Za-z]+-[A-Za-z]+)\s+:\s+", IgnoreCase) ||
             Regex.IsMatch(text, @"^.+\s+:\s+Traceback \(most recent call last\):$", IgnoreCase) ||
-            Regex.IsMatch(text, @"^At .+:(?:line|char):\d+", IgnoreCase))
+            Regex.IsMatch(text, @"^At .+(?::(?:line|char):\d+|\.ps1:\d+\s+char:\d+)", IgnoreCase))
         {
             _continuations[source] = Continuation.PowerShell;
             return ActivitySeverity.Error;
@@ -80,6 +80,7 @@ internal sealed class HubActivityClassifier
         var evidence = RemoveNegatedSignals(message);
 
         if (Regex.IsMatch(evidence, @"^(?:CONTROLLER_ERROR|HANDS_CLEANUP_FAILED)\b") ||
+            Regex.IsMatch(evidence, @"^(?:The Qpro .+ module (?:was not found|is not installed)|The (?:selected module folder has no readable Qpro DLL|installed Qpro (?:DLL differs|module card needs repair)|selected Qpro DLL is not the only installed Qpro module|module folder contains an unexpected DLL)|An alternate or legacy Qpro module slot is still present|This app's packaged Qpro module is missing or unreadable)\b", IgnoreCase) ||
             Regex.IsMatch(evidence, @"^.+\.py:\s+error:\s+", IgnoreCase) ||
             (level.Success && Regex.IsMatch(level.Groups["level"].Value, @"^(?:ERROR|FATAL|CRITICAL)$", IgnoreCase) &&
                 !NegatesLevel(message, "errors?|failures?") && evidence.Length > 0))

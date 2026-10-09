@@ -16,6 +16,14 @@ internal sealed record HubProcessResult(int? ExitCode, bool TimedOut, string Out
         catch (OperationCanceledException) when (deadline.IsCancellationRequested) { return false; }
     }
 
+    internal static async Task<bool> WaitForOutputDrainAsync(Task outputClosed, Task errorClosed, TimeSpan timeout)
+    {
+        // EOF notifications also cover a worker that exits before the caller
+        // finishes attaching async readers. Process exit alone is not EOF.
+        try { await Task.WhenAll(outputClosed, errorClosed).WaitAsync(timeout); return true; }
+        catch (TimeoutException) { return false; }
+    }
+
     // One-off checks must retain both streams even when their deadline expires.
     // A descendant holding a pipe open also has a bounded drain deadline.
     internal static async Task<HubProcessResult> RunAsync(ProcessStartInfo start, TimeSpan timeout)

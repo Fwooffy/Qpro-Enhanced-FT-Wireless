@@ -22,11 +22,34 @@ internal static class LifecycleTests
         // Preview construction avoids ADB, runtime detection, timers and preference writes.
         string fixtureRoot = Path.Combine(Path.GetTempPath(), "qpro-lifecycle-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(fixtureRoot);
+        var fixtureConfig = Path.Combine(fixtureRoot, "config");
+        Directory.CreateDirectory(fixtureConfig);
+        var gazePreference = Path.Combine(fixtureConfig, "independent-gaze.txt");
+        foreach (var value in new[] { "", "off", "false", "true", "1", "unexpected", "on", " ON \r\n" })
+        {
+            File.WriteAllText(gazePreference, value);
+            var environment = new HubEnvironment(fixtureRoot);
+            var expected = value.Trim().Equals("on", StringComparison.OrdinalIgnoreCase);
+            if (environment.IndependentGazeEnabled != expected)
+                throw new Exception("Saved gaze preference enabled the firmware feature without an explicit on value.");
+            Console.WriteLine("PASS explicit gaze preference: " + (value.Trim().Length == 0 ? "empty" : value.Trim()));
+        }
+        File.Delete(gazePreference);
+        if (new HubEnvironment(fixtureRoot).IndependentGazeEnabled)
+            throw new Exception("A fresh Hub enabled independent gaze.");
         using var form = new HubForm(fixtureRoot, rememberLaunch: false, previewOnly: true);
         object? Call(string name, params object[] args) => typeof(HubForm).GetMethod(name, Private)!.Invoke(form, args);
         void Set(string name, bool value) => typeof(HubForm).GetField(name, Private)!.SetValue(form, value);
         bool Pending() => (bool)typeof(HubForm).GetProperty("TrackingShutdownPending", Private)!.GetValue(form)!;
         void Check(bool value, string name) { if (!value) throw new Exception(name); Console.WriteLine("PASS " + name); }
+        form.ApplyPreviewScenario("magisk", "VirtualDesktop");
+        var gaze = (CheckBox)typeof(HubForm).GetField("_gaze", Private)!.GetValue(form)!;
+        var compatibility = (Label)typeof(HubForm).GetField("_compatibilitySummary", Private)!.GetValue(form)!;
+        var setupGaze = (Label)typeof(HubForm).GetField("_setupGazeStatus", Private)!.GetValue(form)!;
+        Check(!gaze.Checked, "Magisk preview leaves Hub gaze off");
+        Check(compatibility.Text.Contains("Magisk") && compatibility.Text.Contains("skipped"),
+            "Magisk compatibility result explicitly skips Hub gaze setup");
+        Check(setupGaze.Text.Contains("Skip Hub gaze setup"), "Magisk setup preview does not request a gaze check");
         Check(!Pending(), "idle permits shutdown");
         foreach (var state in new[] { "_starting", "_stopping" })
         {

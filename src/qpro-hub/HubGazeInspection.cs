@@ -18,8 +18,16 @@ internal sealed record HubGazeInspection(string Firmware, string ExperimentalSel
         if (!line.StartsWith(Prefix, StringComparison.Ordinal) || line.Length > 65536) return null;
         try
         {
-            using var document = JsonDocument.Parse(line[Prefix.Length..]);
+            using var document = JsonDocument.Parse(line[Prefix.Length..], new JsonDocumentOptions { MaxDepth = 8 });
             var data = document.RootElement;
+            if (data.ValueKind != JsonValueKind.Object) return null;
+            string[] fields = ["schema", "firmware", "experimentalSelection", "qproSessionRecorded", "magiskGazeModules", "unverifiedMounts"];
+            var found = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var property in data.EnumerateObject())
+                if (!(fields.Contains(property.Name, StringComparer.Ordinal) || property.Name == "socialFiltering") ||
+                    !found.Add(property.Name)) return null;
+            if (fields.Any(field => !found.Contains(field))) return null;
+            if (data.TryGetProperty("socialFiltering", out var filtering)) _ = ReadText(filtering);
             if (data.GetProperty("schema").GetInt32() != 1) return null;
             var firmware = ReadText(data.GetProperty("firmware"));
             var selection = ReadText(data.GetProperty("experimentalSelection"));
@@ -50,19 +58,25 @@ internal sealed record HubGazeInspection(string Firmware, string ExperimentalSel
 
     private bool ExperimentalEnabled => ExperimentalSelection is "true" or "1";
     private bool NormalSelection => ExperimentalSelection is "" or "false" or "0";
-    internal bool NeedsAttention => QproSessionRecorded || UnverifiedMounts.Count > 0 || !NormalSelection;
+    internal bool HasActiveMagiskGaze => MagiskGazeModules.Count > 0;
+    // A Magisk method is expected to differ from the stock model. Its presence
+    // is not a failed Hub setup; a remaining Qpro recovery record still is.
+    internal bool NeedsAttention => QproSessionRecorded ||
+        (!HasActiveMagiskGaze && (UnverifiedMounts.Count > 0 || !NormalSelection)) ||
+        (!NormalSelection && !ExperimentalEnabled);
 
     internal string PopupText()
     {
         string method, next;
-        if (MagiskGazeModules.Count > 0)
+        if (HasActiveMagiskGaze)
         {
             method = "Magisk independent gaze";
             var names = string.Join(", ", MagiskGazeModules.Take(3));
             if (MagiskGazeModules.Count > 3) names += $" (+{MagiskGazeModules.Count - 3} more)";
             method += "\nModule: " + names;
-            next = "The Magisk module already provides independent gaze. Skip Prepare gaze. Leave Independent Eye Gaze unchecked in the Hub. " +
+            next = "A Magisk gaze module is active. Skip Check gaze setup and Prepare gaze. Leave Independent Eye Gaze unchecked in the Hub. " +
                 "You can still use Qpro tongue, camera cheek, pupil and eyebrow features. " +
+                "Confirm the module's eye tracking in VRCFaceTracking's preview. " +
                 "To use the Hub method instead, disable that gaze module in Magisk, reboot, then run Check gaze setup again.";
             if (QproSessionRecorded) next += " A Qpro record also remains; stop its owning Hub and use Recover Qpro gaze.";
         }
@@ -100,6 +114,7 @@ internal sealed record HubGazeInspection(string Firmware, string ExperimentalSel
     }
 
     internal static string FailedPopupText => "Detected headset gaze: Could not verify\n\n" +
-        "Next step:\nCheck Activity for the exact error. Keep the Quest awake, connect USB or wireless ADB, " +
+        "This optional check is only needed to investigate gaze. If you already use a Magisk gaze module, leave Independent Eye Gaze off in the Hub and skip Check gaze setup and Prepare gaze.\n\n" +
+        "To investigate the Hub method:\nCheck Activity for the exact error. Keep the Quest awake, connect USB or wireless ADB, " +
         "allow Shell / ADB Shell in Magisk, then run Check gaze setup again. If files are missing, extract the complete ZIP again.\n\n" + RecoveryHelp;
 }

@@ -9,7 +9,7 @@ internal sealed partial class HubForm
     internal void ApplyPreviewScenario(string scenario, string source)
     {
         if (!_previewOnly) throw new InvalidOperationException("Sample scenarios require preview mode.");
-        if (scenario is not ("ready" or "unsupported" or "runtime-error"))
+        if (scenario is not ("ready" or "unsupported" or "runtime-error" or "magisk"))
             throw new ArgumentException("Unknown preview scenario: " + scenario);
         if (source is not ("VirtualDesktop" or "SteamLink"))
             throw new ArgumentException("Unknown preview source: " + source);
@@ -49,7 +49,7 @@ internal sealed partial class HubForm
         _tongueModelNote.Text = "Sample model list. Your installed models appear here in the app.";
         _trackingSourceLiveNote.Text = _trackingSourceSetupNote.Text = $"Preview · sample data. Face tracking source: {sourceName}.";
 
-        var rawReport = PreviewCompatibilityJson(scenario != "unsupported");
+        var rawReport = PreviewCompatibilityJson(scenario != "unsupported", scenario == "magisk");
         if (!HubCompatibilityReport.TryParse(rawReport, out var report) || report is null)
             throw new InvalidOperationException("The sample compatibility report did not pass validation.");
         ApplyCompatibilityReport(report);
@@ -65,12 +65,13 @@ internal sealed partial class HubForm
         SetStatus(_vrcftStatus, StatusKind.Good, "Running · sample");
         SetStatus(_bridgeStatus, StatusKind.Good, "Ready · sample");
         SetStatus(_runtimeStatus, StatusKind.Good, "Verified · sample");
-        SetStatus(_gazeStatus, StatusKind.Warning, "Optional · not checked");
+        SetStatus(_gazeStatus, scenario == "magisk" ? StatusKind.Good : StatusKind.Warning,
+            scenario == "magisk" ? "Magisk gaze detected · sample" : "Hub gaze off · optional");
         SetStatus(_inferenceStatus, StatusKind.Warning, "Stopped");
         SetStatus(_pupilStatus, StatusKind.Warning, "Stopped");
         _setupRuntimeStatus.Text = _setupBridgeStatus.Text = "Complete · sample";
         _setupRuntimeStatus.ForeColor = _setupBridgeStatus.ForeColor = Good;
-        _setupGazeStatus.Text = "Optional · check before use";
+        _setupGazeStatus.Text = scenario == "magisk" ? "Skip Hub gaze setup · Magisk sample" : "Optional · skip for Magisk gaze";
         _setupGazeStatus.ForeColor = Muted;
         _setupProgressContainer.Visible = false;
         _gaze.Enabled = true;
@@ -112,8 +113,11 @@ internal sealed partial class HubForm
         else
         {
             SetActionFeedback("Required setup complete · sample",
-                $"The sample Quest Pro, PC runtime and {sourceName} module are ready. Optional features are checked separately.",
-                "Choose the features you want on Live tracking, then press Start tracking.");
+                $"The sample Quest Pro, PC runtime and {sourceName} module are ready. " +
+                    (scenario == "magisk" ? "A Magisk gaze module is detected; skip Hub gaze setup." : "Optional features are checked separately."),
+                scenario == "magisk"
+                    ? "Leave Independent Eye Gaze off in the Hub. Choose your other features on Live tracking, then press Start tracking."
+                    : "Choose the features you want on Live tracking, then press Start tracking.");
         }
 
         // Fixed text keeps screenshots reproducible and makes simulated results
@@ -129,7 +133,7 @@ internal sealed partial class HubForm
                     : "[PC runtime] Import and device checks passed · sample.\n[Next step] Select tracking features; optional headset features remain unverified.\n"), "12:00:00");
     }
 
-    private static string PreviewCompatibilityJson(bool supported)
+    private static string PreviewCompatibilityJson(bool supported, bool magisk = false)
     {
         // The engine hash and profile are deliberately synthetic. Even a ready
         // fixture says that no eye patch or headset tracking change was made.
@@ -154,12 +158,15 @@ internal sealed partial class HubForm
             modelDiscoveryError = (string?)null,
             gazeEnvironment = new
             {
-                scanComplete = true, modules = Array.Empty<object>(), relevantMounts = Array.Empty<object>(),
+                scanComplete = true, modules = magisk ? new object[] { new {
+                    directory = "sample-gaze-module", id = "sample-gaze-module", name = "Independent gaze · sample",
+                    enabled = true, pendingRemoval = false, gazeRelevant = true, relevantFiles = new[] { "service.sh" }
+                } } : Array.Empty<object>(), relevantMounts = Array.Empty<object>(),
                 transparentOverlayMounts = Array.Empty<object>(), overlayfsOdmUpperState = "empty",
                 overlayfsOdmUpperInspectedPath = "/sample/overlay/odm", experimentalModelProperty = "false",
             },
-            gazeEnvironmentError = (string?)null,
-            gazePreflightPassed = true,
+            gazeEnvironmentError = magisk ? "Active Magisk gaze module · sample." : null,
+            gazePreflightPassed = !magisk,
             modelPatchValidated = false,
             headsetTrackingChanged = false,
         });

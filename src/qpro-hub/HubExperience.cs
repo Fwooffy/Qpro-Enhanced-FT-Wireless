@@ -201,7 +201,9 @@ internal sealed partial class HubForm
     private void ApplyCompatibilityReport(HubCompatibilityReport report)
     {
         _compatibilityIdentity.Text = $"{report.Model} · build {report.BuildIncremental}\n{report.BuildDisplayId} · ADB and root checked at {DateTime.Now:HH:mm}";
-        _compatibilitySummary.Text = !report.EngineSupported
+        _compatibilitySummary.Text = report.HasActiveMagiskGaze
+            ? "Magisk gaze module detected. Hub gaze setup is optional and can be skipped."
+            : !report.EngineSupported
             ? "Independent gaze: engine unsupported. Other features are checked separately."
             : !report.CanPrepareGaze ? "Independent gaze: headset setup needs attention."
             : report.EngineProfileValidation == "firmware-analysis" ? "Independent gaze: engine recognized from firmware files; live tracking still needs testing."
@@ -213,7 +215,9 @@ internal sealed partial class HubForm
         _compatibilityNext.Text = report.NextStep;
         // A report is an observation, never permission to bypass the launcher's
         // exact engine, stock model and recovery checks on the next session.
-        SetStatus(_gazeStatus, StatusKind.Warning, report.CanPrepareGaze ? "Check passed · prepare first" : "Needs compatibility review");
+        SetStatus(_gazeStatus, report.HasActiveMagiskGaze ? StatusKind.Good : StatusKind.Warning,
+            report.HasActiveMagiskGaze ? "Magisk gaze detected · leave Hub gaze off" :
+                report.CanPrepareGaze ? "Hub method checked · preparation optional" : "Hub method unavailable · other features separate");
         SetActionFeedback("Headset compatibility checked", report.Summary, report.NextStep,
             severity: report.NeedsAttention ? ActivitySeverity.Warning : ActivitySeverity.Normal);
     }

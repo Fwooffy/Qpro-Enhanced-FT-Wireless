@@ -72,7 +72,7 @@ internal sealed class HubEnvironment
         var gazePath = Path.Combine(_root, "config", "independent-gaze.txt");
         if (File.Exists(gazePath))
         {
-            try { IndependentGazeEnabled = !File.ReadAllText(gazePath).Trim().Equals("off", StringComparison.OrdinalIgnoreCase); }
+            try { IndependentGazeEnabled = File.ReadAllText(gazePath).Trim().Equals("on", StringComparison.OrdinalIgnoreCase); }
             catch { IndependentGazeEnabled = false; }
         }
     }

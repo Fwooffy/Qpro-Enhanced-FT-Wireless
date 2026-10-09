@@ -64,7 +64,8 @@ internal sealed partial class HubForm
                 AppendLog("[Qpro module check] " + moduleDetail);
             }
             SetStatus(_runtimeStatus, BackendReady() ? StatusKind.Good : StatusKind.Warning, BackendReady() ? "Ready" : "Setup needed");
-            SetStatus(_gazeStatus, StatusKind.Warning, EyeModelReady() ? "Prepared · headset check needed" : "Optional · not prepared");
+            SetStatus(_gazeStatus, _gaze.Checked ? StatusKind.Warning : StatusKind.Good,
+                !_gaze.Checked ? "Hub gaze off · optional" : EyeModelReady() ? "Prepared · validated at start" : "Hub gaze needs preparation");
             UpdateSetupStepStyles();
             UpdateControlState();
         }
@@ -86,7 +87,9 @@ internal sealed partial class HubForm
         _setupBridgeStatus.ForeColor = ready[1] ? Good : next == 1 ? Warning : Muted;
         _uninstallBridgeButton.Enabled = !_setupActionRunning && BridgeUninstallAvailable();
         StyleSetupStep(_setupGazeButton, _setupGazeStatus, "Prepare gaze", EyeModelReady(), false);
-        _setupGazeStatus.Text = EyeModelReady() ? "Prepared · checked again at start" : "Optional · prepare only for Hub gaze";
+        _setupGazeStatus.Text = !_gaze.Checked ? "Optional · skip for Magisk gaze" :
+            EyeModelReady() ? "Prepared · validated at start" : "Prepare only for Hub gaze";
+        _setupGazeStatus.ForeColor = !_gaze.Checked ? Muted : EyeModelReady() ? Good : Warning;
         var installedVersion = LatestRocmInstalledVersion();
         var latestReady = installedVersion is not null;
         var offeredVersionReady = installedVersion?.StartsWith(HubRocmRuntime.InstallVersion + ".", StringComparison.Ordinal) == true;

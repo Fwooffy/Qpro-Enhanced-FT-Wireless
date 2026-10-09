@@ -65,7 +65,24 @@ blocked["gazePreflightPassed"] = false; blocked["gazeEnvironmentError"] = "Activ
 blocked["gazeEnvironment"]!["modules"] = JsonNode.Parse("""
 [{"directory":"fixture-module","id":"fixture-module","name":"Fixture gaze","enabled":true,"pendingRemoval":false,"gazeRelevant":true,"relevantFiles":["service.sh"]}]
 """);
-Check(!Parse(blocked).CanPrepareGaze && Parse(blocked).NextStep.Contains("Use one gaze method"), "Conflicting gaze methods became ready.");
+var magisk = Parse(blocked);
+Check(!magisk.CanPrepareGaze && magisk.HasActiveMagiskGaze && !magisk.NeedsAttention &&
+    magisk.NextStep.Contains("Skip Check gaze setup and Prepare gaze") && magisk.NextStep.Contains("Leave Independent Eye Gaze off"),
+    "A Magisk method required Hub gaze setup or bypassed its conflict guard.");
+Check(magisk.Summary.Contains("Magisk gaze module") && !magisk.Summary.Contains("needs attention"),
+    "A detected Magisk module was reported as a failed required setup.");
+var magiskUnknownEngine = Diagnostic(supported: false);
+magiskUnknownEngine["gazeEnvironment"] = blocked["gazeEnvironment"]!.DeepClone();
+magiskUnknownEngine["gazeEnvironmentError"] = "Active Magisk gaze module.";
+magiskUnknownEngine["gazePreflightPassed"] = false;
+Check(!Parse(magiskUnknownEngine).CanPrepareGaze && !Parse(magiskUnknownEngine).NeedsAttention &&
+    Parse(magiskUnknownEngine).NextStep.Contains("Skip Check gaze setup and Prepare gaze"),
+    "An unsupported Hub engine forced gaze setup on the separate Magisk method.");
+var disabledModule = blocked.DeepClone().AsObject();
+disabledModule["gazeEnvironment"]!["modules"]![0]!["enabled"] = false;
+disabledModule["gazeEnvironmentError"] = null; disabledModule["gazePreflightPassed"] = true;
+Check(Parse(disabledModule).CanPrepareGaze && !Parse(disabledModule).HasActiveMagiskGaze,
+    "A disabled Magisk module was mistaken for the active gaze method.");
 blocked["gazePreflightPassed"] = true; blocked["gazeEnvironmentError"] = null;
 Reject(blocked, "An active gaze module bypassed preflight.");
 

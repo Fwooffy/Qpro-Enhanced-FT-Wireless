@@ -308,7 +308,7 @@ internal sealed partial class HubForm
 
         var eyesCard = LiveFields();
         Span(eyesCard, SectionTitle("Eyes", HubIcon.Eyes), 0);
-        Span(eyesCard, Info("With the independent-gaze Magisk module enabled, leave Hub gaze off. Pupil and eyebrow tracking work separately."), 1);
+        Span(eyesCard, Info("Using an independent-gaze Magisk module? Leave Hub gaze off and skip Check gaze setup and Prepare gaze. Pupil and eyebrow features work separately."), 1);
         Span(eyesCard, _gaze, 2);
         Span(eyesCard, _pupil, 3);
         Span(eyesCard, _eyebrowBoost, 4);
@@ -569,11 +569,11 @@ internal sealed partial class HubForm
         var gazeSetup = Card(); gazeSetup.ColumnCount = 1;
         Span(gazeSetup, SectionTitle("Optional independent gaze", HubIcon.Eyes), 0);
         Span(gazeSetup, _setupGazeStatus, 1);
-        Span(gazeSetup, Info("Using a Magisk gaze module? Skip this setup and leave Hub gaze off."), 2);
+        Span(gazeSetup, Info("Using a Magisk gaze module? Skip Check gaze setup and Prepare gaze. Leave Independent Eye Gaze off in Live tracking."), 2);
         var gazeOptions = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, Margin = Padding.Empty };
         gazeOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        Span(gazeOptions, Info("For Hub gaze, start with Check gaze setup. Prepare gaze only after the check confirms support."), 0);
+        Span(gazeOptions, Info("These tools are only for the Hub's temporary gaze method. Check gaze setup is optional diagnostics; Prepare gaze validates the headset before preparing its local patch. Neither is needed for Magisk gaze, tongue, camera cheeks, pupils or ordinary face tracking."), 0);
         var gazeActions = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
             ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
         gazeActions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));

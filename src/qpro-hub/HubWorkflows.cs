@@ -325,7 +325,7 @@ internal sealed partial class HubForm
         AppendLog($"The Qpro {sourceName} module is active on disk; the other Qpro source module was removed. Restart VRCFaceTracking to load it.");
         PlaySfx("succeed.wav");
         MessageBox.Show(this,
-            $"The Qpro {sourceName} module is installed. The other Qpro source module was removed.\n\nStart VRCFaceTracking, then press Check gaze setup and follow its next step if you want independent gaze.",
+            $"The Qpro {sourceName} module is installed. The other Qpro source module was removed.\n\nReopen VRCFaceTracking and confirm expressions move in its preview. Choose your features on Live tracking.\n\nUsing a Magisk independent-gaze module? Leave Independent Eye Gaze off in the Hub; Check gaze setup and Prepare gaze are not needed.",
             "Setup step complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
@@ -679,6 +679,7 @@ internal sealed partial class HubForm
                 SelectedModelHasCameraCheeks(), lowerFaceModel?.Primary, lowerFaceModel?.Secondary,
                 _fps.SelectedItem?.ToString() ?? "24", _smoothing.Value, VisibilityModeValue(),
                 _pupil.Checked, PupilSensitivityValue(), _cameraPreview.Checked, _stopFile));
+            Task<HubTrackingExitFeedback?>? cameraExitResult = null;
             if (cameraPlan.Required)
             {
                 if ((_tongue.Checked || _cameraCheekPuff.Checked) && lowerFaceModel is not null)
@@ -691,14 +692,25 @@ internal sealed partial class HubForm
                         .ToString(System.Globalization.CultureInfo.InvariantCulture)
                 }).ToArray();
                 StartManaged(_tongue.Checked || _cameraCheekPuff.Checked ? "Camera tracking" : "Pupil tracking",
-                    "build-and-run.ps1", supervisedArguments);
+                    "build-and-run.ps1", out cameraExitResult, supervisedArguments);
             }
             StartControllerInput();
             startCancellation.Token.ThrowIfCancellationRequested();
             bool workersRunning = _trackingProcesses.Any(p => !p.HasExited);
             _nativeCheekOnlySession = !workerTrackingRequested;
             if (!workersRunning && !_nativeCheekOnlySession)
+            {
+                // A short-lived worker can exit before its final stderr callback.
+                // Keep this startup's result until it is read, before automatic
+                // Stop removes the process and suppresses delayed UI feedback.
+                if (cameraExitResult is not null)
+                {
+                    var feedback = await HubTrackingExitFeedback.WaitForStartupAsync(cameraExitResult, startCancellation.Token);
+                    startCancellation.Token.ThrowIfCancellationRequested();
+                    if (feedback is not null) throw new HubTrackingStartupException(feedback);
+                }
                 throw new InvalidOperationException("The selected tracking processes did not remain running. Check Activity before retrying.");
+            }
             _cheekTrackingSession = new CheekTrackingSession();
             AppendLog("Cheek adjustments enabled for this tracking session. Stop tracking restores the streaming app's native cheek values.");
             if (!_gazeFailureHandled)
@@ -715,12 +727,16 @@ internal sealed partial class HubForm
         }
         catch (Exception error)
         {
-            AppendLog("START FAILED: " + error.Message);
+            var startupFeedback = (error as HubTrackingStartupException)?.Feedback;
+            AppendLog((startupFeedback is { IsError: false } ? "WARNING: Tracking startup stopped: " : "START FAILED: ") + error.Message);
             var failure = HubActionFailure.Explain("Tracking", error.Message, error.Message);
-            SetActionFeedback(failure.Title, error.Message, failure.NextStep, true);
+            SetActionFeedback(startupFeedback?.Title ?? failure.Title, startupFeedback?.Detail ?? error.Message,
+                startupFeedback?.NextStep ?? failure.NextStep, startupFeedback?.IsError ?? true,
+                startupFeedback is { IsError: false } ? ActivitySeverity.Warning : ActivitySeverity.Error);
             await StopTrackingAsync();
             PlaySfx("warning.wav");
-            MessageBox.Show(this, error.Message, "Tracking did not start");
+            MessageBox.Show(this, startupFeedback is null ? error.Message : startupFeedback.Detail + "\n\nNext: " + startupFeedback.NextStep,
+                "Tracking did not start");
         }
         finally
         {
@@ -798,16 +814,27 @@ internal sealed partial class HubForm
     }
 
     private Process StartManaged(string label, string script, params string[] arguments)
+        => StartManaged(label, script, out _, arguments);
+
+    private Process StartManaged(string label, string script, out Task<HubTrackingExitFeedback?> exitResult,
+        params string[] arguments)
     {
         var start = PowerShellStart(script, arguments, hidden: true);
         start.RedirectStandardOutput = true; start.RedirectStandardError = true;
         // Keep a parent pipe open so hand adapters also stop if the Hub exits.
         start.RedirectStandardInput = label == "Hand/controller input";
         var process = new Process { StartInfo = start, EnableRaisingEvents = true };
+        var completedResult = new TaskCompletionSource<HubTrackingExitFeedback?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        exitResult = completedResult.Task;
+        var recentOutput = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var outputClosed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var errorClosed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         void ReportLine(string line)
         {
             try
             {
+                recentOutput.Enqueue(line.Length <= 4096 ? line : line[..4096] + " …");
+                while (recentOutput.Count > 60) recentOutput.TryDequeue(out _);
                 AppendLog($"[{label}] {line}");
                 PostProcessUpdate(label, () =>
                 {
@@ -829,24 +856,48 @@ internal sealed partial class HubForm
                     error.Message, "Copy diagnostics and check the Activity output before relying on tracking.", true));
             }
         }
-        process.OutputDataReceived += (_, e) => { if (e.Data is not null) ReportLine(e.Data); };
-        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) ReportLine(e.Data); };
-        process.Exited += (_, _) =>
+        process.OutputDataReceived += (_, e) => { if (e.Data is not null) ReportLine(e.Data); else outputClosed.TrySetResult(); };
+        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) ReportLine(e.Data); else errorClosed.TrySetResult(); };
+        process.Exited += async (_, _) =>
         {
             if (label == "Independent gaze") _gazeStartupSignal?.TrySetResult(false);
-            var stopWasRequested = _stopping || _trackingCleanupPending || _closingInProgress;
+            var stopWasRequested = _stopping || _trackingCleanupPending || _closingInProgress ||
+                _startCancellation?.IsCancellationRequested == true;
             int exitCode;
             try { exitCode = process.ExitCode; }
             catch (Exception error)
             {
                 AppendLog($"[{label}] Exit status could not be read: {error.Message}");
+                completedResult.TrySetResult(new(label + " exit status is unverified", "The worker's exit status could not be read.",
+                    "Review Activity and finish Stop tracking before retrying.", true));
                 return;
             }
+            var outputDrained = true;
+            if (label is "Camera tracking" or "Pupil tracking")
+            {
+                // Exited can arrive before the final stderr callbacks. Drain
+                // asynchronously so the summary uses the actual failure, while
+                // a descendant holding a pipe cannot keep the Hub waiting.
+                try { outputDrained = await HubProcessResult.WaitForOutputDrainAsync(outputClosed.Task, errorClosed.Task, TimeSpan.FromSeconds(5)); }
+                catch (Exception error)
+                {
+                    outputDrained = false;
+                    AppendLog($"[{label}] Output could not finish draining: {error.Message}");
+                }
+            }
+            // Publish before posting UI feedback: a startup failure must retain
+            // its own drained result even when Stop subsequently removes it.
+            completedResult.TrySetResult(HubTrackingExitFeedback.Complete(label, exitCode, false,
+                outputDrained, string.Join("\n", recentOutput)));
             PostProcessUpdate(label, () =>
             {
+                    AppendLog($"[{label}] exited with code {exitCode}.");
+                    // A delayed EOF callback from a previous session may arrive
+                    // after Stop has removed it. Keep the log without replacing
+                    // a new session's status or result.
+                    if (!_trackingProcesses.Contains(process)) return;
                     if (!_starting && !_nativeCheekOnlySession && !_trackingProcesses.Any(p => !p.HasExited))
                         EndCheekTrackingSession();
-                    AppendLog($"[{label}] exited with code {exitCode}.");
                     if (label == "Independent gaze" && !stopWasRequested && !_stopping && !_closingInProgress)
                     {
                         if (!_gazeStartupInProgress && !_gazeFailureHandled)
@@ -860,6 +911,15 @@ internal sealed partial class HubForm
                         _runStatus.ForeColor = Warning;
                         if (label == "Camera tracking") SetStatus(_inferenceStatus, StatusKind.Warning, "Stopped");
                         if (_pupil.Checked && label is ("Camera tracking" or "Pupil tracking")) SetStatus(_pupilStatus, StatusKind.Warning, "Stopped");
+                        if (label is "Camera tracking" or "Pupil tracking")
+                        {
+                            var feedback = HubTrackingExitFeedback.Complete(label, exitCode,
+                                _closingInProgress || _trackingCleanupPending || _startCancellation?.IsCancellationRequested == true,
+                                outputDrained, string.Join("\n", recentOutput));
+                            if (feedback is not null)
+                                SetActionFeedback(feedback.Title, feedback.Detail, feedback.NextStep, feedback.IsError,
+                                    feedback.IsError ? ActivitySeverity.Error : ActivitySeverity.Warning);
+                        }
                     }
                     UpdateControlState();
             });
@@ -957,6 +1017,10 @@ internal sealed partial class HubForm
         _gazeInspectionResult = null;
         var succeeded = await RunUtilityAsync("Gaze setup check", "native-eye-local-branch-test.ps1", "-InspectOnly");
         var result = _gazeInspectionResult;
+        if (succeeded && result is { HasActiveMagiskGaze: true, NeedsAttention: false })
+            SetActionFeedback("Magisk gaze module detected", "The optional gaze check found an active Magisk gaze module.",
+                "Leave Independent Eye Gaze off in the Hub. Skip Check gaze setup and Prepare gaze; choose your other features on Live tracking.",
+                severity: ActivitySeverity.Normal);
         MessageBox.Show(this, succeeded && result is not null ? result.PopupText() : HubGazeInspection.FailedPopupText,
             "Gaze setup result", MessageBoxButtons.OK,
             succeeded && result is { NeedsAttention: false } ? MessageBoxIcon.Information : MessageBoxIcon.Warning);

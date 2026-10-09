@@ -53,7 +53,7 @@ internal static class Program
                 if (renderArgument + 1 >= args.Length) throw new ArgumentException("--render-preview requires an output PNG path.");
                 var scenarioArgument = Array.FindIndex(args, value => value.Equals("--preview-scenario", StringComparison.OrdinalIgnoreCase));
                 if (scenarioArgument >= 0 && scenarioArgument + 1 >= args.Length)
-                    throw new ArgumentException("--preview-scenario requires ready, unsupported, or runtime-error.");
+                    throw new ArgumentException("--preview-scenario requires ready, unsupported, runtime-error, or magisk.");
                 var scenario = scenarioArgument >= 0 ? args[scenarioArgument + 1] : "ready";
                 var sourceArgument = Array.FindIndex(args, value => value.Equals("--preview-source", StringComparison.OrdinalIgnoreCase));
                 if (sourceArgument >= 0 && sourceArgument + 1 >= args.Length)
