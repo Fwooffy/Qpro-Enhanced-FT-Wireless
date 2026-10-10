@@ -177,7 +177,7 @@ class ComponentTests(unittest.TestCase):
                 module.atomic_json(addon / 'qpro-owner.json', value)
                 self.assertFalse(module.owner_is_valid(addon))
 
-    def run_workers(self, children, hands=True, touchpad=False, stopped=False):
+    def run_workers(self, children, hands=True, touchpad=False, stopped=False, parent_closed=None):
         self.activity = io.StringIO()
         with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
             local = Path(temporary)
@@ -187,7 +187,7 @@ class ComponentTests(unittest.TestCase):
             (hands_path / 'ready.json').touch()
             args = SimpleNamespace(hands=hands, touchpad=touchpad, parent_stdin=False,
                                    stop_file=str(local / 'stop'), root=str(HERE), mode='trackpad')
-            parent_closed = threading.Event()
+            parent_closed = parent_closed or threading.Event()
             if stopped:
                 parent_closed.set()
             with patch.object(module.subprocess, 'Popen', side_effect=children) as launch, \
@@ -205,7 +205,8 @@ class ComponentTests(unittest.TestCase):
         return module.PACKET.pack(b'QPTP', 1, 64, sequence, timestamp, flags, x, -.5, force, 50,
                                   1, 0, 0, 0, 0)
 
-    def run_relay(self, native, stream=None, parent_closed=None, connect_check=None, send_check=None):
+    def run_relay(self, native, stream=None, parent_closed=None, connect_check=None, send_check=None,
+                  input_update=None):
         self.relay_activity = io.StringIO()
         with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
             local = Path(temporary)
@@ -220,6 +221,8 @@ class ComponentTests(unittest.TestCase):
             def input_enabled(_addon, state, _mode):
                 enabled.append(state)
                 self.relay_enabled = enabled
+                if input_update:
+                    input_update(_addon, state, _mode)
             forwards = []
             def execute(args, **_kwargs):
                 if args[-1] == 'id':
@@ -501,6 +504,85 @@ class ComponentTests(unittest.TestCase):
             module.set_input_enabled(addon, False, 'joystick')
             saved = json.loads((addon / 'resources' / 'settings.json').read_text())
             self.assertEqual(saved, {'smoothingMs': 25, 'enabled': False, 'mode': 'joystick'})
+
+    def test_non_object_controller_settings_are_rejected_without_overwriting(self):
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+            _, addon = self.create_addon(Path(temporary))
+            path = addon / 'resources' / 'settings.json'
+            for value in ([], None, True, 25, 'enabled'):
+                with self.subTest(value=value):
+                    module.atomic_json(path, value)
+                    before = path.read_bytes()
+                    with self.assertRaisesRegex(RuntimeError, 'settings must be a JSON object'):
+                        module.set_input_enabled(addon, False)
+                    self.assertEqual(path.read_bytes(), before)
+
+    def test_unreadable_controller_settings_have_repair_guidance(self):
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+            _, addon = self.create_addon(Path(temporary))
+            path = addon / 'resources' / 'settings.json'
+            path.write_text('{invalid json')
+            with self.assertRaisesRegex(RuntimeError, 'settings could not be read.*Close SteamVR'):
+                module.set_input_enabled(addon, False)
+            self.assertEqual(path.read_text(), '{invalid json')
+
+    def test_malformed_settings_do_not_skip_relay_reader_and_forward_cleanup(self):
+        update = module.set_input_enabled
+        def corrupt_settings(addon, state, mode):
+            if state:
+                module.atomic_json(addon / 'resources' / 'settings.json', [])
+            update(addon, state, mode)
+        native = ReaderProcess()
+        stream = RelayStream([self.packet()])
+        with self.assertRaisesRegex(RuntimeError, 'cleanup needs attention.*settings must be a JSON object'):
+            self.run_relay(native, stream=stream, input_update=corrupt_settings)
+        self.assertTrue(native.waited)
+        self.assertTrue(stream.closed)
+        self.assertTrue(native.stdout.closed)
+        self.assertEqual(self.sent_packets, [])
+        self.assertIn(['fake-adb', '-s', 'quest', 'shell', 'touch', module.REMOTE_STOP], self.relay_commands)
+        self.assertIn(['fake-adb', '-s', 'quest', 'forward', '--remove', 'tcp:27063'], self.relay_commands)
+        report = json.loads(next(line.partition(' ')[2] for line in self.relay_activity.getvalue().splitlines()
+                                 if line.startswith('CONTROLLER_CLEANUP ')))
+        self.assertEqual(report['reader'], 'unconfirmed')
+
+    def test_steamvr_paths_reject_malformed_and_relative_runtime_information(self):
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+            local = Path(temporary)
+            paths = local / 'openvr' / 'openvrpaths.vrpath'
+            for value in ([], None, {}, {'runtime': None}, {'runtime': 'relative'},
+                          {'runtime': [None]}, {'runtime': ['relative/SteamVR']}):
+                with self.subTest(value=value):
+                    module.atomic_json(paths, value)
+                    with self.assertRaisesRegex(RuntimeError, 'no valid absolute runtime folder.*Launch SteamVR'):
+                        module.steamvr_tool(local)
+
+    def test_steamvr_runtime_tool_reads_absolute_paths_and_reports_missing_information(self):
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+            local = Path(temporary)
+            with self.assertRaisesRegex(RuntimeError, 'runtime information could not be read.*Launch SteamVR'):
+                module.steamvr_tool(local)
+            paths = local / 'openvr' / 'openvrpaths.vrpath'
+            tool = local / 'SteamVR' / 'bin' / 'win64' / 'vrpathreg.exe'
+            tool.parent.mkdir(parents=True)
+            tool.touch()
+            module.atomic_json(paths, {'runtime': [str(local / 'missing-runtime'), str(local / 'SteamVR')]})
+            self.assertEqual(module.steamvr_tool(local), tool)
+
+    def test_missing_or_relative_localappdata_fails_before_adb_or_setup(self):
+        for value in (None, '', 'relative', r'C:relative'):
+            with self.subTest(value=value), patch.dict(module.os.environ, {}, clear=True):
+                if value is not None:
+                    module.os.environ['LOCALAPPDATA'] = value
+                with patch.object(module, 'select_target') as target, \
+                     patch.object(module, 'install') as install, \
+                     contextlib.redirect_stdout(io.StringIO()) as activity:
+                    code = module.entry_point(['check', '--root', str(HERE), '--adb', 'fake-adb'])
+                self.assertEqual(code, 1)
+                self.assertIn('CONTROLLER_ERROR ', activity.getvalue())
+                self.assertIn('LOCALAPPDATA', activity.getvalue())
+                target.assert_not_called()
+                install.assert_not_called()
 
     def test_foreign_addon_settings_are_untouched(self):
         with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
@@ -809,6 +891,38 @@ class ComponentTests(unittest.TestCase):
         child = FakeWorker('HANDS_CLEANUP {"confirmed": true, "problems": []}\n', code=0)
         self.run_workers([child], stopped=True)
         self.assertTrue(self.aggregate()['confirmed'])
+
+    def test_parent_stop_during_poll_preserves_successful_worker_cleanup(self):
+        parent_closed = threading.Event()
+        child = FakeWorker('HANDS_CLEANUP {"confirmed": true, "problems": []}\n', code=0)
+        def poll():
+            parent_closed.set()
+            return child.returncode
+        child.poll = poll
+        self.run_workers([child], parent_closed=parent_closed)
+        self.assertTrue(self.aggregate()['confirmed'])
+        self.assertTrue(child.stdin.closed and child.stdout.closed)
+
+    def test_parent_stop_during_poll_does_not_hide_a_worker_failure(self):
+        parent_closed = threading.Event()
+        child = FakeWorker('HANDS_FAILED {"error": "tracking process disconnected"}\n'
+                           'HANDS_CLEANUP {"confirmed": true, "problems": []}\n', code=1)
+        def poll():
+            parent_closed.set()
+            return child.returncode
+        child.poll = poll
+        with self.assertRaisesRegex(module.WorkerFailure, 'tracking process disconnected'):
+            self.run_workers([child], parent_closed=parent_closed)
+        self.assertTrue(self.aggregate()['confirmed'])
+
+    def test_worker_output_close_failure_vetoes_cleanup_success(self):
+        output = CloseFailureOutput('HANDS_CLEANUP {"confirmed": true, "problems": []}\n')
+        with self.assertRaisesRegex(RuntimeError, 'cleanup was not confirmed'):
+            self.run_workers([FakeWorker(output, code=0)], stopped=True)
+        report = self.aggregate()
+        self.assertFalse(report['confirmed'])
+        self.assertTrue(any('Worker output close failed: fixture close failed' in reason
+                            for reason in report['problems']))
 
     def test_stop_racing_confirmed_worker_failure_keeps_operational_error(self):
         child = FakeWorker('HANDS_CLEANUP {"confirmed": true, "problems": []}\n')

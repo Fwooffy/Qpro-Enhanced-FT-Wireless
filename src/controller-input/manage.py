@@ -119,8 +119,17 @@ def assert_steamvr_closed():
 
 def steamvr_tool(local: Path):
     paths = local / 'openvr' / 'openvrpaths.vrpath'
-    data = json.loads(paths.read_text(encoding='utf-8-sig'))
-    candidates = [Path(p) / 'bin' / 'win64' / 'vrpathreg.exe' for p in data.get('runtime', [])]
+    try:
+        data = json.loads(paths.read_text(encoding='utf-8-sig'))
+    except (OSError, ValueError) as error:
+        raise RuntimeError('SteamVR runtime information could not be read. Launch SteamVR once, '
+                           'then close it and retry controller setup.') from error
+    runtimes = data.get('runtime') if isinstance(data, dict) else None
+    if (not isinstance(runtimes, list) or not runtimes or
+            any(not isinstance(p, str) or not p or not Path(p).is_absolute() for p in runtimes)):
+        raise RuntimeError('SteamVR runtime information has no valid absolute runtime folder. '
+                           'Launch SteamVR once, then close it and retry controller setup.')
+    candidates = [Path(p) / 'bin' / 'win64' / 'vrpathreg.exe' for p in runtimes]
     for candidate in candidates:
         if candidate.is_file():
             return candidate
@@ -272,7 +281,14 @@ def set_input_enabled(addon: Path, enabled: bool, mode='trackpad'):
     if not owner_is_valid(addon):
         raise RuntimeError('Install hand/controller components before enabling thumb-rest input.')
     path = addon / 'resources' / 'settings.json'
-    settings = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+    try:
+        settings = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+    except (OSError, ValueError) as error:
+        raise RuntimeError('The controller add-on settings could not be read. Close SteamVR and '
+                           'reinstall the controller add-on before using thumb-rest input.') from error
+    if not isinstance(settings, dict):
+        raise RuntimeError('The controller add-on settings must be a JSON object. Close SteamVR '
+                           'and reinstall the controller add-on before using thumb-rest input.')
     settings.update(enabled=enabled, mode=mode)
     atomic_json(path, settings)
 
@@ -576,7 +592,11 @@ class WorkerOutput:
             self.cleanup_confirmed = False
             self.output_error = str(error)
         finally:
-            self.process.stdout.close()
+            try:
+                self.process.stdout.close()
+            except (OSError, ValueError) as error:
+                self.cleanup_confirmed = False
+                self.output_error = self.output_error or 'Worker output close failed: ' + str(error)
 
     def finish(self):
         if not self.reader_started:
@@ -632,7 +652,9 @@ def run(args, local: Path, adb: Path, target: str):
             if exited:
                 # Read the final diagnostic and cleanup lines before deciding
                 # which failure to report; process exit can precede that drain.
-                exited_before_stop = True
+                # Stop/EOF can arrive while poll runs. A clean worker exit then
+                # belongs to that Stop; nonzero exits are still reported below.
+                exited_before_stop = not stop.exists() and not parent_closed.is_set()
                 break
             time.sleep(.1)
     finally:
@@ -701,7 +723,12 @@ def main(argv=None):
     parser.add_argument('--parent-stdin', action='store_true')
     parser.add_argument('--mode', choices=['trackpad', 'joystick', 'swipe', 'mouse'], default='trackpad')
     args = parser.parse_args(argv)
-    local = Path(os.environ['LOCALAPPDATA'])
+    local_value = os.environ.get('LOCALAPPDATA')
+    if not local_value:
+        raise RuntimeError('Windows LOCALAPPDATA is unavailable; controller components cannot '
+                           'use their private per-user folder. Restart the Hub from your Windows account.')
+    local = Path(local_value)
+    managed_paths(local)
     root = Path(args.root).resolve()
     if args.action == 'install':
         install(root, local)
