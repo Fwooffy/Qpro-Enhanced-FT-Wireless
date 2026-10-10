@@ -22,6 +22,8 @@ internal static class HubModuleInstallation
     internal const string SteamLinkId = "5d5cb4f9-63d7-4e8f-9802-24a5d78ea6ee";
     internal const string LegacyId = "7f9be083-a4f1-4e30-b28a-8e6ec878d583";
     private static readonly string[] LegacyDlls = ["000-Qpro.VirtualDesktop.dll", "000-Qpro.SteamLink.dll", "000-Qpro.IndependentGaze.dll"];
+    private static readonly string[] OtherSourceIds = ["2a8c8080-2a76-46af-bf76-1da7c0127ef8", "91a90618-b020-4064-8832-809b2ca2b3bc", LegacyId];
+    private static readonly Regex OtherSourceName = new(@"steam[ ._-]*link|linkft|virtual[ ._-]*desktop", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     internal static bool HasInstalled(string customLibs)
     {
@@ -99,6 +101,12 @@ internal static class HubModuleInstallation
                 return Result(HubModuleState.Conflict, "Module conflict", "An alternate or legacy module slot is still present. " + repair);
             if (Directory.EnumerateFiles(folder, "*.dll", SearchOption.TopDirectoryOnly).Count() != 1)
                 return Result(HubModuleState.Invalid, "Module needs repair", $"The module folder contains an unexpected DLL: {folder}. " + repair);
+            if (!RegularModuleTree(folder))
+                return Result(HubModuleState.Invalid, "Module folder needs repair", $"The module folder contains a linked entry or exceeds its file inventory limit: {folder}. " + repair);
+            var competingSources = FindCompetingSourceModules(customLibs, folder);
+            if (competingSources.Count > 0)
+                return Result(HubModuleState.Conflict, "Face source conflict",
+                    $"Another Virtual Desktop or Steam Link face module is installed at {string.Join("; ", competingSources)}. Remove that other source module through VRCFaceTracking, close VRCFaceTracking, then retry. Qpro left those files unchanged.");
             var metadataPath = Path.Combine(folder, "module.json");
             if (!RegularPath(metadataPath, directory: false) || new FileInfo(metadataPath).Length > 65536)
                 return Result(HubModuleState.Invalid, "Module card needs repair", $"The module card is missing, linked or too large: {metadataPath}. " + repair);
@@ -165,9 +173,58 @@ internal static class HubModuleInstallation
         catch (Exception error) when (IsInspectionError(error)) { return false; }
     }
 
+    private static List<string> FindCompetingSourceModules(string customLibs, string ownFolder)
+    {
+        // Match the installer's source hints without loading unrelated DLLs.
+        // Unknown modules are preserved; only their names and cards are read.
+        var found = new List<string>();
+        var installedFolder = Path.GetFullPath(ownFolder);
+        foreach (var entry in new DirectoryInfo(customLibs).EnumerateFileSystemInfos())
+        {
+            if (entry.FullName.Equals(installedFolder, StringComparison.OrdinalIgnoreCase)) continue;
+            if (entry is FileInfo file)
+            {
+                if (file.Extension.Equals(".dll", StringComparison.OrdinalIgnoreCase) && OtherSourceName.IsMatch(file.Name)) found.Add(file.FullName);
+                continue;
+            }
+            if (entry is not DirectoryInfo directory || !Guid.TryParseExact(directory.Name, "D", out _)) continue;
+            if (directory.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                if (OtherSourceIds.Take(2).Contains(directory.Name, StringComparer.OrdinalIgnoreCase)) found.Add(directory.FullName);
+                continue;
+            }
+            var dlls = directory.EnumerateFiles("*.dll", SearchOption.TopDirectoryOnly).Take(65).ToArray();
+            if (dlls.Length > 64) throw new FormatException("Module directory exceeded its limit.");
+            if (dlls.Length == 0) continue;
+            var identity = directory.Name;
+            var cardPath = Path.Combine(directory.FullName, "module.json");
+            try
+            {
+                if (RegularPath(cardPath, directory: false) && new FileInfo(cardPath).Length <= 65536)
+                {
+                    using var card = JsonDocument.Parse(File.ReadAllText(cardPath));
+                    if (card.RootElement.ValueKind == JsonValueKind.Object)
+                        foreach (var name in new[] { "ModuleName", "DllFileName", "ModuleId", "ModulePageUrl" })
+                            if (card.RootElement.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
+                                identity += " " + value.GetString();
+                }
+            }
+            catch (Exception error) when (IsInspectionError(error)) { }
+            if (OtherSourceName.IsMatch(identity) || OtherSourceIds.Any(id => identity.Contains(id, StringComparison.OrdinalIgnoreCase)) ||
+                dlls.Any(dll => OtherSourceName.IsMatch(dll.Name))) found.Add(directory.FullName);
+        }
+        return found;
+    }
+
     private static bool IsPackagedQproAssembly(string path)
     {
         try { return ReadableSourcePath(path) && AssemblyName.GetAssemblyName(path).Name == "Qpro.GazeBridge"; }
+        catch (Exception error) when (IsInspectionError(error)) { return false; }
+    }
+
+    internal static bool IsReadablePackageSource(string path)
+    {
+        try { return ReadableSourcePath(path); }
         catch (Exception error) when (IsInspectionError(error)) { return false; }
     }
 
@@ -177,6 +234,24 @@ internal static class HubModuleInstallation
         if (full.StartsWith(@"\\", StringComparison.Ordinal) || (directory ? !Directory.Exists(full) : !File.Exists(full))) return false;
         for (var current = full; !string.IsNullOrEmpty(current); current = Path.GetDirectoryName(current))
             if ((File.Exists(current) || Directory.Exists(current)) && File.GetAttributes(current).HasFlag(FileAttributes.ReparsePoint)) return false;
+        return true;
+    }
+
+    private static bool RegularModuleTree(string path)
+    {
+        // Match PowerShell's installed-tree preflight. A readable top-level DLL
+        // is insufficient if another entry redirects a later module operation.
+        var pending = new Stack<string>();
+        pending.Push(path);
+        var count = 0;
+        while (pending.Count > 0)
+        {
+            foreach (var entry in new DirectoryInfo(pending.Pop()).EnumerateFileSystemInfos())
+            {
+                if (++count > 4096 || entry.Attributes.HasFlag(FileAttributes.ReparsePoint)) return false;
+                if (entry is DirectoryInfo directory) pending.Push(directory.FullName);
+            }
+        }
         return true;
     }
 

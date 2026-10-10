@@ -69,6 +69,8 @@ Check(HubModuleInstallation.HasInstalled(customLibs) && HubModuleInstallation.Is
 var current = HubModuleInstallation.Inspect(customLibs, supplied, false);
 Check(current.State == HubModuleState.Current && current.Detail.Contains(vd) && current.Status.Contains("input unchecked") &&
     current.Detail.Contains("live expressions"), "Disk readiness was mistaken for a proven live connection.");
+Check(HubModuleInstallation.Inspect(Path.Combine(customLibs, "..", "CustomLibs"), supplied, false).IsCurrent,
+    "Path normalization caused the installed Qpro source to conflict with itself.");
 if (OperatingSystem.IsWindows())
 {
     static void MakeJunction(string link, string target)
@@ -99,6 +101,19 @@ if (OperatingSystem.IsWindows())
     MakeJunction(Path.Combine(linkedModuleRoot, HubModuleInstallation.VirtualDesktopId), vd);
     Check(HubModuleInstallation.Inspect(linkedModuleRoot, supplied, false).State == HubModuleState.Invalid,
         "An installed module directory junction became ready.");
+    var nestedModuleLink = Path.Combine(vd, "unexpected linked folder");
+    MakeJunction(nestedModuleLink, Path.GetDirectoryName(supplied)!);
+    var linkedEntryResult = HubModuleInstallation.Inspect(customLibs, supplied, false);
+    Check(linkedEntryResult.State == HubModuleState.Invalid && linkedEntryResult.Detail.Contains("linked entry"),
+        "The Hub accepted a nested module link which PowerShell's tracking preflight rejects.");
+    Directory.Delete(nestedModuleLink);
+    Check(HubModuleInstallation.Inspect(customLibs, supplied, false).IsCurrent,
+        "Removing the unrelated module link did not restore valid module readiness.");
+    var linkedOfficialSource = Path.Combine(customLibs, "91a90618-b020-4064-8832-809b2ca2b3bc");
+    MakeJunction(linkedOfficialSource, Path.GetDirectoryName(supplied)!);
+    Check(HubModuleInstallation.Inspect(customLibs, supplied, false).State == HubModuleState.Conflict,
+        "A known linked official source module was ignored.");
+    Directory.Delete(linkedOfficialSource);
     var linkedResearch = Path.Combine(fixture, "linked research");
     MakeJunction(linkedResearch, research);
     var knownBackup = Path.Combine(research, "vrcft-legacy-registry-module-backup");
@@ -131,6 +146,20 @@ if (OperatingSystem.IsWindows())
     Directory.Delete(nestedLink);
     Directory.Delete(packageLink);
 }
+var inventoryDirectory = Path.Combine(vd, "inventory-fixture");
+Directory.CreateDirectory(inventoryDirectory);
+// The DLL, module card and this directory count as three installed entries.
+// Probe both sides of the production PowerShell guard's boundary.
+for (var entry = 0; entry < 4093; entry++) File.WriteAllText(Path.Combine(inventoryDirectory, entry + ".fixture"), "");
+Check(HubModuleInstallation.Inspect(customLibs, supplied, false).IsCurrent,
+    "A valid installed tree at PowerShell's inventory limit was rejected.");
+var overLimit = Path.Combine(inventoryDirectory, "over-limit.fixture");
+File.WriteAllText(overLimit, "");
+var oversized = HubModuleInstallation.Inspect(customLibs, supplied, false);
+Check(oversized.State == HubModuleState.Invalid && oversized.Detail.Contains("inventory limit"),
+    "The Hub accepted an oversized installed tree which PowerShell's tracking preflight rejects.");
+foreach (var entry in Directory.EnumerateFiles(inventoryDirectory)) File.Delete(entry);
+Directory.Delete(inventoryDirectory);
 var wrongSource = HubModuleInstallation.Inspect(customLibs, supplied, true);
 Check(wrongSource.State == HubModuleState.WrongSource && wrongSource.Detail.Contains("Virtual Desktop") && wrongSource.Detail.Contains("Steam Link"),
     "Selected source mismatch was reported as a missing installation.");
@@ -142,6 +171,54 @@ var foreign = InstallFixture(customLibs, supplied, false, "2a8c8080-2a76-46af-bf
 Check(!HubModuleInstallation.IsCurrent(customLibs, supplied, false), "A copied Qpro DLL under an official identity was ignored.");
 File.Delete(Path.Combine(foreign, "LinkFT.dll"));
 Check(HubModuleInstallation.IsCurrent(customLibs, supplied, false), "Foreign metadata alone blocked an otherwise valid Qpro module.");
+foreach (var name in new[] { "VirtualDesktop.dll", "LinkFT.dll", "VRCFT-Steam_Link.dll" })
+{
+    var otherDll = Path.Combine(customLibs, name);
+    File.WriteAllText(otherDll, "unrelated native source fixture");
+    var otherHash = SHA256.HashData(File.ReadAllBytes(otherDll));
+    var conflict = HubModuleInstallation.Inspect(customLibs, supplied, false);
+    Check(conflict.State == HubModuleState.Conflict && conflict.Detail.Contains(otherDll) &&
+        conflict.Detail.Contains("through VRCFaceTracking") && conflict.Detail.Contains("left those files unchanged"),
+        "A loose competing source module had no actionable conflict warning.");
+    Check(SHA256.HashData(File.ReadAllBytes(otherDll)).AsSpan().SequenceEqual(otherHash),
+        "Inspecting a competing source changed its DLL.");
+    File.Delete(otherDll);
+}
+var competingFolder = Path.Combine(customLibs, "79ccecf5-1374-4808-9d22-4d69c5799fba");
+Directory.CreateDirectory(competingFolder);
+var competingDll = Path.Combine(competingFolder, "NativeFixture.dll");
+var competingCard = Path.Combine(competingFolder, "module.json");
+File.WriteAllText(competingDll, "unrelated native module fixture");
+foreach (var card in new[] {
+    "{\"ModuleName\":\"Virtual Desktop\"}",
+    "{\"DllFileName\":\"VRCFT-SteamLink.dll\"}",
+    "{\"ModuleId\":\"2a8c8080-2a76-46af-bf76-1da7c0127ef8\"}",
+    "{\"ModulePageUrl\":\"https://github.com/danwillm/VRCFT-SteamLink\"}" })
+{
+    File.WriteAllText(competingCard, card);
+    var conflict = HubModuleInstallation.Inspect(customLibs, supplied, false);
+    Check(conflict.State == HubModuleState.Conflict && conflict.Detail.Contains(competingFolder),
+        "A competing source identified through its module card was ignored.");
+    Check(File.ReadAllText(competingCard) == card && File.ReadAllText(competingDll) == "unrelated native module fixture",
+        "Competing module inspection changed unrelated files.");
+}
+File.WriteAllText(competingCard, "{\"ModuleName\":\"Eye movement\",\"ModuleDescription\":\"Works with Virtual Desktop\"}");
+Check(HubModuleInstallation.Inspect(customLibs, supplied, false).IsCurrent,
+    "An unrelated feature module was mistaken for a competing face source.");
+File.WriteAllText(competingCard, "{broken");
+Check(HubModuleInstallation.Inspect(customLibs, supplied, false).IsCurrent,
+    "An unrelated unreadable card was mistaken for a competing face source.");
+File.Delete(competingDll);
+File.Delete(competingCard);
+Directory.Delete(competingFolder);
+var officialDll = Path.Combine(foreign, "NativeFixture.dll");
+File.WriteAllText(officialDll, "unrelated official source fixture");
+File.WriteAllText(Path.Combine(foreign, "module.json"), "{broken");
+Check(HubModuleInstallation.Inspect(customLibs, supplied, false).State == HubModuleState.Conflict,
+    "A known official source GUID with a generic DLL name was ignored.");
+File.Delete(officialDll);
+Check(HubModuleInstallation.Inspect(customLibs, supplied, false).IsCurrent,
+    "An empty official module directory prevented Qpro readiness.");
 var sl = InstallFixture(customLibs, supplied, true);
 Check(!HubModuleInstallation.IsCurrent(customLibs, supplied, false) && !HubModuleInstallation.IsCurrent(customLibs, supplied, true),
     "Two own source modules became ready simultaneously.");

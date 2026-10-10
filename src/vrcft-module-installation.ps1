@@ -306,6 +306,10 @@ function Assert-QproInstalledModule(
         $inventory[0].Relative -ne $identity.Id) {
         throw "The selected Qpro DLL is not the only installed Qpro module. $repair"
     }
+    $competing = @(Find-QproCompetingSourceModules $CustomLibs $inventory | Sort-Object -Unique)
+    if ($competing.Count -gt 0) {
+        throw "Another Virtual Desktop or Steam Link face module is installed at $($competing -join '; '). Remove that other source module through VRCFaceTracking, close VRCFaceTracking, then retry. Qpro left those files unchanged."
+    }
     if (@(Get-ChildItem -LiteralPath $folder -File -Filter "*.dll").Count -ne 1) {
         throw "The module folder contains an unexpected DLL: $folder. $repair"
     }

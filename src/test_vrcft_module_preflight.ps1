@@ -38,6 +38,13 @@ function Expect-Failure([scriptblock]$Action, [string]$Description) {
     try { $null = & $Action } catch { $message = $_.Exception.Message }
     Assert-Test (-not [string]::IsNullOrWhiteSpace($message)) "$Description was accepted by the tracking preflight."
 }
+function Expect-SourceConflict([scriptblock]$Action, [string]$OtherPath) {
+    $message = $null
+    try { $null = & $Action } catch { $message = $_.Exception.Message }
+    Assert-Test (-not [string]::IsNullOrEmpty($message) -and $message.Contains($OtherPath) -and
+        $message.Contains("Remove that other source module through VRCFaceTracking") -and
+        $message.Contains("left those files unchanged")) "A competing source had no actionable preflight warning."
+}
 function Remove-FixtureTree([string]$Path) {
     # Never delete a computed test path until its absolute scope is verified.
     $full = [IO.Path]::GetFullPath($Path)
@@ -98,6 +105,57 @@ try {
         $null = & $launcherProbe $runtime $source
         Assert-QproSameTree $customLibs $true $before
         Assert-Test $true "$source GUID-folder installation was not accepted unchanged."
+
+        # Native source DLLs are identified by names/cards, never loaded. Test
+        # the shared preflight and the real launcher guard with both Qpro sources.
+        foreach ($name in @("VirtualDesktop.dll", "LinkFT.dll", "VRCFT-Steam_Link.dll")) {
+            $otherDll = Join-Path $customLibs $name
+            [IO.File]::WriteAllText($otherDll, "unrelated native source fixture")
+            $unchanged = Get-QproTreeHashes $customLibs $true
+            Expect-SourceConflict { Assert-Preflight $source } $otherDll
+            Expect-SourceConflict { & $launcherProbe $runtime $source } $otherDll
+            Assert-QproSameTree $customLibs $true $unchanged
+            Assert-Test $true "A competing loose source was modified by tracking preflight."
+            Remove-Item -LiteralPath $otherDll
+        }
+        $otherFolder = Join-Path $customLibs "79ccecf5-1374-4808-9d22-4d69c5799fba"
+        New-Item -ItemType Directory -Path $otherFolder | Out-Null
+        $otherDll = Join-Path $otherFolder "NativeFixture.dll"
+        $otherCard = Join-Path $otherFolder "module.json"
+        [IO.File]::WriteAllText($otherDll, "unrelated native module fixture")
+        foreach ($card in @(
+            '{"ModuleName":"Virtual Desktop"}',
+            '{"DllFileName":"VRCFT-SteamLink.dll"}',
+            '{"ModuleId":"2a8c8080-2a76-46af-bf76-1da7c0127ef8"}',
+            '{"ModulePageUrl":"https://github.com/danwillm/VRCFT-SteamLink"}'
+        )) {
+            [IO.File]::WriteAllText($otherCard, $card)
+            $unchanged = Get-QproTreeHashes $customLibs $true
+            Expect-SourceConflict { Assert-Preflight $source } $otherFolder
+            Expect-SourceConflict { & $launcherProbe $runtime $source } $otherFolder
+            Assert-QproSameTree $customLibs $true $unchanged
+            Assert-Test $true "A competing card-identified source was modified by tracking preflight."
+        }
+        [IO.File]::WriteAllText($otherCard, '{"ModuleName":"Eye movement","ModuleDescription":"Works with Virtual Desktop"}')
+        $null = Assert-Preflight $source
+        Assert-Test $true "An unrelated feature module was mistaken for a competing face source."
+        [IO.File]::WriteAllText($otherCard, '{broken')
+        $null = Assert-Preflight $source
+        Assert-Test $true "An unrelated unreadable card was mistaken for a competing face source."
+        Remove-FixtureTree $otherFolder
+        $officialFolder = Join-Path $customLibs "91a90618-b020-4064-8832-809b2ca2b3bc"
+        New-Item -ItemType Directory -Path $officialFolder | Out-Null
+        [IO.File]::WriteAllText((Join-Path $officialFolder "NativeFixture.dll"), "unrelated official source fixture")
+        [IO.File]::WriteAllText((Join-Path $officialFolder "module.json"), '{broken')
+        $unchanged = Get-QproTreeHashes $customLibs $true
+        Expect-SourceConflict { Assert-Preflight $source } $officialFolder
+        Expect-SourceConflict { & $launcherProbe $runtime $source } $officialFolder
+        Assert-QproSameTree $customLibs $true $unchanged
+        Assert-Test $true "A known official source was modified by tracking preflight."
+        Remove-Item -LiteralPath (Join-Path $officialFolder "NativeFixture.dll")
+        $null = Assert-Preflight $source
+        Assert-Test $true "An empty official source directory prevented tracking."
+        Remove-FixtureTree $officialFolder
 
         # Cloud Files tags are tested without altering this PC's OneDrive state.
         # The filesystem item seam exercises the production source guard while
