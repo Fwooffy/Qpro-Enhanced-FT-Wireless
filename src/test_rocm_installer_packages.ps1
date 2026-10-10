@@ -134,7 +134,8 @@ try {
 $script:fixturePipCalls = @()
 $script:fixturePipExit = 0
 function Invoke-QproFixturePip {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$PipArguments)
+    param([switch]$I, [Parameter(ValueFromRemainingArguments = $true)][string[]]$PipArguments)
+    if ($I) { $PipArguments = @('-I') + $PipArguments }
     $script:fixturePipCalls += ,$PipArguments
     $global:LASTEXITCODE = $script:fixturePipExit
 }
@@ -142,6 +143,9 @@ $fixturePython = 'C:\QproFixture\Scripts\python.exe'
 Set-Alias -Name $fixturePython -Value Invoke-QproFixturePip
 Repair-QproRocm10HostWheels $fixturePython $gfx1100Packages
 Assert-Equal 2 $script:fixturePipCalls.Count 'Targeted host repair and dependency reconciliation'
+Assert-Equal $true ($script:fixturePipCalls[0] -contains '-I') 'Repair uses Python isolated mode'
+Assert-Equal $true ($script:fixturePipCalls[0] -contains '--isolated') 'Repair ignores external pip configuration'
+Assert-Equal $true ($script:fixturePipCalls[0] -contains '--no-user') 'Repair remains inside the Qpro environment'
 Assert-Equal $true ($script:fixturePipCalls[0] -contains '--force-reinstall') 'Repair restores already-satisfied host files'
 Assert-Equal $true ($script:fixturePipCalls[0] -contains '--no-deps') 'Repair preserves installed device and SDK packages'
 Assert-Equal $false (($script:fixturePipCalls[0] -join ' ') -like '*amd-torch-device*') 'Repair does not force-download GPU kernels'

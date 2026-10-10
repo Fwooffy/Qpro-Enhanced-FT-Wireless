@@ -216,7 +216,7 @@ function Invoke-QproRocmPip([string]$Python, [string[]]$PipArguments, [string]$F
         # failure. NativeCommandError must not hide pip's long-path hint.
         $ErrorActionPreference = 'Continue'
         $global:LASTEXITCODE = $null
-        & $Python -m pip @PipArguments 2>&1 | ForEach-Object {
+        & $Python -I -m pip --isolated @PipArguments --no-user 2>&1 | ForEach-Object {
             $line = $_.ToString()
             Write-Host $line
             $output.Add($line)
@@ -227,6 +227,33 @@ function Invoke-QproRocmPip([string]$Python, [string[]]$PipArguments, [string]$F
     if ($null -eq $exitCode -or $exitCode -ne 0) {
         throw (Get-QproRocmPipFailure ($output -join "`n") $FailureMessage $EnvironmentRoot)
     }
+}
+
+function Enter-QproRocmEnvironmentScope {
+    # pip and Python settings from another application must not redirect this
+    # Qpro-only install. The caller restores them even when setup fails.
+    $saved = @{}
+    $scopedNames = @('HIP_VISIBLE_DEVICES', 'CUDA_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES',
+        'GPU_DEVICE_ORDINAL', 'ROCM_SDK_TARGET_FAMILY', 'QPRO_ROCM_EXPECTED_GFX_TARGET', 'QPRO_ROCM_INSTALL_SMOKE_TEST')
+    foreach ($item in @(Get-ChildItem Env: | Where-Object { $_.Name -match '^(PIP_|PYTHON)' -or $scopedNames -contains $_.Name })) {
+        $saved[$item.Name] = $item.Value
+        if ($item.Name -in @('HIP_VISIBLE_DEVICES', 'CUDA_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'GPU_DEVICE_ORDINAL')) {
+            Write-Host "Ignoring inherited $($item.Name) during AMD setup so all adapters can be checked."
+        }
+        [Environment]::SetEnvironmentVariable($item.Name, $null, 'Process')
+    }
+    $env:PIP_CONFIG_FILE = 'nul'
+    $env:PYTHONNOUSERSITE = '1'
+    return $saved
+}
+
+function Exit-QproRocmEnvironmentScope([hashtable]$Saved) {
+    $scopedNames = @('HIP_VISIBLE_DEVICES', 'CUDA_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES',
+        'GPU_DEVICE_ORDINAL', 'ROCM_SDK_TARGET_FAMILY', 'QPRO_ROCM_EXPECTED_GFX_TARGET', 'QPRO_ROCM_INSTALL_SMOKE_TEST')
+    foreach ($item in @(Get-ChildItem Env: | Where-Object { $_.Name -match '^(PIP_|PYTHON)' -or $scopedNames -contains $_.Name })) {
+        [Environment]::SetEnvironmentVariable($item.Name, $null, 'Process')
+    }
+    foreach ($name in $Saved.Keys) { [Environment]::SetEnvironmentVariable($name, $Saved[$name], 'Process') }
 }
 
 function Repair-QproRocm10HostWheels([string]$Python, [string[]]$Packages) {
@@ -280,172 +307,177 @@ if ($qproExperimental) {
     Write-Host "Legacy ROCm 7.2.1 explicitly selected for supported discrete AMD GPU: $($qproAmdGpu.Name)"
 }
 
-$qproBasePython = if (Test-QproPython312 $qproPrivatePython) {
-    $qproPrivatePython
-} elseif (Test-Path -LiteralPath (Join-Path $qproSharedRuntime 'runtime-ready.json')) {
-    Get-QproVenvBasePython312 (Join-Path $qproSharedRuntime '.venv')
-} else { $null }
-if ([string]::IsNullOrWhiteSpace($qproBasePython)) {
-    throw "Open QproFaceTracking.exe and complete PC runtime setup first. The AMD installer needs its Python 3.12 base, which may be an existing installation or Qpro's private copy."
-}
-if (-not (Test-Path -LiteralPath $qproRequirements)) {
-    throw "The QproFaceTracking release was not found: $QproRoot"
-}
-$env:PYTHONPATH = $QproRoot
-# A parent's visibility mask can expose only Ryzen integrated graphics. Clear
-# it in this setup process so PyTorch can enumerate and select the actual
-# discrete card; Win32 adapter order is not a HIP device index.
-foreach ($qproMaskName in @('HIP_VISIBLE_DEVICES', 'CUDA_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'GPU_DEVICE_ORDINAL')) {
-    if (Test-Path -LiteralPath "Env:$qproMaskName") {
-        Write-Host "Ignoring inherited $qproMaskName during AMD setup so all adapters can be checked."
-        Remove-Item -LiteralPath "Env:$qproMaskName"
-    }
-}
-if ($qproExperimental) {
-    Remove-Item Env:ROCM_SDK_TARGET_FAMILY -ErrorAction SilentlyContinue
-    $env:QPRO_ROCM_EXPECTED_GFX_TARGET = $qproGfxTarget
-    $env:QPRO_ROCM_INSTALL_SMOKE_TEST = '1'
-} else {
-    # The pinned 7.2.1 wheels provide the "custom" target family. Selecting it
-    # avoids their offload-arch trampoline on install paths containing spaces.
-    $env:ROCM_SDK_TARGET_FAMILY = 'custom'
-    Remove-Item Env:QPRO_ROCM_EXPECTED_GFX_TARGET -ErrorAction SilentlyContinue
-    Remove-Item Env:QPRO_ROCM_INSTALL_SMOKE_TEST -ErrorAction SilentlyContinue
-}
-$qproSiteCustomize = Join-Path $qproRocmEnv 'Lib\site-packages\sitecustomize.py'
-$qproReplaceCustomizedEnvironment = Test-Path -LiteralPath $qproSiteCustomize
-$qproReplaceForUpdate = Test-QproRocmReplacement $qproRocmEnv $qproRocmVersion -Update:$Update
-if ($qproReplaceForUpdate) {
-    Write-Host 'Preparing a separate ROCm update. The current environment stays available until the new GPU checks pass.'
-} elseif ($qproReplaceCustomizedEnvironment) {
-    Write-Host 'Keeping a ROCm folder that contains an earlier GPU-discovery shim; a clean replacement will be created.'
-}
-
-& $qproBasePython -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
-if ($LASTEXITCODE -ne 0) { throw 'QproFaceTracking requires Python 3.12 for these AMD wheels.' }
-
-$qproRocmEnv = Initialize-QproRocmEnvironment $qproRocmEnv $qproBasePython -ForceReplacement:($qproReplaceCustomizedEnvironment -or $qproReplaceForUpdate)
-$qproRocmPython = Join-Path $qproRocmEnv 'Scripts\python.exe'
-$qproReadyMarker = Join-Path $qproRocmEnv 'qpro-rocm-ready.json'
-Write-Host "Separate Qpro ROCm environment: $qproRocmEnv"
-Write-Host 'Older extracted-release ROCm environments are kept as fallbacks; global Python and Windows path settings are unchanged.'
-# A failed installation must not leave a stale readiness claim behind.
-if (Test-Path -LiteralPath $qproReadyMarker) { Remove-Item -LiteralPath $qproReadyMarker -Force }
-
-$qproRocm10Packages = @(if ($qproExperimental) { Get-QproRocm10Packages $qproGfxTarget })
-$qproPackageProbeCode = Get-QproRocmPackageProbeCode
-# Windows PowerShell 5.1's native argument parser removes quotes inside JSON
-# and drops empty arguments. Use a quote-free encoding and a legacy sentinel.
-$qproEncodedPackageSpecs = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $qproRocm10Packages -Compress)))
-$qproPackageProbeArguments = @(
-    $qproEncodedPackageSpecs,
-    $(if ($qproExperimental) { $qproGfxTarget } else { '-' }),
-    $(if ($qproExperimental) { '1' } else { '0' })
-)
-Write-Host 'Checking existing ROCm packages and Python imports...'
-$qproPackageProbe = Invoke-QproRocmPythonProbe $qproRocmPython $qproPackageProbeCode ($qproPackageProbeArguments + @('repair'))
-$qproRuntimeReady = $qproPackageProbe.ExitCode -eq 0
-if (-not $qproRuntimeReady) {
-    foreach ($line in $qproPackageProbe.Output) { Write-Host $line }
-    Write-Host 'Repairing the AMD package set in the separate Qpro environment.'
-}
-
-if (-not $qproRuntimeReady) {
-    Invoke-QproRocmPip $qproRocmPython @('install', '--no-input', '--disable-pip-version-check', '--upgrade', 'pip') 'Updating pip in the ROCm environment failed.' $qproRocmEnv
-
-    if ($qproExperimental) {
-        # Exact device and family packages are required even when old torch
-        # metadata would otherwise cause pip to silently skip its extras.
-        Write-Host "Downloading latest stable ROCm 10.1 $qproGfxTarget PyTorch packages; this may take several gigabytes."
-        Invoke-QproRocmPip $qproRocmPython (@('install', '--no-input', '--disable-pip-version-check', '--no-cache-dir', '--index-url', 'https://stable.repo.amd.com/rocm/whl-next/') + $qproRocm10Packages) "Installing AMD ROCm 10.1 $qproGfxTarget PyTorch packages failed." $qproRocmEnv
-    } else {
-        $qproAmdSdkPackages = @(
-            'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_core-7.2.1-py3-none-win_amd64.whl',
-            'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl',
-            'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl',
-            'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm-7.2.1.tar.gz'
-        )
-        Invoke-QproRocmPip $qproRocmPython (@('install', '--no-input', '--disable-pip-version-check', '--no-cache-dir') + $qproAmdSdkPackages) 'Installing AMD ROCm 7.2.1 components failed.' $qproRocmEnv
-
-        $qproAmdTorchPackages = @(
-            'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torch-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl',
-            'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torchaudio-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl',
-            'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torchvision-0.24.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl'
-        )
-        Invoke-QproRocmPip $qproRocmPython (@('install', '--no-input', '--disable-pip-version-check', '--no-cache-dir') + $qproAmdTorchPackages) 'Installing AMD ROCm PyTorch 2.9.1 failed.' $qproRocmEnv
-    }
-
-    Invoke-QproRocmPip $qproRocmPython @('install', '--no-input', '--disable-pip-version-check', '-r', $qproRequirements) 'Installing QproFaceTracking Python requirements failed.' $qproRocmEnv
-
-    $qproPackageProbe = Invoke-QproRocmPythonProbe $qproRocmPython $qproPackageProbeCode $qproPackageProbeArguments
-    if ($qproExperimental -and $qproPackageProbe.ExitCode -eq 12) {
-        foreach ($line in $qproPackageProbe.Output) { Write-Host $line }
-        Repair-QproRocm10HostWheels $qproRocmPython $qproRocm10Packages
-        $qproPackageProbe = Invoke-QproRocmPythonProbe $qproRocmPython $qproPackageProbeCode $qproPackageProbeArguments
-    }
-    Assert-QproRocmPythonProbe $qproPackageProbe 'AMD package/import verification failed before GPU detection. See the exact missing package, import or DLL error above. This does not mean the discrete GPU is unsupported.'
-}
-
-if ($qproRuntimeReady) {
-    Write-Host 'Required ROCm packages are already installed. Running GPU training and inference checks.'
-}
-
-& $qproRocmPython -m pip check
-if ($LASTEXITCODE -ne 0) { throw 'AMD package dependency verification failed before GPU detection. See the missing or conflicting dependency above.' }
-
-$qproFix = "if torch.version.hip:`r`n    # Windows MIOpen HIPRTC cannot compile these tongue-model BatchNorm kernels.`r`n    torch.backends.cudnn.enabled = False`r`n"
-foreach ($qproScript in @('train_tongue_model.py', 'tongue_model_preview.py')) {
-    $qproScriptPath = Join-Path $QproRoot $qproScript
-    if (-not (Test-Path -LiteralPath $qproScriptPath)) { throw "Missing Qpro script: $qproScriptPath" }
-    $qproText = [System.IO.File]::ReadAllText($qproScriptPath)
-    if ($qproText.Contains('torch.backends.cudnn.enabled = False')) { continue }
-    $qproImport = [regex]::Match($qproText, '(?m)^import torch\r?\n')
-    if (-not $qproImport.Success) { throw "Cannot locate the torch import in $qproScriptPath" }
-    $qproNewline = if ($qproImport.Value.EndsWith("`r`n")) { "`r`n" } else { "`n" }
-    $qproInsertion = "$qproNewline" + $qproFix.Replace("`r`n", $qproNewline)
-    $qproBackup = "$qproScriptPath.pre-rocm.bak"
-    if (-not (Test-Path -LiteralPath $qproBackup)) { Copy-Item -LiteralPath $qproScriptPath -Destination $qproBackup }
-    $qproUpdated = $qproText.Insert($qproImport.Index + $qproImport.Length, $qproInsertion)
-    [System.IO.File]::WriteAllText($qproScriptPath, $qproUpdated, [System.Text.UTF8Encoding]::new($false))
-}
-
-$qproGpuProbe = Invoke-QproRocmPythonProbe $qproRocmPython "import torch; from qpro_gpu import require_rocm_device_name,rocm_device_diagnostics; print('PyTorch:',torch.__version__,flush=True); print('ROCm release:',getattr(torch.version,'rocm',None),flush=True); print('HIP build:',torch.version.hip,flush=True); print('GPU available:',torch.cuda.is_available(),flush=True); print('GPU devices:',rocm_device_diagnostics(torch),flush=True); device=require_rocm_device_name(torch); print('GPU:',torch.cuda.get_device_name(int(device.split(':')[1])),flush=True); print('Device:',device,flush=True)"
-Assert-QproRocmPythonProbe $qproGpuProbe 'AMD packages imported successfully, but the discrete GPU check failed. See the detected adapter, driver or device error above.'
-
-& $qproRocmPython -c "import sys,torch; from qpro_gpu import require_rocm_device_name; from train_tongue_model import create_model; device=require_rocm_device_name(torch); assert not torch.backends.cudnn.enabled; c=torch.load(sys.argv[1],map_location='cpu',weights_only=False); m=create_model(c['architecture'],list(c['targetNames'])).to(device); x=torch.rand(2,2,c['imageSize'],c['imageSize'],device=device); m(x).float().square().mean().backward(); torch.cuda.synchronize(device); print('GPU training smoke test passed on',device)" $qproGateModel
-if ($LASTEXITCODE -ne 0) { throw 'The Qpro tongue model failed a GPU training step.' }
-
-& $qproRocmPython -c "import sys,numpy as np,torch; from qpro_gpu import require_rocm_device_name; from tongue_model_preview import LiveTongueModelPreview; assert not torch.backends.cudnn.enabled; p=LiveTongueModelPreview(sys.argv[1],direction_checkpoint_path=sys.argv[2]); assert str(p.device)==require_rocm_device_name(torch); p.predict(np.zeros((400,800),dtype=np.uint8),None,[]); torch.cuda.synchronize(p.device); print('GPU inference smoke test passed on',p.device)" $qproGateModel $qproDirectionModel
-if ($LASTEXITCODE -ne 0) { throw 'The Qpro tongue model failed a GPU inference step.' }
-
-Remove-Item Env:QPRO_ROCM_INSTALL_SMOKE_TEST -ErrorAction SilentlyContinue
-Remove-Item Env:QPRO_ROCM_EXPECTED_GFX_TARGET -ErrorAction SilentlyContinue
-
-@{
-    schema = 1
-    rocmVersion = $qproRocmVersion
-    supportTier = if ($qproExperimental) { 'experimental-rocm-10' } else { 'amd-windows-7.2.1' }
-    gfxTarget = $qproGfxTarget
-    windowsBuild = $qproWindowsBuild
-    experimentalWindows10 = $qproWindows10Experiment
-    python = $qproRocmPython
-    gpu = $qproAmdGpu.Name
-    verifiedAtUtc = [DateTime]::UtcNow.ToString('o')
-} | ConvertTo-Json | Set-Content -LiteralPath $qproReadyMarker -Encoding UTF8
+$qproSetupEnvironment = Enter-QproRocmEnvironmentScope
 try {
-    & $qproRocmPython -c "import torch; from qpro_gpu import require_rocm_device_name; print('Final readiness check:', require_rocm_device_name(torch))"
-    if ($LASTEXITCODE -ne 0) { throw 'The ROCm environment failed its final readiness check.' }
-} catch {
-    Remove-Item -LiteralPath $qproReadyMarker -Force -ErrorAction SilentlyContinue
-    throw
+    $qproBasePython = if (Test-QproPython312 $qproPrivatePython) {
+        $qproPrivatePython
+    } elseif (Test-Path -LiteralPath (Join-Path $qproSharedRuntime 'runtime-ready.json')) {
+        Get-QproVenvBasePython312 (Join-Path $qproSharedRuntime '.venv')
+    } else { $null }
+    if ([string]::IsNullOrWhiteSpace($qproBasePython)) {
+        throw "Open QproFaceTracking.exe and complete PC runtime setup first. The AMD installer needs its Python 3.12 base, which may be an existing installation or Qpro's private copy."
+    }
+    if (-not (Test-Path -LiteralPath $qproRequirements)) {
+        throw "The QproFaceTracking release was not found: $QproRoot"
+    }
+    $env:PYTHONPATH = $QproRoot
+    # A parent's visibility mask can expose only Ryzen integrated graphics. Clear
+    # it in this setup process so PyTorch can enumerate and select the actual
+    # discrete card; Win32 adapter order is not a HIP device index.
+    foreach ($qproMaskName in @('HIP_VISIBLE_DEVICES', 'CUDA_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'GPU_DEVICE_ORDINAL')) {
+        if (Test-Path -LiteralPath "Env:$qproMaskName") {
+            Write-Host "Ignoring inherited $qproMaskName during AMD setup so all adapters can be checked."
+            Remove-Item -LiteralPath "Env:$qproMaskName"
+        }
+    }
+    if ($qproExperimental) {
+        Remove-Item Env:ROCM_SDK_TARGET_FAMILY -ErrorAction SilentlyContinue
+        $env:QPRO_ROCM_EXPECTED_GFX_TARGET = $qproGfxTarget
+        $env:QPRO_ROCM_INSTALL_SMOKE_TEST = '1'
+    } else {
+        # The pinned 7.2.1 wheels provide the "custom" target family. Selecting it
+        # avoids their offload-arch trampoline on install paths containing spaces.
+        $env:ROCM_SDK_TARGET_FAMILY = 'custom'
+        Remove-Item Env:QPRO_ROCM_EXPECTED_GFX_TARGET -ErrorAction SilentlyContinue
+        Remove-Item Env:QPRO_ROCM_INSTALL_SMOKE_TEST -ErrorAction SilentlyContinue
+    }
+    $qproSiteCustomize = Join-Path $qproRocmEnv 'Lib\site-packages\sitecustomize.py'
+    $qproReplaceCustomizedEnvironment = Test-Path -LiteralPath $qproSiteCustomize
+    $qproReplaceForUpdate = Test-QproRocmReplacement $qproRocmEnv $qproRocmVersion -Update:$Update
+    if ($qproReplaceForUpdate) {
+        Write-Host 'Preparing a separate ROCm update. The current environment stays available until the new GPU checks pass.'
+    } elseif ($qproReplaceCustomizedEnvironment) {
+        Write-Host 'Keeping a ROCm folder that contains an earlier GPU-discovery shim; a clean replacement will be created.'
+    }
+
+    & $qproBasePython -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
+    if ($LASTEXITCODE -ne 0) { throw 'QproFaceTracking requires Python 3.12 for these AMD wheels.' }
+
+    $qproRocmEnv = Initialize-QproRocmEnvironment $qproRocmEnv $qproBasePython -ForceReplacement:($qproReplaceCustomizedEnvironment -or $qproReplaceForUpdate)
+    $qproRocmPython = Join-Path $qproRocmEnv 'Scripts\python.exe'
+    $qproReadyMarker = Join-Path $qproRocmEnv 'qpro-rocm-ready.json'
+    Write-Host "Separate Qpro ROCm environment: $qproRocmEnv"
+    Write-Host 'Older extracted-release ROCm environments are kept as fallbacks; global Python and Windows path settings are unchanged.'
+    # A failed installation must not leave a stale readiness claim behind.
+    if (Test-Path -LiteralPath $qproReadyMarker) { Remove-Item -LiteralPath $qproReadyMarker -Force }
+
+    $qproRocm10Packages = @(if ($qproExperimental) { Get-QproRocm10Packages $qproGfxTarget })
+    $qproPackageProbeCode = Get-QproRocmPackageProbeCode
+    # Windows PowerShell 5.1's native argument parser removes quotes inside JSON
+    # and drops empty arguments. Use a quote-free encoding and a legacy sentinel.
+    $qproEncodedPackageSpecs = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $qproRocm10Packages -Compress)))
+    $qproPackageProbeArguments = @(
+        $qproEncodedPackageSpecs,
+        $(if ($qproExperimental) { $qproGfxTarget } else { '-' }),
+        $(if ($qproExperimental) { '1' } else { '0' })
+    )
+    Write-Host 'Checking existing ROCm packages and Python imports...'
+    $qproPackageProbe = Invoke-QproRocmPythonProbe $qproRocmPython $qproPackageProbeCode ($qproPackageProbeArguments + @('repair'))
+    $qproRuntimeReady = $qproPackageProbe.ExitCode -eq 0
+    if (-not $qproRuntimeReady) {
+        foreach ($line in $qproPackageProbe.Output) { Write-Host $line }
+        Write-Host 'Repairing the AMD package set in the separate Qpro environment.'
+    }
+
+    if (-not $qproRuntimeReady) {
+        Invoke-QproRocmPip $qproRocmPython @('install', '--no-input', '--disable-pip-version-check', '--upgrade', 'pip') 'Updating pip in the ROCm environment failed.' $qproRocmEnv
+
+        if ($qproExperimental) {
+            # Exact device and family packages are required even when old torch
+            # metadata would otherwise cause pip to silently skip its extras.
+            Write-Host "Downloading latest stable ROCm 10.1 $qproGfxTarget PyTorch packages; this may take several gigabytes."
+            Invoke-QproRocmPip $qproRocmPython (@('install', '--no-input', '--disable-pip-version-check', '--no-cache-dir', '--index-url', 'https://stable.repo.amd.com/rocm/whl-next/') + $qproRocm10Packages) "Installing AMD ROCm 10.1 $qproGfxTarget PyTorch packages failed." $qproRocmEnv
+        } else {
+            $qproAmdSdkPackages = @(
+                'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_core-7.2.1-py3-none-win_amd64.whl',
+                'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl',
+                'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl',
+                'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm-7.2.1.tar.gz'
+            )
+            Invoke-QproRocmPip $qproRocmPython (@('install', '--no-input', '--disable-pip-version-check', '--no-cache-dir') + $qproAmdSdkPackages) 'Installing AMD ROCm 7.2.1 components failed.' $qproRocmEnv
+
+            $qproAmdTorchPackages = @(
+                'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torch-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl',
+                'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torchaudio-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl',
+                'https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torchvision-0.24.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl'
+            )
+            Invoke-QproRocmPip $qproRocmPython (@('install', '--no-input', '--disable-pip-version-check', '--no-cache-dir') + $qproAmdTorchPackages) 'Installing AMD ROCm PyTorch 2.9.1 failed.' $qproRocmEnv
+        }
+
+        Invoke-QproRocmPip $qproRocmPython @('install', '--no-input', '--disable-pip-version-check', '-r', $qproRequirements) 'Installing QproFaceTracking Python requirements failed.' $qproRocmEnv
+
+        $qproPackageProbe = Invoke-QproRocmPythonProbe $qproRocmPython $qproPackageProbeCode $qproPackageProbeArguments
+        if ($qproExperimental -and $qproPackageProbe.ExitCode -eq 12) {
+            foreach ($line in $qproPackageProbe.Output) { Write-Host $line }
+            Repair-QproRocm10HostWheels $qproRocmPython $qproRocm10Packages
+            $qproPackageProbe = Invoke-QproRocmPythonProbe $qproRocmPython $qproPackageProbeCode $qproPackageProbeArguments
+        }
+        Assert-QproRocmPythonProbe $qproPackageProbe 'AMD package/import verification failed before GPU detection. See the exact missing package, import or DLL error above. This does not mean the discrete GPU is unsupported.'
+    }
+
+    if ($qproRuntimeReady) {
+        Write-Host 'Required ROCm packages are already installed. Running GPU training and inference checks.'
+    }
+
+    & $qproRocmPython -I -m pip --isolated check
+    if ($LASTEXITCODE -ne 0) { throw 'AMD package dependency verification failed before GPU detection. See the missing or conflicting dependency above.' }
+
+    $qproFix = "if torch.version.hip:`r`n    # Windows MIOpen HIPRTC cannot compile these tongue-model BatchNorm kernels.`r`n    torch.backends.cudnn.enabled = False`r`n"
+    foreach ($qproScript in @('train_tongue_model.py', 'tongue_model_preview.py')) {
+        $qproScriptPath = Join-Path $QproRoot $qproScript
+        if (-not (Test-Path -LiteralPath $qproScriptPath)) { throw "Missing Qpro script: $qproScriptPath" }
+        $qproText = [System.IO.File]::ReadAllText($qproScriptPath)
+        if ($qproText.Contains('torch.backends.cudnn.enabled = False')) { continue }
+        $qproImport = [regex]::Match($qproText, '(?m)^import torch\r?\n')
+        if (-not $qproImport.Success) { throw "Cannot locate the torch import in $qproScriptPath" }
+        $qproNewline = if ($qproImport.Value.EndsWith("`r`n")) { "`r`n" } else { "`n" }
+        $qproInsertion = "$qproNewline" + $qproFix.Replace("`r`n", $qproNewline)
+        $qproBackup = "$qproScriptPath.pre-rocm.bak"
+        if (-not (Test-Path -LiteralPath $qproBackup)) { Copy-Item -LiteralPath $qproScriptPath -Destination $qproBackup }
+        $qproUpdated = $qproText.Insert($qproImport.Index + $qproImport.Length, $qproInsertion)
+        [System.IO.File]::WriteAllText($qproScriptPath, $qproUpdated, [System.Text.UTF8Encoding]::new($false))
+    }
+
+    $qproGpuProbe = Invoke-QproRocmPythonProbe $qproRocmPython "import torch; from qpro_gpu import require_rocm_device_name,rocm_device_diagnostics; print('PyTorch:',torch.__version__,flush=True); print('ROCm release:',getattr(torch.version,'rocm',None),flush=True); print('HIP build:',torch.version.hip,flush=True); print('GPU available:',torch.cuda.is_available(),flush=True); print('GPU devices:',rocm_device_diagnostics(torch),flush=True); device=require_rocm_device_name(torch); print('GPU:',torch.cuda.get_device_name(int(device.split(':')[1])),flush=True); print('Device:',device,flush=True)"
+    Assert-QproRocmPythonProbe $qproGpuProbe 'AMD packages imported successfully, but the discrete GPU check failed. See the detected adapter, driver or device error above.'
+
+    & $qproRocmPython -c "import sys,torch; from qpro_gpu import require_rocm_device_name; from train_tongue_model import create_model; device=require_rocm_device_name(torch); assert not torch.backends.cudnn.enabled; c=torch.load(sys.argv[1],map_location='cpu',weights_only=True); m=create_model(c['architecture'],list(c['targetNames'])).to(device); x=torch.rand(2,2,c['imageSize'],c['imageSize'],device=device); m(x).float().square().mean().backward(); torch.cuda.synchronize(device); print('GPU training smoke test passed on',device)" $qproGateModel
+    if ($LASTEXITCODE -ne 0) { throw 'The Qpro tongue model failed a GPU training step.' }
+
+    & $qproRocmPython -c "import sys,numpy as np,torch; from qpro_gpu import require_rocm_device_name; from tongue_model_preview import LiveTongueModelPreview; assert not torch.backends.cudnn.enabled; p=LiveTongueModelPreview(sys.argv[1],direction_checkpoint_path=sys.argv[2]); assert str(p.device)==require_rocm_device_name(torch); p.predict(np.zeros((400,800),dtype=np.uint8),None,[]); torch.cuda.synchronize(p.device); print('GPU inference smoke test passed on',p.device)" $qproGateModel $qproDirectionModel
+    if ($LASTEXITCODE -ne 0) { throw 'The Qpro tongue model failed a GPU inference step.' }
+
+    Remove-Item Env:QPRO_ROCM_INSTALL_SMOKE_TEST -ErrorAction SilentlyContinue
+    Remove-Item Env:QPRO_ROCM_EXPECTED_GFX_TARGET -ErrorAction SilentlyContinue
+
+    @{
+        schema = 1
+        rocmVersion = $qproRocmVersion
+        supportTier = if ($qproExperimental) { 'experimental-rocm-10' } else { 'amd-windows-7.2.1' }
+        gfxTarget = $qproGfxTarget
+        windowsBuild = $qproWindowsBuild
+        experimentalWindows10 = $qproWindows10Experiment
+        python = $qproRocmPython
+        gpu = $qproAmdGpu.Name
+        verifiedAtUtc = [DateTime]::UtcNow.ToString('o')
+    } | ConvertTo-Json | Set-Content -LiteralPath $qproReadyMarker -Encoding UTF8
+    try {
+        & $qproRocmPython -c "import torch; from qpro_gpu import require_rocm_device_name; print('Final readiness check:', require_rocm_device_name(torch))"
+        if ($LASTEXITCODE -ne 0) { throw 'The ROCm environment failed its final readiness check.' }
+    } catch {
+        Remove-Item -LiteralPath $qproReadyMarker -Force -ErrorAction SilentlyContinue
+        throw
+    }
+    $qproRecipe = Get-QproRocmRecipe $QproRoot ([bool]$UseLegacyRocm)
+    if ($qproRecipe) {
+        # Record the release recipe only after the final GPU validation succeeds.
+        $qproReceipt = [System.IO.File]::ReadAllText($qproReadyMarker) | ConvertFrom-Json
+        $qproReceipt | Add-Member -NotePropertyName recipeSha256 -NotePropertyValue $qproRecipe -Force
+        $qproReceipt | ConvertTo-Json | Set-Content -LiteralPath $qproReadyMarker -Encoding UTF8
+    }
+    Register-QproRocmEnvironment $qproRocmEnv ([bool]$UseLegacyRocm)
+    Write-Host "ROCm runtime ready: $qproRocmPython"
+    Write-Host 'Open QproFaceTracking.exe. Tongue tracking and training will select this ROCm runtime automatically.'
+} finally {
+    Exit-QproRocmEnvironmentScope $qproSetupEnvironment
 }
-$qproRecipe = Get-QproRocmRecipe $QproRoot ([bool]$UseLegacyRocm)
-if ($qproRecipe) {
-    # Record the release recipe only after the final GPU validation succeeds.
-    $qproReceipt = [System.IO.File]::ReadAllText($qproReadyMarker) | ConvertFrom-Json
-    $qproReceipt | Add-Member -NotePropertyName recipeSha256 -NotePropertyValue $qproRecipe -Force
-    $qproReceipt | ConvertTo-Json | Set-Content -LiteralPath $qproReadyMarker -Encoding UTF8
-}
-Register-QproRocmEnvironment $qproRocmEnv ([bool]$UseLegacyRocm)
-Write-Host "ROCm runtime ready: $qproRocmPython"
-Write-Host 'Open QproFaceTracking.exe. Tongue tracking and training will select this ROCm runtime automatically.'
