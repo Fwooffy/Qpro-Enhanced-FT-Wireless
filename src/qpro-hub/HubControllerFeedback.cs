@@ -50,11 +50,22 @@ internal sealed record HubControllerFeedback(
                 ? reasons.Length == 0 ? "The required hand/controller checks did not pass." : string.Join("\n", reasons)
                 : $"Virtual Desktop headset version: {version ?? "not reported"}. Version and component checks passed; live optical input has not been verified." +
                     (warnings.Length == 0 ? string.Empty : "\n" + string.Join("\n", warnings));
-            var next = !components ? "Close SteamVR and install the hand/controller components, reopen SteamVR through Virtual Desktop, then check again."
+            // A missing version profile needs compatibility work. Component repair alone
+            // cannot resolve it, so do not send users into a repeated installation loop.
+            var unsupportedProfile = problems.Any(problem =>
+                problem.Contains("no validated hand profile", StringComparison.OrdinalIgnoreCase) ||
+                problem.Contains("Controller ABI", StringComparison.OrdinalIgnoreCase));
+            if (blocked && version is not null)
+                detail = $"Virtual Desktop headset version: {version}.\n" + detail;
+            var next = unsupportedProfile
+                ? "Keep Hands + controllers off and copy diagnostics, including the headset version and PC driver hash. This Virtual Desktop version needs a validated compatibility profile."
+                : !components ? "Close SteamVR and install the hand/controller components, reopen SteamVR through Virtual Desktop, then check again."
                 : !compatible ? "Follow the reported compatibility detail and check again. Qpro will not use an unvalidated version or ABI."
                 : "Start tracking with Hands + controllers selected, then wait for valid live finger input. A preliminary inactive setting is a warning, not proof that the menu switch is off.";
-            feedback = new(ControllerFeedbackState.Checked, blocked ? "Hand/controller compatibility needs attention" : "Hand/controller prechecks passed",
-                detail, next, blocked);
+            var title = unsupportedProfile ? "This Virtual Desktop version needs a hand profile"
+                : !components ? "Hand/controller components need attention"
+                : !compatible ? "Hand/controller compatibility needs attention" : "Hand/controller prechecks passed";
+            feedback = new(ControllerFeedbackState.Checked, title, detail, next, blocked);
             return true;
         }
         catch (Exception error) when (error is JsonException or KeyNotFoundException or InvalidOperationException or FormatException or ArgumentException)

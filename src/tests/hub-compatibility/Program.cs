@@ -119,7 +119,25 @@ Check(HubControllerFeedback.TryParseCheckLine(HubControllerFeedback.CheckPrefix 
     handResult!.IsError && handResult.Detail.Contains("no validated hand profile"), "The actual incompatible version detail was hidden.");
 hands["componentsReady"] = false; hands["componentProblems"] = new JsonArray("Matching Frida is missing.");
 Check(HubControllerFeedback.TryParseCheckLine(HubControllerFeedback.CheckPrefix + hands.ToJsonString(), out handResult) &&
-    handResult!.NextStep.Contains("install the hand/controller components"), "Missing components lost their repair action.");
+    handResult!.NextStep.Contains("validated compatibility profile") && !handResult.NextStep.Contains("install the hand/controller components"),
+    "An unsupported version sent users into repeated component installation.");
+var missingComponents = HandCheck();
+missingComponents["componentsReady"] = false; missingComponents["fridaVersion"] = null;
+missingComponents["componentProblems"] = new JsonArray("Matching Frida is missing.");
+Check(HubControllerFeedback.TryParseCheckLine(HubControllerFeedback.CheckPrefix + missingComponents.ToJsonString(), out handResult) &&
+    handResult!.Title.Contains("components need attention") && handResult.NextStep.Contains("install the hand/controller components"),
+    "Missing components without a profile failure lost their repair action.");
+var reportedVersion = hands.DeepClone().AsObject();
+reportedVersion["androidVersion"] = "1.34.23.0";
+reportedVersion["pcDriverSha256"] = "70698c13cf40e5a21ea0ad241874ffb8ba2f400c2ab7ace7ad4605fc8c77ddd8";
+reportedVersion["fridaVersion"] = null;
+reportedVersion["problems"] = new JsonArray("This Virtual Desktop Streamer driver has no validated hand profile.",
+    "This headset Virtual Desktop version has no validated hand profile.");
+reportedVersion["componentProblems"] = new JsonArray("Install the experimental hand components first (matching Frida is missing).",
+    "The matching Android hand helper is missing.");
+Check(HubControllerFeedback.TryParseCheckLine(HubControllerFeedback.CheckPrefix + reportedVersion.ToJsonString(), out handResult) &&
+    handResult!.Title.Contains("needs a hand profile") && handResult.Detail.Contains("1.34.23.0") && handResult.NextStep.Contains("Keep Hands + controllers off"),
+    "The reported 1.34.23 failure hid the actual version boundary.");
 hands["compatible"] = true;
 Check(!HubControllerFeedback.TryParseCheckLine(HubControllerFeedback.CheckPrefix + hands.ToJsonString(), out _), "Contradictory hand evidence was accepted.");
 foreach (var property in new[] { "androidVersion", "pcDriverSha256" })
