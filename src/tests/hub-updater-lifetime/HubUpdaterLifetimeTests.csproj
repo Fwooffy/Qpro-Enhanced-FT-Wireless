@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><StartupObject>UpdaterLifetimeTests</StartupObject><TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../qpro-hub/*.cs" Link="Hub/%(Filename)%(Extension)" />
+    <Compile Include="../../shared/CheekTrackingSession.cs;../../shared/EyebrowPreference.cs;../../shared/CheekPuffCalibrationProfile.cs;../../shared/CheekPuffTelemetry.cs;../../shared/DeveloperCheekPuffBaseline.cs" Link="Shared/%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

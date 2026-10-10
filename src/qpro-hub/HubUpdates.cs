@@ -12,24 +12,35 @@ internal sealed partial class HubForm
         AccessibleName = "Qpro app updates", TabStop = true,
     };
     private readonly CancellationTokenSource _updateLifetime = new();
+    private CancellationToken _updateToken;
+    private bool _updateLifetimeReleased;
     private HubUpdateCheck? _updateCheck;
     private bool _updateChecking;
     private bool _updateAutomatically = true;
+    private bool _updateIncludePrereleases;
     private static string UpdateStorage => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "QproFaceTracking", "updates");
     private static string UpdatePreferencePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "QproFaceTracking", "config", "updates.json");
     private static Version AppVersion => typeof(HubForm).Assembly.GetName().Version is { } value
-        ? new Version(value.Major, value.Minor, value.Build) : new Version(2, 1, 2);
+        ? new Version(value.Major, value.Minor, value.Build) : new Version(3, 0, 0);
 
     private void WireUpdates()
     {
+        // Async continuations may run after the window is disposed. Retain the
+        // token so they never access a disposed CancellationTokenSource.
+        _updateToken = _updateLifetime.Token;
+        Disposed += (_, _) => EndUpdateLifetime(releaseSource: true);
         _updateLink.LinkClicked += async (_, _) => await HandleHubUpdateClickAsync();
         if (_previewOnly) return;
         try
         {
             if (File.Exists(UpdatePreferencePath) && new FileInfo(UpdatePreferencePath).Length <= 4096)
-                _updateAutomatically = JsonSerializer.Deserialize<UpdatePreference>(File.ReadAllText(UpdatePreferencePath))?.CheckAutomatically ?? true;
+            {
+                var preference = JsonSerializer.Deserialize<UpdatePreference>(File.ReadAllText(UpdatePreferencePath));
+                _updateAutomatically = preference?.CheckAutomatically ?? true;
+                _updateIncludePrereleases = preference?.IncludePrereleases ?? false;
+            }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
         { AppendLog("[Updates] Could not read the update preference: " + error.Message); }
@@ -42,12 +53,23 @@ internal sealed partial class HubForm
             await CheckComponentUpdatesAsync();
             try
             {
-                await Task.Delay(1000, _updateLifetime.Token);
+                await Task.Delay(1000, _updateToken);
                 await CheckHubUpdatesAsync();
             }
             catch (OperationCanceledException) { }
         };
-        FormClosed += (_, _) => _updateLifetime.Cancel();
+        FormClosed += (_, _) => EndUpdateLifetime(releaseSource: false);
+    }
+
+    private void EndUpdateLifetime(bool releaseSource)
+    {
+        lock (_updateLifetime)
+        {
+            if (_updateLifetimeReleased) return;
+            if (releaseSource) _updateLifetimeReleased = true;
+            try { _updateLifetime.Cancel(); }
+            finally { if (releaseSource) _updateLifetime.Dispose(); }
+        }
     }
 
     private async Task CheckHubUpdatesAsync()
@@ -59,7 +81,7 @@ internal sealed partial class HubForm
         try
         {
             using var client = new HubUpdateClient();
-            var result = await client.CheckAsync(AppVersion, _updateLifetime.Token);
+            var result = await client.CheckAsync(AppVersion, _updateToken, _updateIncludePrereleases);
             if (IsDisposed || Disposing) return;
             _updateCheck = result;
             _updateLink.Text = result.Release is not null ? "Update available" : _componentPlan?.Updates.Count > 0 ? "Component updates" : "Check updates";
@@ -92,24 +114,37 @@ internal sealed partial class HubForm
         if (UtilityActionIsBusy()) return;
         var live = _starting || _stopping || LiveTrackingRunning;
         var packaged = HubUpdateRunner.IsPackagedInstall(_root);
-        string? blocked = live ? "Stop tracking before installing an update. You can read the release notes now."
-            : !packaged ? "This is a source or preview build. Download the release ZIP from GitHub to update."
-            : null;
+        string? blocked = HubUpdateBlockReason(live, packaged, _root);
         using var dialog = new HubUpdateDialog(_updateCheck, AppVersion, _updateAutomatically, blocked,
             async (release, progress, cancellation) =>
             {
                 using var client = new HubUpdateClient();
                 return await client.StageAsync(release, _root, UpdateStorage, progress, cancellation);
+            }, _updateIncludePrereleases, async (includePrereleases, cancellation) =>
+            {
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellation, _updateToken);
+                using var client = new HubUpdateClient();
+                var check = await client.CheckAsync(AppVersion, linked.Token, includePrereleases);
+                if (!IsDisposed && !Disposing && !linked.IsCancellationRequested) AppendLog("[Updates] " + check.Message);
+                return check;
             });
         var result = dialog.ShowDialog(this);
         _updateAutomatically = dialog.CheckAutomatically;
+        _updateIncludePrereleases = dialog.IncludePrereleases;
+        _updateCheck = dialog.Check;
+        if (!IsDisposed && !Disposing)
+        {
+            _updateLink.Text = _updateCheck?.Release is not null ? "Update available"
+                : _componentPlan?.Updates.Count > 0 ? "Component updates" : "Check updates";
+            _updateLink.AccessibleDescription = _updateCheck?.Message ?? "Check the selected release channel again.";
+        }
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(UpdatePreferencePath)!);
             var temporary = UpdatePreferencePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try
             {
-                File.WriteAllText(temporary, JsonSerializer.Serialize(new UpdatePreference(_updateAutomatically)));
+                File.WriteAllText(temporary, JsonSerializer.Serialize(new UpdatePreference(_updateAutomatically, _updateIncludePrereleases)));
                 File.Move(temporary, UpdatePreferencePath, overwrite: true);
             }
             finally { if (File.Exists(temporary)) File.Delete(temporary); }
@@ -160,5 +195,18 @@ internal sealed partial class HubForm
         { if (!IsDisposed) AppendLog("[Updates] Temporary update files could not be removed: " + error.Message); }
     }
 
-    private sealed record UpdatePreference(bool CheckAutomatically);
+    private static string? HubUpdateBlockReason(bool live, bool packaged, string runtimeRoot)
+    {
+        if (live) return "Stop tracking before installing an update. You can read the release notes now.";
+        if (!packaged) return "This is a source or preview build. Download the release ZIP from GitHub to update.";
+        try { HubUpdatePackage.ValidateInstallPath(runtimeRoot); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            return "This app folder is linked or cannot be checked for an in-place update. Download the release ZIP from GitHub, " +
+                "or move the app to a regular local folder before updating. Your models and settings remain available.";
+        }
+        return null;
+    }
+
+    private sealed record UpdatePreference(bool CheckAutomatically, bool IncludePrereleases = false);
 }

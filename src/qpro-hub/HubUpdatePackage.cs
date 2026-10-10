@@ -12,6 +12,10 @@ internal static class HubUpdatePackage
     private const int MaximumEntries = 5_000;
     private sealed record ArchiveFile(ZipArchiveEntry Entry, string RelativePath);
 
+    // Check the installed app before downloading. The apply engine repeats
+    // this guard when replacing files; this check creates or changes nothing.
+    internal static void ValidateInstallPath(string runtimeRoot) => EnsureNoReparse(Path.GetFullPath(runtimeRoot));
+
     internal static string PrepareStorage(string requested)
     {
         string storage = Path.GetFullPath(requested);
