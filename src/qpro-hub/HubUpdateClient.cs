@@ -14,25 +14,29 @@ internal sealed class HubUpdateClient : IDisposable
     {
         _http = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false }, disposeHandler: true)
         { Timeout = Timeout.InfiniteTimeSpan };
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("QproFaceTracking-Updater/2.1.2");
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd("QproFaceTracking-Updater/3.0.0");
     }
 
-    internal async Task<HubUpdateCheck> CheckAsync(Version current, CancellationToken cancellationToken)
+    internal async Task<HubUpdateCheck> CheckAsync(Version current, CancellationToken cancellationToken,
+        bool includePrereleases = false)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, HubUpdateReleaseParser.LatestApi);
+            Uri endpoint = includePrereleases ? HubUpdateReleaseParser.ReleasesApi : HubUpdateReleaseParser.LatestApi;
+            using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
             request.Headers.Accept.ParseAdd("application/vnd.github+json");
             request.Headers.Add("X-GitHub-Api-Version", "2026-03-10");
             using HttpResponseMessage response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
             if (response.StatusCode == HttpStatusCode.NotFound)
-                return new(HubUpdateCheckState.UpToDate, "No stable GitHub release is available yet.");
+                return new(HubUpdateCheckState.UpToDate, includePrereleases
+                    ? "No GitHub release or prerelease is available yet."
+                    : "No stable GitHub release is available yet.");
             if (response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
                 return new(HubUpdateCheckState.Unavailable, "GitHub's update check limit was reached. Try later, or open the release page.");
             response.EnsureSuccessStatusCode();
-            if (response.Content.Headers.ContentLength is > 2_097_152)
+            if (response.Content.Headers.ContentLength is > HubUpdateReleaseParser.MaximumMetadataBytes)
                 throw new InvalidDataException("GitHub release metadata is unexpectedly large.");
             using Stream source = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
             using var bytes = new MemoryStream();
@@ -40,10 +44,14 @@ internal sealed class HubUpdateClient : IDisposable
             int read;
             while ((read = await source.ReadAsync(buffer, timeout.Token).ConfigureAwait(false)) != 0)
             {
-                if (bytes.Length + read > 2_097_152) throw new InvalidDataException("GitHub release metadata is unexpectedly large.");
+                if (bytes.Length + read > HubUpdateReleaseParser.MaximumMetadataBytes)
+                    throw new InvalidDataException("GitHub release metadata is unexpectedly large.");
                 bytes.Write(buffer, 0, read);
             }
-            return HubUpdateReleaseParser.Parse(Encoding.UTF8.GetString(bytes.ToArray()), current);
+            string json = Encoding.UTF8.GetString(bytes.ToArray());
+            return includePrereleases
+                ? HubUpdateReleaseParser.ParseReleases(json, current, includePrereleases: true)
+                : HubUpdateReleaseParser.Parse(json, current);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         { return new(HubUpdateCheckState.Unavailable, "The update check timed out. Your current version is ready to use; try later."); }

@@ -50,6 +50,76 @@ Check(!HubUpdateReleaseParser.TryStableVersion("v02.1.3", out _), "leading zero 
 Check(!HubUpdateReleaseParser.TryStableVersion("2.1.3.4", out _), "four component version");
 Check(!HubUpdateReleaseParser.IsAssetUrl(new Uri(assetUrl + "?token=secret"), "v2.1.3", assetName), "signed initial URL rejected");
 
+JsonObject ChannelMetadata(string tag, bool isPrerelease = false)
+{
+    JsonObject metadata = Metadata(tag: tag);
+    string version = tag.TrimStart('v', 'V');
+    string name = "QproFaceTracking.V" + version + ".zip";
+    metadata["name"] = "QproFaceTracking V" + version;
+    metadata["prerelease"] = isPrerelease;
+    metadata["assets"]![0]!["name"] = name;
+    metadata["assets"]![0]!["browser_download_url"] =
+        "https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases/download/" + tag + "/" + name;
+    return metadata;
+}
+HubUpdateCheck ParseList(bool includePrereleases, params JsonNode?[] releases) =>
+    HubUpdateReleaseParser.ParseReleases(new JsonArray(releases).ToJsonString(), current, includePrereleases);
+Check(ParseList(false, ChannelMetadata("v2.1.4", true), ChannelMetadata("v2.1.3")).Release?.Version == new Version(2, 1, 3),
+    "list stable channel ignores prerelease");
+HubUpdateCheck optedIn = ParseList(true, ChannelMetadata("v2.1.3"), ChannelMetadata("v2.1.4", true));
+Check(optedIn.State == HubUpdateCheckState.Available && optedIn.Release?.IsPrerelease == true &&
+    optedIn.Release.Version == new Version(2, 1, 4) && optedIn.Message.Contains("prerelease"), "opted-in newer prerelease");
+Check(ParseList(true, ChannelMetadata("v2.9.0", true), ChannelMetadata("v2.11.0", true),
+    ChannelMetadata("v2.3.0")).Release?.Version == new Version(2, 11, 0), "numeric ordering, not list or lexical order");
+Check(ParseList(true, ChannelMetadata("v2.1.4", true), ChannelMetadata("v2.1.4")).Release?.IsPrerelease == false,
+    "stable wins equal numeric version after prerelease");
+Check(ParseList(true, ChannelMetadata("v2.1.4"), ChannelMetadata("v2.1.4", true)).Release?.IsPrerelease == false,
+    "stable wins equal numeric version before prerelease");
+JsonObject newestDraft = ChannelMetadata("v9.0.0", true); newestDraft["draft"] = true;
+Check(ParseList(true, newestDraft, ChannelMetadata("v2.1.3")).Release?.Version == new Version(2, 1, 3), "draft never eligible");
+JsonObject malformed = ChannelMetadata("v9.0.0", true); malformed["assets"] = null;
+Check(ParseList(true, malformed, JsonValue.Create("invalid entry"), ChannelMetadata("v2.1.3")).Release?.Version == new Version(2, 1, 3),
+    "malformed entries cannot hide valid stable release");
+string duplicateList = "[" + Metadata().ToJsonString().Replace("\"draft\":false", "\"draft\":false,\"draft\":false") +
+    "," + ChannelMetadata("v2.1.4").ToJsonString() + "]";
+Check(HubUpdateReleaseParser.ParseReleases(duplicateList, current, true).Release?.Version == new Version(2, 1, 4),
+    "duplicate-field entry skipped independently");
+Check(ParseList(true, ChannelMetadata("v2.1.2", true), ChannelMetadata("v2.1.1")).State == HubUpdateCheckState.UpToDate,
+    "same-version hotfix tag is not offered as a newer update");
+HubUpdateCheck suffixRelease = ParseList(true, ChannelMetadata("v2.2.0-rc.1", true), ChannelMetadata("v2.1.3"));
+Check(suffixRelease.State == HubUpdateCheckState.ManualDownloadOnly && suffixRelease.Release?.Tag == "v2.2.0-rc.1" &&
+    suffixRelease.Release.CanInstall == false && suffixRelease.Release.AssetName is null && suffixRelease.Release.DownloadUrl is null &&
+    suffixRelease.Release.Sha256 is null && suffixRelease.Release.ReleasePage.Host == "github.com",
+    "newer suffix tag points to manual release without relaxing package identity");
+Check(ParseList(false, ChannelMetadata("v2.2.0-rc.1", true), ChannelMetadata("v2.1.3")).Release?.Version == new Version(2, 1, 3),
+    "suffix prerelease still excluded by default");
+Check(ParseList(true, ChannelMetadata("v2.2.0-beta.2", true), ChannelMetadata("v2.2.0-beta.10", true)).Release?.Tag == "v2.2.0-beta.10",
+    "suffix numeric identifiers compare numerically");
+Check(ParseList(true, ChannelMetadata("v2.2.0-beta.10", true), ChannelMetadata("v2.2.0-rc.1", true)).Release?.Tag == "v2.2.0-rc.1",
+    "suffix text identifiers compare by semantic version precedence");
+Check(ParseList(true, ChannelMetadata("v2.2.0-beta.1+build.20", true)).Release?.PrereleaseSuffix == "beta.1",
+    "suffix build metadata does not alter semantic precedence");
+Check(ParseList(true, ChannelMetadata("v2.2.0-beta.01", true), ChannelMetadata("v2.1.3")).Release?.Version == new Version(2, 1, 3),
+    "invalid leading-zero suffix skipped");
+Check(ParseList(true, ChannelMetadata("v2.2.0-beta.1", true), ChannelMetadata("v2.2.0")).Release?.IsPrerelease == false,
+    "stable same-base release preferred over manual beta");
+Check(ParseList(true, ChannelMetadata("v2.1.2-beta.1", true)).State == HubUpdateCheckState.UpToDate,
+    "same-base suffix is not offered as a newer version");
+Check(ParseList(true).Message.Contains("compatible") && ParseList(true).Message.Contains("manual download"),
+    "empty compatible channel does not claim suffix releases are absent");
+Check(ParseList(true).State == HubUpdateCheckState.UpToDate, "empty release list");
+Check(ParseList(true, malformed.DeepClone()).State == HubUpdateCheckState.Unavailable, "invalid-only response is not called up to date");
+JsonObject uncheckedBeta = ChannelMetadata("v2.1.4", true); uncheckedBeta["assets"]![0]!["digest"] = null;
+HubUpdateCheck uncheckedResult = ParseList(true, uncheckedBeta, ChannelMetadata("v2.1.3"));
+Check(uncheckedResult.State == HubUpdateCheckState.ManualDownloadOnly && uncheckedResult.Release?.CanInstall == false,
+    "prerelease still requires GitHub checksum");
+JsonObject foreignBeta = ChannelMetadata("v2.1.4", true); foreignBeta["assets"]![0]!["browser_download_url"] = "https://example.com/beta.zip";
+Check(ParseList(true, foreignBeta).Release?.CanInstall == false, "prerelease foreign URL cannot install");
+Reject(() => HubUpdateReleaseParser.ParseReleases("{}", current, true), "non-array release list");
+Reject(() => HubUpdateReleaseParser.ParseReleases(new JsonArray(Enumerable.Range(0,
+    HubUpdateReleaseParser.MaximumReleaseListEntries + 1).Select(_ => (JsonNode?)ChannelMetadata("v2.1.3")).ToArray()).ToJsonString(), current, true),
+    "release count limit");
+
 string fixtureParent = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "artifacts", "hub-update-fixtures"));
 string fixture = Path.Combine(fixtureParent, "qpro-update-tests-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(fixture);
@@ -133,10 +203,34 @@ try
     using (var client = new HubUpdateClient(new FixtureHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         { Content = new StringContent(Metadata().ToJsonString()) })))
         Check((await client.CheckAsync(current, default)).State == HubUpdateCheckState.Available, "fake HTTP release check");
+    using (var client = new HubUpdateClient(new FixtureHandler(request =>
+    {
+        Check(request.RequestUri == HubUpdateReleaseParser.LatestApi, "default check still uses stable latest endpoint");
+        Check(request.Headers.Authorization is null, "public update check sends no credentials");
+        return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(Metadata().ToJsonString()) };
+    })))
+        Check((await client.CheckAsync(current, default)).Release?.IsPrerelease == false, "default HTTP channel remains stable");
+    using (var client = new HubUpdateClient(new FixtureHandler(request =>
+    {
+        Check(request.RequestUri == HubUpdateReleaseParser.ReleasesApi, "opted-in check uses bounded release-list endpoint");
+        Check(request.Headers.Authorization is null, "prerelease check sends no credentials");
+        return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(new JsonArray(
+            ChannelMetadata("v2.1.3"), ChannelMetadata("v2.1.4", true)).ToJsonString()) };
+    })))
+        Check((await client.CheckAsync(current, default, includePrereleases: true)).Release?.IsPrerelease == true,
+            "fake HTTP opted-in release check");
+    using (var client = new HubUpdateClient(new FixtureHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        { Content = new ByteArrayContent(new byte[HubUpdateReleaseParser.MaximumMetadataBytes + 1]) })))
+        Check((await client.CheckAsync(current, default, true)).State == HubUpdateCheckState.Unavailable, "prerelease metadata size limit");
+    using (var client = new HubUpdateClient(new FixtureHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        { Content = new StringContent("{}") })))
+        Check((await client.CheckAsync(current, default, true)).State == HubUpdateCheckState.Unavailable, "malformed list result");
     using (var client = new HubUpdateClient(new FixtureHandler(_ => new HttpResponseMessage(HttpStatusCode.Forbidden))))
         Check((await client.CheckAsync(current, default)).State == HubUpdateCheckState.Unavailable, "rate limit result");
     using (var client = new HubUpdateClient(new FixtureHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound))))
         Check((await client.CheckAsync(current, default)).State == HubUpdateCheckState.UpToDate, "no release yet");
+    using (var client = new HubUpdateClient(new FixtureHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound))))
+        Check((await client.CheckAsync(current, default, true)).Message.Contains("prerelease"), "no prerelease yet channel guidance");
     using (var client = new HubUpdateClient(new FixtureHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         { Content = new ByteArrayContent(File.ReadAllBytes(good)) })))
     {
