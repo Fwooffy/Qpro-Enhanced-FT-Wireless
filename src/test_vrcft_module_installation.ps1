@@ -66,7 +66,7 @@ try {
     $vdDll = Join-Path $vdFolder "000-Qpro.VirtualDesktop.dll"
     $metadata = Read-QproModuleManifest (Join-Path $vdFolder "module.json")
     Assert-Test ($metadata.ModuleId -eq $QproVirtualDesktopId -and $metadata.IsLocal -eq $true -and
-        $metadata.AuthorName -eq "Fwooffy" -and $metadata.Version -eq "2.1.2" -and
+        $metadata.AuthorName -eq "Fwooffy" -and $metadata.Version -eq "3.0.0" -and
         $metadata.DllFileName -eq "000-Qpro.VirtualDesktop.dll" -and $metadata.ModuleName -eq "QproFaceTracking - Virtual Desktop") "The new module card has the wrong Qpro identity."
     Assert-Test ($null -eq $metadata.DownloadUrl -and $null -eq $metadata.InstallationState -and
         $metadata.FileHash -eq (Get-FileHash -LiteralPath $vdDll -Algorithm MD5).Hash.ToLowerInvariant()) "The metadata uses an upstream identity, stale state or wrong FileHash."

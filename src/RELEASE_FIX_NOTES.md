@@ -1,13 +1,19 @@
-# QproFaceTracking V2.1.2
+# QproFaceTracking V3.0.0
 
 ## Before you install
 
-A rooted Quest Pro and the latest [VRCFaceTracking on Steam](https://store.steampowered.com/app/3329480/VRCFaceTracking/) are required. Extract the entire **QproFaceTracking V2.1.2.zip** folder before opening the Hub. GitHub's automatically generated source archives do not contain the ready-to-run app.
+A rooted Quest Pro and the latest [VRCFaceTracking on Steam](https://store.steampowered.com/app/3329480/VRCFaceTracking/) are required. Extract the entire **QproFaceTracking.V3.0.0.zip** folder before opening the Hub. GitHub's automatically generated source archives do not contain the ready-to-run app.
 
 Follow the PDF guide included in the ZIP, or use the [text setup instructions](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/blob/main/src/RELEASE_INSTRUCTIONS.md).
 
-## What's in V2.1.2
+## What's in V3.0.0
 
+- **Optional prerelease updates:** Added a saved **Include prereleases** choice to the update window, off by default. Checks can include published test releases with a newer numeric version. ZIP, checksum and package checks remain required before installation; same-version test ZIPs and suffix-tag releases need a manual download.
+- **Model loading:** Imported and training checkpoints use restricted tensor loading. Files that require arbitrary Python objects are rejected with an explanation instead of being executed. Existing Qpro model exports remain compatible.
+- **ROCm setup isolation:** Python and pip settings inherited from other applications cannot redirect the Qpro installation. Setup restores those settings afterward and keeps its discrete-GPU verification.
+- **Controller cleanup:** Invalid controller settings and worker-output errors no longer skip cleanup or report a successful restoration. Explicit Stop during worker polling is recognized as a normal stop; genuine worker failures remain visible.
+- **Hub lifetime:** UI timers and update requests are released when the window is disposed, including before its first display. Minimized windows skip decorative updates and routine status polling.
+- **Module readiness:** Hub and camera startup now agree on installed-folder checks and competing face-source modules. Conflicts identify the other module and explain how to remove it through VRCFaceTracking; unrelated module files are kept.
 - **Window resizing and restore:** Buffered the Hub's layout containers and limited responsive text work to the visible page. Minimized windows defer that work until restored, and corner resizing groups repeated requests instead of continually relaying out hidden pages. The approved page style remains unchanged.
 - **Linked app folders:** Module installation and file checks accept local app-folder junctions, directory symlinks and Windows Cloud Files. New module recovery copies are saved in `%LOCALAPPDATA%\QproFaceTracking\module-recovery`. Installed module and recovery destinations retain their existing path checks. For OneDrive, keep the extracted app available locally with **Always keep on this device**.
 - **Hand component checks:** Compatibility checks now use the same private hand environment and Android helper as startup. This fixes reports that Frida and the helper were missing after a successful install. An unsupported Virtual Desktop version gives its version and required next step instead of repeatedly asking for component installation.
@@ -80,11 +86,13 @@ Working tongue models from V2.0 onward can be exported through **Model manager**
 
 ## Test status
 
+Two supplied personal tongue exports were replayed privately on existing camera recordings with each checkpoint's declared input size and preprocessing. Both increased extension error and hidden-tongue false detections on the beard recording, so neither replaced the developer model. The supplied weights contain no original training captures and cannot establish accuracy across wearers or on the six advanced tongue shapes.
+
 The window regression fixture covers all five pages through native minimize/restore and repeated size-change messages, checks stable control handles and wrapping, and preserves the Activity log reading position and selection while messages arrive. Real local directory junctions and rollback failures were tested for module installation; OneDrive Cloud Files tags were simulated. Physical corner dragging and real OneDrive hydration remain untested.
 
 The latest Activity tests use a displayed Windows log control and cover continued output while scrolling, bottom following, selected text, wrapped lines and history trimming. Gaze status tests cover repeated refreshes, pending checks, changed connections and successful or failed recovery. Physical mouse-thumb dragging has not been tested.
 
-All 51 offline controller component tests pass. Local child-process fixtures reproduce an optional controller failure while camera/gaze workers remain active, then verify that explicit Stop reaches both stop signals. They cover delayed output, incomplete cleanup, late readiness, source changes and stop-file write failures. Live headset sensor startup still needs confirmation.
+All 60 offline controller component tests pass. Local child-process fixtures reproduce an optional controller failure while camera/gaze workers remain active, then verify that explicit Stop reaches both stop signals. They cover delayed output, incomplete cleanup, late readiness, source changes and stop-file write failures. Live headset sensor startup still needs confirmation.
 
 An offline concurrent replay of 192 recorded frames on a Radeon RX 7900 XTX with ROCm 10.1 reduced mean process CPU time from about 30.27 to 25.07 ms per tongue-and-pupil pair (about 17%). Mean elapsed time per pair changed from 14.39 to 14.91 ms. Raw tongue predictions and pupil detections matched exactly. This is a local AMD result; the reported RTX 5060 Ti system and live VRChat frame rates still need confirmation. No training or model replacement was used for this change.
 

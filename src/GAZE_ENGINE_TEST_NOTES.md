@@ -1,4 +1,4 @@
-# V2.1.2 gaze engine compatibility test
+# V3.0.0 gaze engine compatibility test
 
 This ZIP adds native gaze profiles for the 30 supplied Quest Pro firmware
 builds. It is a **test build**: the additional profiles have been checked

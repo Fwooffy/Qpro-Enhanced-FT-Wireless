@@ -1,10 +1,10 @@
-# QproFaceTracking V2.1.2: text setup guide
+# QproFaceTracking V3.0.0: text setup guide
 
 > **Before you start: you need a rooted Meta Quest Pro and the latest VRCFaceTracking from Steam.** This program will not work on an unrooted headset or a different Quest model. If you still need to root your Quest Pro, use [Fwooffy and glorpette's beginner root guide](https://github.com/glorpette/quest-guides/blob/main/root_guide_by_fwooffy.md). Check that your headset's exact software version is supported by [Singularity](https://github.com/Lumince/singularity) before following a root guide. [Install or update VRCFaceTracking through Steam](https://store.steampowered.com/app/3329480/VRCFaceTracking/) before using Qpro's module.
 >
-> **If you used a QproFaceTracking version before V2.0, record and train your tongue model again.** Do not import a pre-V2.0 model and assume it will work correctly. Working V2.0 through V2.0.2 models can be exported and imported into V2.1.2. The developer v8 model remains the default starting point.
+> **If you used a QproFaceTracking version before V2.0, record and train your tongue model again.** Do not import a pre-V2.0 model and assume it will work correctly. Working V2.0 or newer models can be exported and imported into V3.0.0. The developer v8 model remains the default starting point.
 
-> **This guide covers the V2.1.2 release candidate.** Virtual Desktop and Steam Link are available under **Streaming app**. Mustachio is an optional, highly experimental tongue model; start with developer v8 or your existing working model.
+> **This guide covers the V3.0.0 release candidate.** Virtual Desktop and Steam Link are available under **Streaming app**. Mustachio is an optional, highly experimental tongue model; start with developer v8 or your existing working model.
 
 Start with the headset's eye tracking, then set up the PC software. The **Hub** is the `QproFaceTracking.exe` program. **ADB** is the connection it uses to talk to your Quest. The **Qpro module** sends tracking results to VRCFaceTracking.
 
@@ -23,7 +23,7 @@ Before switching from the Magisk gaze method to the Hub's method, disable the ga
 
 ## 2. Download and open the Hub
 
-1. Download **QproFaceTracking V2.1.2.zip** when it is published on [this project's Releases page](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases), or use the supplied release candidate ZIP. Choose the named QproFaceTracking ZIP, **not** GitHub's “Source code” ZIP.
+1. Download **QproFaceTracking.V3.0.0.zip** when it is published on [this project's Releases page](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases), or use the supplied release candidate ZIP. Choose the named QproFaceTracking ZIP, **not** GitHub's “Source code” ZIP.
 2. In Windows File Explorer, right-click the ZIP and choose **Extract All**. Open the extracted folder. Keep `QproFaceTracking.exe`, `Helpers`, and `QproRuntime` together.
 3. Double-click `QproFaceTracking.exe`. It opens on **First-time setup** the first time. You can return to that page from the menu on the left.
 
@@ -32,6 +32,8 @@ You need an internet connection and several gigabytes of free space for setup. T
 ### Keep the Hub updated
 
 The Hub checks GitHub for a newer stable release when it opens. Click **Check updates** or **Update available** in the top-right corner to read the release notes. You can turn off **Check automatically when the Hub opens** in that window and check manually whenever you want.
+
+Enable **Include prereleases** in the update window to check published test releases too. This is off by default and your choice is remembered. Updates still require clicking **Update** and **Restart and update**. A release must have a newer three-part version number, such as `v3.0.1`; a different test ZIP with the same version is not offered as an update. Suffix tags such as `v3.0.1-beta.1` require a manual download.
 
 1. Stop tracking, then click **Update** to download the release and verify its ZIP checksum and packaged files. You can cancel while the download is running; the current app stays unchanged.
 2. After verification, click **Restart and update**. The Hub closes, replaces its app files in the same folder, then reopens. It keeps your models, recordings, enabled options and connection settings. Press **Start tracking** when you are ready; tracking does not start automatically after the restart.
@@ -134,7 +136,7 @@ See [the experimental controller guide](https://github.com/Fwooffy/Qpro-Enhanced
 
 ## 6. Lower-face calibration: record and train tongue and cheeks
 
-**Train if you have no personal model or used a version before V2.0. You can import a working V2.0 through V2.0.2 model into V2.1.2.** The bundled models were trained on other wearers.
+**Train if you have no personal model or used a version before V2.0. You can import a working V2.0 or newer model into V3.0.0.** The bundled models were trained on other wearers.
 
 1. For Quick refinement or Focused training, choose the model you want to extend under **Live tracking > Lower-face tracking > Lower-face model** before training. Developer v8 is the default. Full dataset makes a new personal model instead.
 2. Open **Personalize**. Start with **Quick refinement**, or press **Show focused and full captures** for the other capture modes below.
@@ -167,7 +169,7 @@ To try it, choose **Mustachio** under **Live tracking > Lower-face tracking > Lo
 
 After training, **Activity** lists the weakest held-out pose cards and diagonal corners. `missed` counts visible-tongue frames that the selected visibility gate marked hidden; `fnr` is that count divided by visible frames. These are checks on held-out frames from the same recording, so try the model live as well.
 
-The **Model manager** can export a model as a backup. Import working V2.0 through V2.0.2 exports into V2.1.2; for pre-V2.0 exports, make a new capture and train again. Camera recordings are personal data, so share them only if you want to.
+The **Model manager** can export a model as a backup. Import working V2.0 or newer exports into V3.0.0; for pre-V2.0 exports, make a new capture and train again. Camera recordings are personal data, so share them only if you want to.
 
 To remove a recording you no longer need, stay on **Personalize**. Under its matching capture card, open **Show saved recordings**, choose it from **Saved recordings (including trained)** and press **Delete selected dataset…**. Read the confirmation before choosing **Yes**: this permanently removes the recording, its labels and session details, and its prepared training cache from this extracted copy. A tongue model already trained from that recording remains available in **Model manager**. The training dropdown above only lists datasets still waiting to be trained.
 

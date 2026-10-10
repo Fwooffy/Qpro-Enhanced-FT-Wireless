@@ -1,6 +1,6 @@
 {
   "name": "QproFaceTracking",
-  "version": "2.1.2",
+  "version": "3.0.0",
   "transport": "usb or ADB TCP over Wi-Fi",
   "wirelessSetup": "on-headset root terminal or Android wireless debugging pairing; USB fallback",
   "bundledEyeProfile": "qpro-independent-visual-axis-v2.json",

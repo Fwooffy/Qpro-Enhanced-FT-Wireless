@@ -4,7 +4,7 @@ $QproVirtualDesktopId = "d6a8eeb2-3490-4d4f-bec1-9d5909da08ea"
 $QproSteamLinkId = "5d5cb4f9-63d7-4e8f-9802-24a5d78ea6ee"
 $QproLegacyModuleId = "7f9be083-a4f1-4e30-b28a-8e6ec878d583"
 
-function Get-QproModuleVersion([string]$RuntimeRoot, [string]$SourceVersion = "2.1.2") {
+function Get-QproModuleVersion([string]$RuntimeRoot, [string]$SourceVersion = "3.0.0") {
     $manifestPath = Join-Path $RuntimeRoot "release-manifest.json"
     Assert-QproReadableSourcePath $manifestPath
     if (-not (Test-Path -LiteralPath $manifestPath)) {

@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "2.1.2"
+    [string]$Version = "3.0.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -81,12 +81,14 @@ $sourceFiles = @(
     "runtime-python.ps1",
     "test_runtime_python_discovery.ps1",
     "test_vrcft_module_installation.ps1",
+    "test_vrcft_module_preflight.ps1",
     "test_release_metadata.ps1",
     "release-components.ps1",
     "test_release_components.ps1",
     "test_runtime_updates.ps1",
     "capture-native-cheek-context.ps1",
     "test_rocm_installer_packages.ps1",
+    "test_rocm_environment_isolation.ps1",
     "test_rocm_gpu_visibility.ps1",
     "test_rocm_runtime_paths.ps1",
     "test_gaze_recovery.ps1",
@@ -160,6 +162,7 @@ $sourceFiles = @(
     "vrcft-gaze-bridge\Qpro.GazeBridge.csproj",
     "vrcft-gaze-bridge\module.json",
     "shared\EyebrowPreference.cs",
+    "shared\CheekTrackingSession.cs",
     "shared\CheekPuffCalibrationProfile.cs",
     "shared\CheekPuffTelemetry.cs",
     "shared\DeveloperCheekPuffBaseline.cs",
@@ -169,7 +172,7 @@ $sourceFiles = @(
     "README.md",
     "qpro-hub\README.md",
     "RELEASE_README.md",
-    "RELEASE_NOTES_V2.1.2.md",
+    "RELEASE_NOTES_V3.0.0.md",
     "RELEASE_FIX_NOTES.md",
     "RELEASE_INSTRUCTIONS.md",
     "RELEASE_HELPERS_README.md",

@@ -9,8 +9,10 @@ function Import-PureFunction([string]$Path, [string]$Name) {
     if ($null -eq $definition) { throw "Missing pure helper: $Name" }
     . ([scriptblock]::Create('function global:' + $definition.Extent.Text.Substring('function '.Length)))
 }
-Import-PureFunction (Join-Path $PSScriptRoot 'vrcft-module-installation.ps1') 'Assert-QproPathWithoutLinks'
-Import-PureFunction (Join-Path $PSScriptRoot 'vrcft-module-installation.ps1') 'Get-QproModuleVersion'
+foreach ($name in @('Initialize-QproSourcePathNative', 'Test-QproSourceReparseTag',
+    'Get-QproSourcePathItem', 'Assert-QproSourceAncestors', 'Assert-QproReadableSourcePath', 'Get-QproModuleVersion')) {
+    Import-PureFunction (Join-Path $PSScriptRoot 'vrcft-module-installation.ps1') $name
+}
 Import-PureFunction (Join-Path $PSScriptRoot 'build-github-source.ps1') 'Get-QproPublicTestSources'
 
 $fixtureParent = [System.IO.Path]::GetFullPath($FixtureRoot).TrimEnd('\', '/')
@@ -30,7 +32,7 @@ function Assert-Rejected([scriptblock]$Action, [string]$Context) {
 try {
     $runtime = Join-Path $fixture 'QproRuntime'
     New-Item -ItemType Directory -Path $runtime | Out-Null
-    Assert-Equal '2.1.2' (Get-QproModuleVersion $runtime) 'Explicit development fallback'
+    Assert-Equal '3.0.0' (Get-QproModuleVersion $runtime) 'Explicit development fallback'
     Assert-Equal '9.3.1' (Get-QproModuleVersion $runtime '9.3.1') 'Selected development fallback'
     Assert-Rejected { Get-QproModuleVersion $runtime 'bad' } 'Malformed development version'
     $manifestPath = Join-Path $runtime 'release-manifest.json'
@@ -55,6 +57,9 @@ try {
         'tests\hub-modules\HubModuleTests.csproj', 'tests\hub-modules\Program.cs',
         'tests\hub-update-apply\HubUpdateApplyTests.csproj', 'tests\hub-update-apply\Program.cs',
         'tests\hub-updates\HubUpdateTests.csproj', 'tests\hub-updates\Program.cs',
+        'tests\hub-updater-lifetime\HubUpdaterLifetimeTests.csproj', 'tests\hub-updater-lifetime\Program.cs',
+        'tests\hub-update-dialog\HubUpdateDialogTests.csproj', 'tests\hub-update-dialog\Program.cs',
+        'tests\hub-component-updates\HubComponentUpdateTests.csproj', 'tests\hub-component-updates\Program.cs',
         'tests\check-release-zip.py', 'tests\README.md', 'tests\helper.ps1')
     $excludedSources = @('tests\hub-updates\bin\Program.cs', 'tests\hub-updates\obj\Generated.cs',
         'tests\artifacts\private.cs', 'tests\captures\capture.py', 'tests\training\train.py',
@@ -75,6 +80,23 @@ try {
     foreach ($project in $actualProjects) {
         $relative = $project.FullName.Substring($PSScriptRoot.Length + 1)
         Assert-Equal $true ($actualExport -contains $relative) 'Every current regression project exported'
+    }
+    $tokens = $null; $parseErrors = $null
+    $sourceAst = [System.Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path $PSScriptRoot 'build-github-source.ps1'), [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
+    $inventory = $sourceAst.Find({ param($node)
+        $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$sourceFiles'
+    }, $true)
+    if ($null -eq $inventory) { throw 'Missing public source inventory.' }
+    $listedSources = @($inventory.Right.FindAll({ param($node)
+        $node -is [System.Management.Automation.Language.StringConstantExpressionAst]
+    }, $true) | ForEach-Object Value)
+    foreach ($shared in Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'shared') -File -Filter '*.cs') {
+        Assert-Equal $true ($listedSources -contains ('shared\' + $shared.Name)) 'Every shared C# dependency exported'
+    }
+    foreach ($required in @('test_rocm_environment_isolation.ps1', 'test_vrcft_module_preflight.ps1')) {
+        Assert-Equal $true ($listedSources -contains $required) "Public regression inventory: $required"
     }
     $privateSource = Join-Path $fixture 'external-private-source'
     New-Item -ItemType Directory -Path $privateSource | Out-Null

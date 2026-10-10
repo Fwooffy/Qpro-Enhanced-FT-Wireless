@@ -1,10 +1,10 @@
-# QproFaceTracking V2.1.2 - release candidate
+# QproFaceTracking V3.0.0 - release candidate
 
 This is a clean derivative of [Qpro-Enhanced-FT](https://github.com/n0tmast3r/Qpro-Enhanced-FT) v0.1.10-poc. V2.0 added AMD ROCm for tongue-model tracking and training, while NVIDIA CUDA has also been live-tested and is functional. A CPU fallback remains available. It carries headset camera and eye data over USB or wireless ADB on a trusted Wi-Fi network. Independent gaze and relative pupil dilation remain experimental features. A rooted Quest Pro is required.
 
-V2.1.2 includes a selectable Steam Link source alongside Virtual Desktop, individual cheek controls and calibration, eyebrow sensitivity, and a separate experimental Mustachio tongue model. Runtime setup uses a private Python archive and reports setup progress in Activity. AMD ROCm becomes ready only after its GPU inference and training checks pass. This folder is a release candidate; publishing the GitHub release is a separate step.
+V3.0.0 includes a selectable Steam Link source alongside Virtual Desktop, individual cheek controls and calibration, eyebrow sensitivity, and a separate experimental Mustachio tongue model. Runtime setup uses a private Python archive and reports setup progress in Activity. AMD ROCm becomes ready only after its GPU inference and training checks pass. This folder is a release candidate; publishing the GitHub release is a separate step.
 
-**Upgrading from a version before V2.0? Record and train a new tongue model.** Keep older models as backups. Working V2.0 through V2.0.2 models can be exported from the old version and imported into V2.1.2 through **Model manager**, without retraining. See the [beginner PDF guide](Quest_Pro_Enhanced_Face_Tracking_Guide.pdf) for the recording steps.
+**Upgrading from a version before V2.0? Record and train a new tongue model.** Keep older models as backups. Working V2.0 or newer models can be exported from the old version and imported into V3.0.0 through **Model manager**, without retraining. See the [beginner PDF guide](Quest_Pro_Enhanced_Face_Tracking_Guide.pdf) for the recording steps.
 
 **Required:** install the [latest VRCFaceTracking from Steam](https://store.steampowered.com/app/3329480/VRCFaceTracking/) and let Steam finish updating it before installing Qpro's module.
 
@@ -114,7 +114,7 @@ The AMD ROCm 10.1 setup downloads packages from `stable.repo.amd.com`; the origi
 
 ## Changes from the upstream package
 
-The Hub executable is built from this project's source. Changes cover source-specific VRCFaceTracking modules, tongue capture and training, gaze recovery, relative pupil processing, isolated runtime setup, GPU selection, and wireless connection helpers. `SHA256SUMS.txt` lists the exact contents of the V2.1.2 ZIP.
+The Hub executable is built from this project's source. Changes cover source-specific VRCFaceTracking modules, tongue capture and training, gaze recovery, relative pupil processing, isolated runtime setup, GPU selection, and wireless connection helpers. `SHA256SUMS.txt` lists the exact contents of the V3.0.0 ZIP.
 
 This edition is not an official release of the upstream repository. See [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).
 

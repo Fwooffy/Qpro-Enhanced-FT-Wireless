@@ -1,6 +1,6 @@
-# QproFaceTracking V2.1.2 - release candidate source
+# QproFaceTracking V3.0.0 - release candidate source
 
-Face-tracking tools for a **rooted Meta Quest Pro** on Windows, based on [n0tmast3r's Qpro-Enhanced-FT](https://github.com/n0tmast3r/Qpro-Enhanced-FT). This source prepares the V2.1.2 release candidate: Virtual Desktop or Steam Link, USB or wireless ADB, NVIDIA CUDA, experimental AMD ROCm support, and CPU fallback. **The V2.1.2 candidate has not been published as a GitHub release.** See [V2.1.2 release notes](RELEASE_NOTES_V2.1.2.md) for the proposed release description.
+Face-tracking tools for a **rooted Meta Quest Pro** on Windows, based on [n0tmast3r's Qpro-Enhanced-FT](https://github.com/n0tmast3r/Qpro-Enhanced-FT). This source prepares the V3.0.0 release candidate: Virtual Desktop or Steam Link, USB or wireless ADB, NVIDIA CUDA, experimental AMD ROCm support, and CPU fallback. **The V3.0.0 candidate has not been published as a GitHub release.** See [V3.0.0 release notes](RELEASE_NOTES_V3.0.0.md) for the proposed release description.
 
 **[Download the latest release](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases/latest)** · [Beginner PDF guide](Quest_Pro_Enhanced_Face_Tracking_Guide.pdf) · [Text setup instructions](RELEASE_INSTRUCTIONS.md) · [Detailed technical notes](RELEASE_README.md) · [Community Discord](https://discord.gg/ghvuJTpRu4)
 
@@ -58,7 +58,7 @@ Quick refinement and Focused training extend the model selected under **Live tra
 
 Personal camera captures, training arrays, personal cheek profiles, saved headset addresses, and generated eye patches are not included in the release ZIP. Approved model weights and developer cheek baselines are included; raw recordings stay private. Share camera captures only with the wearer's permission. Maintainers can use the source-only [developer tongue training guide](DEVELOPER_TONGUE_TRAINING.md) to evaluate further candidates against independent captures before promoting them.
 
-**If you used a Qpro version before V2.0, record and train a new tongue model.** Working V2.0 through V2.0.2 models can be exported and imported into V2.1.2 through **Model manager**, without retraining. Keep older exports as backups; importing a pre-V2.0 model does not replace a new capture and training run. The [beginner PDF guide](Quest_Pro_Enhanced_Face_Tracking_Guide.pdf) walks through the steps.
+**If you used a Qpro version before V2.0, record and train a new tongue model.** Working V2.0 or newer models can be exported and imported into V3.0.0 through **Model manager**, without retraining. Keep older exports as backups; importing a pre-V2.0 model does not replace a new capture and training run. The [beginner PDF guide](Quest_Pro_Enhanced_Face_Tracking_Guide.pdf) walks through the steps.
 
 This repository holds the editable source. Its release build also needs larger assets distributed with the ZIP. See [contributing](CONTRIBUTING.md), [third-party notices](THIRD_PARTY_NOTICES.md), and the [license](LICENSE) before redistributing changes. The [upstream README](UPSTREAM-README.md) retains the original project's notes, including older USB-oriented instructions.
 
