@@ -136,6 +136,7 @@ internal static class Program
                     Application.DoEvents();
                     imageSource = layoutSurface;
                 }
+                form.FlushPreviewLayout();
                 using var preview = new Bitmap(imageSource.Width, imageSource.Height);
                 imageSource.DrawToBitmap(preview, new Rectangle(Point.Empty, imageSource.Size));
                 var output = Path.GetFullPath(args[renderArgument + 1]);

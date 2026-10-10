@@ -143,6 +143,7 @@ internal sealed partial class HubForm : Form
         Size = new Size(1140, 850);
         AutoScaleMode = AutoScaleMode.Dpi;
         AutoScaleDimensions = new SizeF(96F, 96F);
+        DoubleBuffered = true;
         BackColor = Background;
         ForeColor = Color.WhiteSmoke;
         Font = new Font(UiFontName, 10F);
@@ -329,7 +330,11 @@ internal sealed partial class HubForm : Form
         pulseTimer.Tick += (_, _) => PulseSetupAttention();
         if (!previewOnly) pulseTimer.Start();
         var setupProgressTimer = new System.Windows.Forms.Timer { Interval = 45 };
-        setupProgressTimer.Tick += (_, _) => { if (_setupProgress.IsIndeterminate) _setupProgress.AdvanceAnimation(); };
+        setupProgressTimer.Tick += (_, _) =>
+        {
+            if (WindowState != FormWindowState.Minimized && _setupProgress.Visible && _setupProgress.IsIndeterminate)
+                _setupProgress.AdvanceAnimation();
+        };
         if (!previewOnly) setupProgressTimer.Start();
         FormClosed += (_, _) =>
         {

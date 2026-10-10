@@ -13,6 +13,23 @@ using System.Text.RegularExpressions;
 
 namespace QproFaceTracking.Hub;
 
+// Buffer each container's background independently. Whole-window compositing
+// also buffers native edit controls and can delay their scrolling and input.
+internal sealed class BufferedPanel : Panel
+{
+    public BufferedPanel() => DoubleBuffered = true;
+}
+
+internal sealed class BufferedTableLayoutPanel : TableLayoutPanel
+{
+    public BufferedTableLayoutPanel() => DoubleBuffered = true;
+}
+
+internal sealed class BufferedFlowLayoutPanel : FlowLayoutPanel
+{
+    public BufferedFlowLayoutPanel() => DoubleBuffered = true;
+}
+
 // Keep standard CheckBox keyboard and accessibility behavior. Only the visual
 // treatment changes: a quiet feature row with an explicit on/off switch.
 internal sealed class DarkFeatureToggle : CheckBox

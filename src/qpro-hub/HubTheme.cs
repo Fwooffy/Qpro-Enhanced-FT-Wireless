@@ -39,7 +39,7 @@ internal sealed partial class HubForm
     private static Control SetupStepCard(string number, string title, string description, Label status, params DarkButton[] buttons)
     {
         if (buttons.Length == 0) throw new ArgumentException("A setup step needs an action", nameof(buttons));
-        var card = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, RowCount = 5, ColumnCount = 1, BackColor = Raised, Padding = new Padding(16), Margin = new Padding(0, 0, 0, 12) };
+        var card = new BufferedTableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, RowCount = 5, ColumnCount = 1, BackColor = Raised, Padding = new Padding(16), Margin = new Padding(0, 0, 0, 12) };
         card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -53,7 +53,7 @@ internal sealed partial class HubForm
             card.Controls.Add(buttons[0], 0, 4);
         else
         {
-            var actions = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = buttons.Length, Margin = Padding.Empty };
+            var actions = new BufferedTableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = buttons.Length, Margin = Padding.Empty };
             actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             for (var index = 0; index < buttons.Length; index++)
             {
@@ -68,7 +68,7 @@ internal sealed partial class HubForm
 
     private static Control WorkflowCard(string title, string description, ComboBox queue, Label queueStatus, ComboBox recorded, Button capture, Button train, Button delete)
     {
-        var card = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, RowCount = 8, BackColor = Raised, Padding = new Padding(16), Margin = new Padding(0, 0, 0, 12) };
+        var card = new BufferedTableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, RowCount = 8, BackColor = Raised, Padding = new Padding(16), Margin = new Padding(0, 0, 0, 12) };
         card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (var row = 0; row < 9; row++) card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         card.Controls.Add(new Label { Text = title, AutoSize = true, Font = new Font(UiFontName, 11F, FontStyle.Bold), ForeColor = Accent, Margin = new Padding(0, 0, 0, 8), Tag = "responsive-info" });
@@ -79,7 +79,7 @@ internal sealed partial class HubForm
         card.Controls.Add(queue);
         queueStatus.Margin = new Padding(0, 0, 0, 8);
         card.Controls.Add(queueStatus);
-        var actions = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, RowCount = 2, Margin = new Padding(0, 0, 0, 8) };
+        var actions = new BufferedTableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, RowCount = 2, Margin = new Padding(0, 0, 0, 8) };
         actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         actions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         actions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -87,7 +87,7 @@ internal sealed partial class HubForm
         capture.Margin = train.Margin = new Padding(0, 0, 0, 8);
         actions.Controls.Add(capture, 0, 0); actions.Controls.Add(train, 0, 1);
         card.Controls.Add(actions);
-        var recordings = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
+        var recordings = new BufferedTableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, Margin = Padding.Empty,
             Visible = false };
         recordings.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
