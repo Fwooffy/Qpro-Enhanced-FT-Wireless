@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Drawing.Imaging;
 using System.Reflection;
+using System.ComponentModel;
 using QproFaceTracking.Hub;
 
 internal static class LayoutTests
@@ -35,6 +36,23 @@ internal static class LayoutTests
         Application.SetColorMode(SystemColorMode.Dark);
         var root = Path.Combine(Path.GetTempPath(), "qpro-layout-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
+        // A cancelled launch can dispose a form without ever closing a window.
+        // Verify native timer ownership in that path, not just normal Close.
+        using (var abandoned = new HubForm(root, rememberLaunch: false, previewOnly: true))
+        {
+            var components = (IContainer)typeof(HubForm).GetField("_uiComponents", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(abandoned)!;
+            var timers = components.Components.OfType<System.Windows.Forms.Timer>().ToArray();
+            if (timers.Length != 4) throw new Exception("The Hub did not own all periodic/layout timers.");
+            var disposedTimers = 0;
+            foreach (var timer in timers) { timer.Disposed += (_, _) => disposedTimers++; timer.Start(); }
+            var closed = false;
+            abandoned.FormClosed += (_, _) => closed = true;
+            abandoned.Dispose();
+            if (closed || disposedTimers != timers.Length || timers.Any(timer => timer.Enabled))
+                throw new Exception("Disposing a never-shown Hub retained a native timer.");
+            abandoned.FlushPreviewLayout();
+            Console.WriteLine("PASS direct disposal releases all native timers without FormClosed");
+        }
         Console.WriteLine("Constructing offline layout fixture");
         using var form = new HubForm(root, rememberLaunch: false, previewOnly: true);
         Console.WriteLine("Showing offline layout fixture");
@@ -163,6 +181,22 @@ internal static class LayoutTests
             || (log.SelectionStart, log.SelectionLength) != selection)
             throw new Exception("Activity window resizing changed the log reader position or selection.");
         Console.WriteLine("PASS Activity inner log reading position survives appending during corner resizing");
+
+        var owned = (IContainer)typeof(HubForm).GetField("_uiComponents", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(form)!;
+        var pulseTimer = owned.Components.OfType<System.Windows.Forms.Timer>().Single(timer => timer.Interval == 550);
+        var pulseTick = typeof(System.Windows.Forms.Timer).GetMethod("OnTick", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var pulseFlag = typeof(HubForm).GetField("_setupPulseOn", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        using var attention = new DarkButton { Visible = true, Enabled = true };
+        typeof(HubForm).GetMethod("StyleSetupButton", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(form, [attention, "Offline pending step", false, true]);
+        pulseFlag.SetValue(form, false);
+        form.WindowState = FormWindowState.Minimized; Pump(100);
+        pulseTick.Invoke(pulseTimer, [EventArgs.Empty]);
+        if ((bool)pulseFlag.GetValue(form)!) throw new Exception("Setup decoration animated while minimized.");
+        form.WindowState = FormWindowState.Normal; Pump(150);
+        pulseTick.Invoke(pulseTimer, [EventArgs.Empty]);
+        if (!(bool)pulseFlag.GetValue(form)!) throw new Exception("Setup decoration did not resume after restoring.");
+        Console.WriteLine("PASS setup attention skips minimized windows and resumes on restore");
         form.Close();
     }
 }

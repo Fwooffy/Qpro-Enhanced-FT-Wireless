@@ -128,6 +128,7 @@ internal sealed partial class HubForm : Form
     private static readonly string UiFontName = FontFamily.Families.Any(font => font.Name.Equals("Lexend", StringComparison.OrdinalIgnoreCase)) ? "Lexend" : "Segoe UI";
 
     private readonly bool _previewOnly;
+    private readonly System.ComponentModel.Container _uiComponents = new();
 
     public HubForm(string root, bool rememberLaunch = true, bool previewOnly = false)
     {
@@ -323,13 +324,19 @@ internal sealed partial class HubForm : Form
         if (!previewOnly) FormClosing += OnClosing;
 
         if (!previewOnly) { ReloadProfiles(); _ = RefreshStatusAsync(); }
-        var timer = new System.Windows.Forms.Timer { Interval = 2500 };
-        timer.Tick += async (_, _) => await RefreshStatusAsync();
+        var timer = new System.Windows.Forms.Timer(_uiComponents) { Interval = 2500 };
+        timer.Tick += async (_, _) =>
+        {
+            if (WindowState != FormWindowState.Minimized) await RefreshStatusAsync();
+        };
         if (!previewOnly) timer.Start();
-        var pulseTimer = new System.Windows.Forms.Timer { Interval = 550 };
-        pulseTimer.Tick += (_, _) => PulseSetupAttention();
+        var pulseTimer = new System.Windows.Forms.Timer(_uiComponents) { Interval = 550 };
+        pulseTimer.Tick += (_, _) =>
+        {
+            if (WindowState != FormWindowState.Minimized) PulseSetupAttention();
+        };
         if (!previewOnly) pulseTimer.Start();
-        var setupProgressTimer = new System.Windows.Forms.Timer { Interval = 45 };
+        var setupProgressTimer = new System.Windows.Forms.Timer(_uiComponents) { Interval = 45 };
         setupProgressTimer.Tick += (_, _) =>
         {
             if (WindowState != FormWindowState.Minimized && _setupProgress.Visible && _setupProgress.IsIndeterminate)
@@ -339,13 +346,17 @@ internal sealed partial class HubForm : Form
         FormClosed += (_, _) =>
         {
             EndCheekTrackingSession();
-            timer.Stop(); timer.Dispose();
-            pulseTimer.Stop(); pulseTimer.Dispose();
-            setupProgressTimer.Stop(); setupProgressTimer.Dispose();
+            timer.Stop(); pulseTimer.Stop(); setupProgressTimer.Stop();
+        };
+        Disposed += (_, _) =>
+        {
+            // Dispose also covers a form abandoned before it was shown, where
+            // FormClosed never fires. Native timers must not retain that form.
+            _uiComponents.Dispose();
+            EndCheekTrackingSession();
             _soundPlayer?.Dispose();
             foreach (var process in _trackingProcesses) process.Dispose();
         };
-        Disposed += (_, _) => EndCheekTrackingSession();
         RestoreLiveOptions();
         WireUpdates();
         AppendLog("Hub ready. Cheek adjustments and Qpro live overrides start when you press Start tracking. Eyebrow and smirk adjustments can already apply through the installed module.");

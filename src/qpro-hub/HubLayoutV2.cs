@@ -9,7 +9,7 @@ internal sealed partial class HubForm
 
     internal void FlushPreviewLayout()
     {
-        if (_previewOnly) _flushResponsiveLayout?.Invoke();
+        if (_previewOnly && !IsDisposed && !Disposing) _flushResponsiveLayout?.Invoke();
     }
 
     private Control BuildLayout()
@@ -798,7 +798,7 @@ internal sealed partial class HubForm
         var pageList = new[] { setupPage, livePage, personalizationPage, modelsPage, activityPage };
         var fittingTextPages = new HashSet<Panel>();
         var pendingTextPages = new HashSet<Panel>();
-        var textLayoutTimer = new System.Windows.Forms.Timer { Interval = 50 };
+        var textLayoutTimer = new System.Windows.Forms.Timer(_uiComponents) { Interval = 50 };
         void FitPageText(Panel page)
         {
             if (!page.Visible || WindowState == FormWindowState.Minimized) return;
@@ -880,7 +880,6 @@ internal sealed partial class HubForm
             textLayoutTimer.Stop();
             pendingTextPages.Clear();
         };
-        Disposed += (_, _) => textLayoutTimer.Dispose();
         void WatchResponsiveText(Control container, Panel page)
         {
             if (container.Controls.Cast<Control>().Any(child => child is Label label
@@ -1166,7 +1165,21 @@ internal sealed partial class HubForm
             FitFooterColumns();
         }
         Shown += (_, _) => ApplyDpiLayout();
-        DpiChanged += (_, _) => BeginInvoke((Action)ApplyDpiLayout);
+        DpiChanged += (_, _) =>
+        {
+            if (IsDisposed || Disposing || !IsHandleCreated) return;
+            try
+            {
+                BeginInvoke((Action)(() =>
+                {
+                    if (!IsDisposed && !Disposing) ApplyDpiLayout();
+                }));
+            }
+            catch (InvalidOperationException) when (IsDisposed || Disposing || !IsHandleCreated)
+            {
+                // Closing can destroy the handle before the queued resize.
+            }
+        };
         return shell;
     }
 }
