@@ -1,4 +1,4 @@
-param([string]$FixtureDll = "")
+param([string]$FixtureDll = "", [string]$OutputRoot = "")
 
 $ErrorActionPreference = "Stop"
 $sourceRoot = $PSScriptRoot
@@ -8,7 +8,10 @@ if ([string]::IsNullOrWhiteSpace($FixtureDll)) {
 if ([System.Reflection.AssemblyName]::GetAssemblyName($FixtureDll).Name -ne "Qpro.GazeBridge") {
     throw "The fixture must be an existing Qpro DLL. This test reads its metadata and copies it; it never loads or executes it."
 }
-$fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("qpro-module-fixture-" + [guid]::NewGuid().ToString("N"))
+if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
+    $OutputRoot = Join-Path (Split-Path -Parent (Split-Path -Parent $sourceRoot)) "outputs\test-module-installation"
+}
+$fixtureRoot = Join-Path ([System.IO.Path]::GetFullPath($OutputRoot)) ("qpro-module-fixture-" + [guid]::NewGuid().ToString("N"))
 $runtime = Join-Path $fixtureRoot "runtime"
 $appData = Join-Path $fixtureRoot "appdata"
 $localData = Join-Path $fixtureRoot "localdata"
@@ -37,6 +40,21 @@ function Get-Process {
     param($Name, $ErrorAction)
     if ($global:QproFixtureVrcftOpen) { return [pscustomobject]@{ Name = "fixture-process" } }
     return @()
+}
+
+function New-FixtureJunction([string]$Path, [string]$Target) {
+    $scope = [IO.Path]::GetFullPath($fixtureRoot).TrimEnd('\') + '\'
+    foreach ($value in @($Path, $Target)) {
+        Assert-Test ([IO.Path]::GetFullPath($value).StartsWith($scope, [StringComparison]::OrdinalIgnoreCase)) "The junction fixture escaped its own directory."
+    }
+    New-Item -ItemType Junction -Path $Path -Target $Target | Out-Null
+}
+function Remove-FixtureJunction([string]$Path) {
+    $scope = [IO.Path]::GetFullPath($fixtureRoot).TrimEnd('\') + '\'
+    $full = [IO.Path]::GetFullPath($Path)
+    Assert-Test ($full.StartsWith($scope, [StringComparison]::OrdinalIgnoreCase) -and
+        ((Get-Item -LiteralPath $full -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) "The test refused to unlink an ordinary directory or external path."
+    [IO.Directory]::Delete($full, $false)
 }
 
 try {
@@ -69,6 +87,52 @@ try {
     & $uninstall
     Assert-Test (@(Get-QproModuleInventory $customLibs).Count -eq 0) "Uninstallation left a Qpro module active."
     Remove-Item -LiteralPath (Join-Path $runtime "release-manifest.json")
+
+    # The user may launch the release from a junction or synced-folder alias.
+    # Only the packaged source follows it; recovery lives in regular local data.
+    $runtimeLink = Join-Path $fixtureRoot "linked-runtime"
+    New-FixtureJunction $runtimeLink $runtime
+    try {
+        foreach ($sourceName in @("VirtualDesktop", "SteamLink")) {
+            & (Join-Path $runtimeLink "install-vrcft-eye-bridge.ps1") -TrackingSource $sourceName
+            $null = Assert-QproInstalledModule $sourceName $customLibs (Join-Path $runtimeLink "vrcft-gaze-bridge\bin\Release\net10.0\Qpro.GazeBridge.dll")
+        }
+        Assert-Test (-not (Test-Path -LiteralPath (Join-Path $runtime "research"))) "A linked release was used as the transaction recovery destination."
+        Assert-Test (@(Get-ChildItem -LiteralPath (Join-Path $localData "QproFaceTracking\module-recovery") -Directory).Count -ge 3) "No regular local recovery copies were created."
+        & (Join-Path $runtimeLink "uninstall-vrcft-eye-bridge.ps1")
+        Assert-Test (@(Get-QproModuleInventory $customLibs).Count -eq 0) "Uninstall through a directory junction left a Qpro module installed."
+    } finally { Remove-FixtureJunction $runtimeLink }
+
+    # Source permissiveness must never allow an installed/config/recovery path
+    # to redirect writes into another folder.
+    $savedCustomLibs = Join-Path $fixtureRoot "saved-custom-libs"
+    $redirected = Join-Path $fixtureRoot "redirected-files"
+    New-Item -ItemType Directory -Path $redirected | Out-Null
+    $sentinel = Join-Path $redirected "keep.txt"
+    [IO.File]::WriteAllText($sentinel, "unrelated fixture data")
+    Move-Item -LiteralPath $customLibs -Destination $savedCustomLibs
+    New-FixtureJunction $customLibs $redirected
+    try {
+        Expect-Failure { & $install -TrackingSource VirtualDesktop } "contains a link"
+        Expect-Failure { & $uninstall } "contains a link"
+        Assert-Test (([IO.File]::ReadAllText($sentinel)) -eq "unrelated fixture data" -and
+            @(Get-ChildItem -LiteralPath $redirected -Force).Count -eq 1) "A linked destination was modified."
+    } finally {
+        Remove-FixtureJunction $customLibs
+        Move-Item -LiteralPath $savedCustomLibs -Destination $customLibs
+    }
+    $recoveryRoot = Join-Path $localData "QproFaceTracking\module-recovery"
+    $savedRecovery = Join-Path $fixtureRoot "saved-recovery"
+    Move-Item -LiteralPath $recoveryRoot -Destination $savedRecovery
+    New-FixtureJunction $recoveryRoot $redirected
+    try {
+        Expect-Failure { & $install -TrackingSource VirtualDesktop } "contains a link"
+        Expect-Failure { & $uninstall } "contains a link"
+        Assert-Test (@(Get-ChildItem -LiteralPath $redirected -Force).Count -eq 1) "A linked recovery destination was modified."
+    } finally {
+        Remove-FixtureJunction $recoveryRoot
+        Move-Item -LiteralPath $savedRecovery -Destination $recoveryRoot
+    }
 
     # Migrate old root layout and copied/renamed DLLs in a foreign GUID folder.
     $foreignId = "2a8c8080-2a76-46af-bf76-1da7c0127ef8"
@@ -202,11 +266,44 @@ try {
     New-Item -ItemType Directory -Path $legacyBackup | Out-Null
     [IO.File]::WriteAllText((Join-Path $legacyBackup "module.json"), ('{"ModuleId":"' + $QproLegacyModuleId + '"}'))
     Copy-Item -LiteralPath ([object].Assembly.Location) -Destination (Join-Path $legacyBackup "LegacyOfficialFixture.dll")
-    & $uninstall
+
+    # If a physical recovery parent is replaced during the post-move check, the
+    # rollback must not write through its new junction into unrelated files.
+    $legacyTarget = Join-Path $customLibs $QproLegacyModuleId
+    $savedResearch = Join-Path $fixtureRoot "saved-historical-research"
+    function Move-Item {
+        [CmdletBinding()]
+        param([string]$LiteralPath, [string]$Destination)
+        Microsoft.PowerShell.Management\Move-Item @PSBoundParameters
+        if ($LiteralPath -eq $legacyBackup -and $Destination -eq $legacyTarget) {
+            [IO.File]::WriteAllText((Join-Path $legacyTarget "changed-after-move.txt"), "fixture validation failure")
+            Microsoft.PowerShell.Management\Move-Item -LiteralPath $research -Destination $savedResearch
+            New-FixtureJunction $research $redirected
+        }
+    }
+    try {
+        Expect-Failure { & $uninstall } "saved-module recovery needs attention"
+        Assert-Test ((Test-Path -LiteralPath (Join-Path $legacyTarget "LegacyOfficialFixture.dll")) -and
+            @(Get-ChildItem -LiteralPath $redirected -Force).Count -eq 1 -and
+            ([IO.File]::ReadAllText($sentinel)) -eq "unrelated fixture data") "A rollback wrote through a changed recovery parent."
+    } finally {
+        Remove-Item -LiteralPath Function:\Move-Item
+        Remove-FixtureJunction $research
+        Move-Item -LiteralPath $savedResearch -Destination $research
+    }
+    # Return the same fixture to its pre-failure state for a normal linked
+    # historical restore. All paths below were created by this test.
+    Assert-QproDirectChild $legacyTarget $customLibs
+    Assert-QproDirectChild $legacyBackup $research
+    Remove-Item -LiteralPath (Join-Path $legacyTarget "changed-after-move.txt")
+    Move-Item -LiteralPath $legacyTarget -Destination $legacyBackup
+    New-FixtureJunction $runtimeLink $runtime
+    try { & (Join-Path $runtimeLink "uninstall-vrcft-eye-bridge.ps1") }
+    finally { Remove-FixtureJunction $runtimeLink }
     & $uninstall
     Assert-Test ((Test-Path -LiteralPath (Join-Path $customLibs ($QproLegacyModuleId + "\LegacyOfficialFixture.dll"))) -and
         @(Get-QproModuleInventory $customLibs).Count -eq 0) "Restored official legacy files were mistaken for a Qpro module."
-    Write-Host "PASS: own GUID cards, source switching, migration, rollback, backup fallback, unresolved-recovery reporting, legacy restoration and model/config preservation. Fixture: $fixtureRoot"
+    Write-Host "PASS: linked release sources, strict destination/recovery paths, own GUID cards, source switching, migration, rollback, backup fallback, unresolved-recovery reporting, legacy restoration and model/config preservation. Fixture: $fixtureRoot"
 } finally {
     $global:QproFixtureVrcftOpen = $false
     $env:APPDATA = $oldAppData

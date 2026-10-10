@@ -1,7 +1,10 @@
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Microsoft.Win32.SafeHandles;
 
 namespace QproFaceTracking.Hub;
 
@@ -30,8 +33,9 @@ internal static class HubModuleInstallation
     {
         try
         {
-            if (!RegularPath(research, directory: true)) return false;
-            return Directory.EnumerateDirectories(research).Any(path => RegularPath(path, directory: true) &&
+            if (!ReadableSourcePath(research, directory: true)) return false;
+            return Directory.EnumerateDirectories(research).Any(path => !File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint) &&
+                ReadableSourcePath(path, directory: true) &&
                 Regex.IsMatch(Path.GetFileName(path), @"^(vrcft-legacy-registry-module-backup|vrcft-official-virtual-desktop-backup(?:-\d{8}-\d{6}|-[0-9a-f]{32})?)$", RegexOptions.IgnoreCase));
         }
         catch (Exception error) when (IsInspectionError(error)) { return false; }
@@ -115,8 +119,8 @@ internal static class HubModuleInstallation
             var metadataHash = Convert.ToHexString(MD5.HashData(installedStream));
             if (!metadataHash.Equals(recordedHash, StringComparison.OrdinalIgnoreCase))
                 return Result(HubModuleState.Invalid, "Module card needs repair", "The installed DLL does not match its module card's file hash. " + repair);
-            if (!RegularPath(suppliedDll, directory: false) || !IsQproAssembly(suppliedDll))
-                return Result(HubModuleState.Unreadable, "App package needs repair", "This app's packaged Qpro module is missing or unreadable. Extract the complete release ZIP, then retry.");
+            if (!IsPackagedQproAssembly(suppliedDll))
+                return Result(HubModuleState.Unreadable, "App package needs repair", "This app's packaged Qpro module is missing or unreadable. Extract the complete release ZIP to a local folder. For OneDrive, choose 'Always keep on this device' for the extracted folder, then retry.");
             installedStream.Position = 0;
             using var suppliedStream = File.OpenRead(suppliedDll);
             if (!SHA256.HashData(installedStream).AsSpan().SequenceEqual(SHA256.HashData(suppliedStream)))
@@ -161,6 +165,12 @@ internal static class HubModuleInstallation
         catch (Exception error) when (IsInspectionError(error)) { return false; }
     }
 
+    private static bool IsPackagedQproAssembly(string path)
+    {
+        try { return ReadableSourcePath(path) && AssemblyName.GetAssemblyName(path).Name == "Qpro.GazeBridge"; }
+        catch (Exception error) when (IsInspectionError(error)) { return false; }
+    }
+
     private static bool RegularPath(string path, bool directory)
     {
         var full = Path.GetFullPath(path);
@@ -169,6 +179,66 @@ internal static class HubModuleInstallation
             if ((File.Exists(current) || Directory.Exists(current)) && File.GetAttributes(current).HasFlag(FileAttributes.ReparsePoint)) return false;
         return true;
     }
+
+    // Package sources are read-only. Directory links and hydrated Cloud Files
+    // are valid locations for a release, while installed module paths stay strict.
+    private static bool ReadableSourcePath(string path, bool directory = false)
+    {
+        var full = Path.GetFullPath(path);
+        if (!LocalDrivePath(full) || (directory ? !Directory.Exists(full) : !File.Exists(full))) return false;
+        if (!OperatingSystem.IsWindows()) return RegularPath(full, directory);
+        if (!SupportedSourceAncestors(full)) return false;
+        using var handle = directory ? CreateFile(full, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero) :
+            File.OpenHandle(full, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        if (handle.IsInvalid) return false;
+        var finalPath = new StringBuilder(32768);
+        var length = GetFinalPathNameByHandle(handle, finalPath, (uint)finalPath.Capacity, 0);
+        if (length == 0 || length >= finalPath.Capacity) return false;
+        var resolved = finalPath.ToString();
+        if (resolved.StartsWith(@"\\?\", StringComparison.Ordinal)) resolved = resolved[4..];
+        return LocalDrivePath(resolved) && SupportedSourceAncestors(resolved);
+    }
+
+    private static bool LocalDrivePath(string path)
+    {
+        if (path.StartsWith(@"\\", StringComparison.Ordinal) || !Path.IsPathFullyQualified(path)) return false;
+        var root = Path.GetPathRoot(path);
+        if (string.IsNullOrEmpty(root)) return false;
+        var driveType = new DriveInfo(root).DriveType;
+        return driveType is DriveType.Fixed or DriveType.Removable or DriveType.Ram;
+    }
+
+    private static bool SupportedSourceAncestors(string path)
+    {
+        for (var current = path; !string.IsNullOrEmpty(current); current = Path.GetDirectoryName(current))
+        {
+            var attributes = File.GetAttributes(current);
+            if (!attributes.HasFlag(FileAttributes.ReparsePoint)) continue;
+            const uint shareReadWriteDelete = 7, openExisting = 3, openReparsePointWithDirectoryAccess = 0x02200000;
+            const int fileAttributeTagInfoClass = 9;
+            using var handle = CreateFile(current, 0, shareReadWriteDelete, IntPtr.Zero, openExisting, openReparsePointWithDirectoryAccess, IntPtr.Zero);
+            if (handle.IsInvalid || !GetFileInformationByHandleEx(handle, fileAttributeTagInfoClass, out var info, (uint)Marshal.SizeOf<FileAttributeTagInfo>()) ||
+                !SupportedSourceReparseTag(info.ReparseTag, attributes.HasFlag(FileAttributes.Directory))) return false;
+        }
+        return true;
+    }
+
+    internal static bool SupportedSourceReparseTag(uint tag, bool directory)
+        => (tag & 0xffff0fffu) == 0x9000001au || (directory && tag is 0xa0000003u or 0xa000000cu);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileAttributeTagInfo { internal uint FileAttributes; internal uint ReparseTag; }
+
+    [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(string fileName, uint access, uint share, IntPtr security, uint disposition,
+        uint flags, IntPtr template);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int infoClass, out FileAttributeTagInfo info, uint size);
+
+    [DllImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandle(SafeFileHandle handle, StringBuilder path, uint length, uint flags);
 
     private static bool IsInspectionError(Exception error) => error is IOException or UnauthorizedAccessException or
         ArgumentException or JsonException or KeyNotFoundException or InvalidOperationException or FormatException or BadImageFormatException;

@@ -6,7 +6,7 @@ $QproLegacyModuleId = "7f9be083-a4f1-4e30-b28a-8e6ec878d583"
 
 function Get-QproModuleVersion([string]$RuntimeRoot, [string]$SourceVersion = "2.1.2") {
     $manifestPath = Join-Path $RuntimeRoot "release-manifest.json"
-    Assert-QproPathWithoutLinks $manifestPath
+    Assert-QproReadableSourcePath $manifestPath
     if (-not (Test-Path -LiteralPath $manifestPath)) {
         # A development checkout may omit its packaged identity. Keep the fallback explicit
         # so a future release always takes its version from the built manifest.
@@ -57,6 +57,115 @@ function Assert-QproDirectChild([string]$Path, [string]$Parent) {
     }
 }
 
+function Initialize-QproSourcePathNative {
+    if ("Qpro.ModuleSourcePath" -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+namespace Qpro {
+    public static class ModuleSourcePath {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct AttributeTag { public uint Attributes; public uint Tag; }
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int kind, out AttributeTag info, uint size);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandleW(SafeFileHandle handle, StringBuilder path, uint size, uint flags);
+        public static uint GetTag(string path) {
+            using (var handle = CreateFileW(path, 0, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
+                if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+                AttributeTag info;
+                if (!GetFileInformationByHandleEx(handle, 9, out info, 8)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                return info.Tag;
+            }
+        }
+        public static string GetFinalPath(string path) {
+            using (var handle = CreateFileW(path, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+                if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+                var result = new StringBuilder(32768);
+                uint length = GetFinalPathNameByHandleW(handle, result, (uint)result.Capacity, 0);
+                if (length == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+                if (length >= result.Capacity) throw new InvalidOperationException("The resolved source path is too long.");
+                string value = result.ToString();
+                return value.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase) ? @"\\" + value.Substring(8) :
+                    value.StartsWith(@"\\?\", StringComparison.Ordinal) ? value.Substring(4) : value;
+            }
+        }
+    }
+}
+'@
+}
+
+function Test-QproSourceReparseTag([uint32]$Tag, [bool]$Directory) {
+    # Cloud Files placeholders are local files, not links to arbitrary targets.
+    # Only directory links are accepted; packaged file symlinks remain rejected.
+    $cloud = ($Tag -band [uint32]4294905855) -eq [uint32]2415919130 # 0xFFFF0FFF / 0x9000001A
+    return $cloud -or ($Directory -and $Tag -in @([uint32]2684354563, [uint32]2684354572))
+}
+
+function Get-QproSourcePathItem([string]$Path) {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item) { return $null }
+    $tag = [uint32]0
+    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Initialize-QproSourcePathNative
+        $tag = [Qpro.ModuleSourcePath]::GetTag($item.FullName)
+    }
+    return [pscustomobject]@{ FullName = $item.FullName; Directory = $item.PSIsContainer; Attributes = $item.Attributes; Tag = $tag }
+}
+
+function Assert-QproSourceAncestors([string]$Path) {
+    $current = [System.IO.Path]::GetFullPath($Path)
+    $existing = $null
+    while (-not [string]::IsNullOrEmpty($current)) {
+        $item = Get-QproSourcePathItem $current
+        if ($null -ne $item) {
+            if ($null -eq $existing) { $existing = $item.FullName }
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -and
+                -not (Test-QproSourceReparseTag $item.Tag $item.Directory)) {
+                throw "The packaged module source contains an unsupported file link or reparse point: $current"
+            }
+        }
+        $next = [System.IO.Path]::GetDirectoryName($current)
+        if ($next -eq $current) { break }
+        $current = $next
+    }
+    return $existing
+}
+
+function Assert-QproReadableSourcePath([string]$Path) {
+    # Reading a user-selected release can follow local directory links. Installed
+    # modules, source preferences and transaction recovery still use the strict
+    # no-links guard below. Do not use this function for a write destination.
+    $full = [System.IO.Path]::GetFullPath($Path)
+    if ($full.StartsWith('\\', [StringComparison]::Ordinal)) { throw "Network module source paths are unsupported: $full" }
+    try {
+        $existing = Assert-QproSourceAncestors $full
+        if ($null -ne $existing) {
+            Initialize-QproSourcePathNative
+            $resolved = [Qpro.ModuleSourcePath]::GetFinalPath($existing)
+            if ($resolved.StartsWith('\\', [StringComparison]::Ordinal) -or
+                [System.IO.Path]::GetPathRoot($resolved) -notmatch '^[A-Za-z]:\\$' -or
+                ([System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($resolved))).DriveType -notin @([System.IO.DriveType]::Fixed, [System.IO.DriveType]::Removable, [System.IO.DriveType]::Ram)) {
+                throw "The packaged module source resolves to a network location: $full"
+            }
+            $null = Assert-QproSourceAncestors $resolved
+        }
+    } catch {
+        throw "The packaged module source could not be read safely: $($_.Exception.Message) If this folder is synced by OneDrive, choose 'Always keep on this device' for the extracted Qpro folder, then retry."
+    }
+}
+
+function Get-QproModuleRecoveryRoot {
+    $path = Join-Path $env:LOCALAPPDATA "QproFaceTracking\module-recovery"
+    Assert-QproPathWithoutLinks $path
+    return $path
+}
+
 function Assert-QproPathWithoutLinks([string]$Path) {
     $current = [System.IO.Path]::GetFullPath($Path)
     if ($current.StartsWith('\\', [System.StringComparison]::Ordinal)) { throw "Network module paths are unsupported: $current" }
@@ -73,8 +182,13 @@ function Assert-QproPathWithoutLinks([string]$Path) {
     }
 }
 
-function Assert-QproRegularTree([string]$Path) {
-    Assert-QproPathWithoutLinks $Path
+function Assert-QproRegularTree([string]$Path, [switch]$ReadableSource) {
+    if ($ReadableSource) {
+        Assert-QproReadableSourcePath $Path
+        if (((Get-Item -LiteralPath $Path -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "The saved module directory is a link or cloud placeholder and was left untouched: $Path"
+        }
+    } else { Assert-QproPathWithoutLinks $Path }
     $pending = [System.Collections.Generic.Stack[string]]::new()
     $pending.Push([System.IO.Path]::GetFullPath($Path))
     $count = 0
@@ -90,9 +204,10 @@ function Assert-QproRegularTree([string]$Path) {
     }
 }
 
-function Get-QproAssemblyIdentity([string]$Path) {
+function Get-QproAssemblyIdentity([string]$Path, [switch]$ReadableSource) {
+    if ($ReadableSource) { Assert-QproReadableSourcePath $Path }
     $item = Get-Item -LiteralPath $Path -Force
-    if ($item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $null }
+    if ($item.PSIsContainer -or (-not $ReadableSource -and ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) { return $null }
     try { return [System.Reflection.AssemblyName]::GetAssemblyName($item.FullName).Name }
     catch { return $null }
 }
@@ -234,9 +349,9 @@ function Assert-QproInstalledModule(
     } catch {
         throw "The installed Qpro module card needs repair: $($_.Exception.Message) $repair"
     }
-    Assert-QproPathWithoutLinks $PackagedModule
+    Assert-QproReadableSourcePath $PackagedModule
     if (-not (Test-Path -LiteralPath $PackagedModule -PathType Leaf) -or
-        (Get-QproAssemblyIdentity $PackagedModule) -ne "Qpro.GazeBridge") {
+        (Get-QproAssemblyIdentity $PackagedModule -ReadableSource) -ne "Qpro.GazeBridge") {
         throw "This app's packaged Qpro module is missing or unreadable. Extract the complete release ZIP, then retry."
     }
     if ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne
@@ -246,9 +361,9 @@ function Assert-QproInstalledModule(
     return [System.IO.Path]::GetFullPath($installed)
 }
 
-function Get-QproTreeHashes([string]$Path, [bool]$Directory) {
+function Get-QproTreeHashes([string]$Path, [bool]$Directory, [switch]$ReadableSource) {
     if (-not $Directory) { return @{ "." = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash } }
-    Assert-QproRegularTree $Path
+    Assert-QproRegularTree $Path -ReadableSource:$ReadableSource
     $hashes = @{}
     $prefix = [System.IO.Path]::GetFullPath($Path).TrimEnd('\') + '\'
     foreach ($file in Get-ChildItem -LiteralPath $Path -File -Recurse -Force) {
@@ -257,8 +372,8 @@ function Get-QproTreeHashes([string]$Path, [bool]$Directory) {
     return $hashes
 }
 
-function Assert-QproSameTree([string]$Path, [bool]$Directory, [hashtable]$Expected) {
-    $actual = Get-QproTreeHashes $Path $Directory
+function Assert-QproSameTree([string]$Path, [bool]$Directory, [hashtable]$Expected, [switch]$ReadableSource) {
+    $actual = Get-QproTreeHashes $Path $Directory -ReadableSource:$ReadableSource
     if ($actual.Count -ne $Expected.Count) { throw "Module files changed during the transaction: $Path" }
     foreach ($name in $Expected.Keys) {
         if (-not $actual.ContainsKey($name) -or $actual[$name] -ne $Expected[$name]) { throw "Module files changed during the transaction: $Path" }

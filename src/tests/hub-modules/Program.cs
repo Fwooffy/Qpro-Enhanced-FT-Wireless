@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -68,6 +69,68 @@ Check(HubModuleInstallation.HasInstalled(customLibs) && HubModuleInstallation.Is
 var current = HubModuleInstallation.Inspect(customLibs, supplied, false);
 Check(current.State == HubModuleState.Current && current.Detail.Contains(vd) && current.Status.Contains("input unchecked") &&
     current.Detail.Contains("live expressions"), "Disk readiness was mistaken for a proven live connection.");
+if (OperatingSystem.IsWindows())
+{
+    static void MakeJunction(string link, string target)
+    {
+        var command = new ProcessStartInfo(Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe")
+        { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+        foreach (var argument in new[] { "/c", "mklink", "/J", link, target }) command.ArgumentList.Add(argument);
+        using var process = Process.Start(command) ?? throw new Exception("Could not start the junction fixture.");
+        var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0) throw new Exception("Could not create the junction fixture: " + output);
+    }
+    var packageLink = Path.Combine(fixture, "linked package");
+    MakeJunction(packageLink, Path.GetDirectoryName(supplied)!);
+    var linkedSource = Path.Combine(packageLink, Path.GetFileName(supplied));
+    Check(HubModuleInstallation.Inspect(customLibs, linkedSource, false).IsCurrent,
+        "A local directory junction made a readable packaged DLL fail the module check.");
+    var nestedLink = Path.Combine(fixture, "nested package link");
+    MakeJunction(nestedLink, packageLink);
+    Check(HubModuleInstallation.Inspect(customLibs, Path.Combine(nestedLink, Path.GetFileName(supplied)), false).IsCurrent,
+        "A chain of local directory junctions made the package unreadable.");
+    var linkedCustomLibs = Path.Combine(fixture, "linked CustomLibs");
+    MakeJunction(linkedCustomLibs, customLibs);
+    Check(!HubModuleInstallation.Inspect(linkedCustomLibs, linkedSource, false).IsCurrent &&
+        !HubModuleInstallation.HasInstalled(linkedCustomLibs), "Allowing linked package sources relaxed the CustomLibs destination check.");
+    var linkedModuleRoot = Path.Combine(fixture, "linked-module-slot");
+    Directory.CreateDirectory(linkedModuleRoot);
+    MakeJunction(Path.Combine(linkedModuleRoot, HubModuleInstallation.VirtualDesktopId), vd);
+    Check(HubModuleInstallation.Inspect(linkedModuleRoot, supplied, false).State == HubModuleState.Invalid,
+        "An installed module directory junction became ready.");
+    var linkedResearch = Path.Combine(fixture, "linked research");
+    MakeJunction(linkedResearch, research);
+    var knownBackup = Path.Combine(research, "vrcft-legacy-registry-module-backup");
+    Directory.CreateDirectory(knownBackup);
+    Check(HubModuleInstallation.HasSavedBackups(linkedResearch),
+        "Read-only backup discovery rejected a regular backup below a linked package ancestor.");
+    Directory.Delete(knownBackup);
+    var backupTarget = Path.Combine(fixture, "backup target");
+    Directory.CreateDirectory(backupTarget);
+    MakeJunction(knownBackup, backupTarget);
+    Check(!HubModuleInstallation.HasSavedBackups(linkedResearch), "A linked backup directory enabled uninstall.");
+    Directory.Delete(knownBackup);
+    Directory.Delete(linkedResearch);
+    for (uint variant = 0; variant < 16; variant++)
+    {
+        var cloudTag = 0x9000001au | (variant << 12);
+        Check(HubModuleInstallation.SupportedSourceReparseTag(cloudTag, directory: true) &&
+            HubModuleInstallation.SupportedSourceReparseTag(cloudTag, directory: false), "A Windows Cloud Files reparse tag was rejected.");
+    }
+    Check(HubModuleInstallation.SupportedSourceReparseTag(0xa0000003u, directory: true) &&
+        HubModuleInstallation.SupportedSourceReparseTag(0xa000000cu, directory: true), "A local directory link tag was rejected.");
+    Check(!HubModuleInstallation.SupportedSourceReparseTag(0xa0000003u, directory: false) &&
+        !HubModuleInstallation.SupportedSourceReparseTag(0xa000000cu, directory: false), "A linked source DLL was accepted.");
+    Check(!HubModuleInstallation.SupportedSourceReparseTag(0x9001001au, directory: true) &&
+        !HubModuleInstallation.SupportedSourceReparseTag(0x80000013u, directory: false), "An unknown reparse tag became an allowed source.");
+    Check(HubModuleInstallation.Inspect(customLibs, @"\\invalid-host\invalid-share\Qpro.GazeBridge.dll", false).State == HubModuleState.Unreadable,
+        "A network package source became ready.");
+    Directory.Delete(Path.Combine(linkedModuleRoot, HubModuleInstallation.VirtualDesktopId));
+    Directory.Delete(linkedCustomLibs);
+    Directory.Delete(nestedLink);
+    Directory.Delete(packageLink);
+}
 var wrongSource = HubModuleInstallation.Inspect(customLibs, supplied, true);
 Check(wrongSource.State == HubModuleState.WrongSource && wrongSource.Detail.Contains("Virtual Desktop") && wrongSource.Detail.Contains("Steam Link"),
     "Selected source mismatch was reported as a missing installation.");
@@ -108,6 +171,8 @@ foreach (var invalid in new[] {
 File.WriteAllText(metadata, validMetadata);
 Check(HubModuleInstallation.Inspect(customLibs, Path.Combine(fixture, "missing-package.dll"), false).State == HubModuleState.Unreadable,
     "A missing packaged DLL was incorrectly described as a missing installed module.");
+Check(HubModuleInstallation.Inspect(customLibs, Path.Combine(fixture, "missing-package.dll"), false).Detail.Contains("Always keep on this device"),
+    "An unavailable package omitted OneDrive hydration guidance.");
 var wrongSupplied = Path.Combine(fixture, "different-package.dll");
 File.Copy(supplied, wrongSupplied); using (var output = File.Open(wrongSupplied, FileMode.Append)) output.WriteByte(0);
 Check(!HubModuleInstallation.IsCurrent(customLibs, wrongSupplied, false), "A different packaged binary became ready.");

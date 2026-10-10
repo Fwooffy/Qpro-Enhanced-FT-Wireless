@@ -11,7 +11,7 @@ if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) { throw "Module instal
 . $helper
 $QproModuleVersion = Get-QproModuleVersion $root
 $customLibs = Join-Path $env:APPDATA "VRCFaceTracking\CustomLibs"
-$research = Join-Path $root "research"
+$research = Get-QproModuleRecoveryRoot
 $sourcePath = Join-Path $env:LOCALAPPDATA "QproFaceTracking\config\tracking-source.txt"
 foreach ($path in @($customLibs, $research, $sourcePath)) { Assert-QproPathWithoutLinks $path }
 if (-not $TrackingSource) {
@@ -34,8 +34,8 @@ if ($Rebuild) {
     if ($LASTEXITCODE -ne 0) { throw "Building the Qpro module failed." }
 }
 if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "The prebuilt Qpro module is missing. Re-extract the complete release ZIP." }
-Assert-QproPathWithoutLinks $source
-if ((Get-QproAssemblyIdentity $source) -ne "Qpro.GazeBridge") { throw "The packaged DLL is not a readable Qpro module. Re-extract the complete release ZIP." }
+Assert-QproReadableSourcePath $source
+if ((Get-QproAssemblyIdentity $source -ReadableSource) -ne "Qpro.GazeBridge") { throw "The packaged DLL is not a readable Qpro module. Re-extract the complete release ZIP. If the folder is synced by OneDrive, choose 'Always keep on this device' for the extracted Qpro folder, then retry." }
 $inventory = @(Get-QproModuleInventory $customLibs)
 $competing = @(Find-QproCompetingSourceModules $customLibs $inventory | Sort-Object -Unique)
 if ($competing.Count -gt 0) {

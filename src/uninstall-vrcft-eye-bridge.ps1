@@ -5,13 +5,13 @@ if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) { throw "Module instal
 . $helper
 $customLibs = Join-Path $env:APPDATA "VRCFaceTracking\CustomLibs"
 $research = Join-Path $root "research"
+$recoveryRoot = Get-QproModuleRecoveryRoot
 Assert-QproPathWithoutLinks $customLibs
-Assert-QproPathWithoutLinks $research
 Assert-QproVrcftClosed
 $inventory = @(Get-QproModuleInventory $customLibs)
 $transactionId = [guid]::NewGuid().ToString("N")
-$recoveryDirectory = Join-Path $research ("vrcft-qpro-module-uninstall-backup-" + $transactionId)
-Assert-QproDirectChild $recoveryDirectory $research
+$recoveryDirectory = Join-Path $recoveryRoot ("vrcft-qpro-module-uninstall-backup-" + $transactionId)
+Assert-QproDirectChild $recoveryDirectory $recoveryRoot
 $moved = @()
 
 try {
@@ -44,7 +44,20 @@ if ($inventory.Count -eq 0) { Write-Host "No verified Qpro module was installed.
 function Restore-SavedOfficialModule([string]$BackupPath, [string]$ModuleId) {
     if (-not (Test-Path -LiteralPath $BackupPath -PathType Container)) { return "missing" }
     Assert-QproDirectChild $BackupPath $research
-    Assert-QproRegularTree $BackupPath
+    Assert-QproRegularTree $BackupPath -ReadableSource
+    # Pin the accepted historical source to its physical local directory. A
+    # release junction may later change targets; it must not redirect a move or
+    # a recovery write after the backup's identity was checked.
+    $resolvedResearch = [Qpro.ModuleSourcePath]::GetFinalPath($research)
+    $BackupPath = [Qpro.ModuleSourcePath]::GetFinalPath($BackupPath)
+    Assert-QproDirectChild $BackupPath $resolvedResearch
+    function Assert-SavedModuleRecoveryParent {
+        Assert-QproReadableSourcePath $BackupPath
+        $parent = [IO.Path]::GetDirectoryName($BackupPath)
+        if (-not ([Qpro.ModuleSourcePath]::GetFinalPath($parent)).Equals($parent, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "The saved module's recovery directory changed and was left untouched: $parent"
+        }
+    }
     $manifest = Read-QproModuleManifest (Join-Path $BackupPath "module.json")
     $dlls = @(Get-ChildItem -LiteralPath $BackupPath -File -Filter "*.dll")
     if ($null -eq $manifest -or [string]$manifest.ModuleId -ne $ModuleId -or $dlls.Count -eq 0) {
@@ -66,14 +79,20 @@ function Restore-SavedOfficialModule([string]$BackupPath, [string]$ModuleId) {
         Write-Host "The saved official module remains at $BackupPath because its installation path is occupied. No existing module was overwritten."
         return "occupied"
     }
-    $hashes = Get-QproTreeHashes $BackupPath $true
+    $hashes = Get-QproTreeHashes $BackupPath $true -ReadableSource
     New-Item -ItemType Directory -Path $customLibs -Force | Out-Null
     Assert-QproVrcftClosed
+    Assert-SavedModuleRecoveryParent
+    Assert-QproSameTree $BackupPath $true $hashes -ReadableSource
+    Assert-QproPathWithoutLinks $target
+    if (Test-Path -LiteralPath $target) { throw "The official module destination appeared during recovery and was left untouched: $target" }
     Move-Item -LiteralPath $BackupPath -Destination $target
     try { Assert-QproSameTree $target $true $hashes }
     catch {
         Assert-QproRegularTree $target
-        if (-not (Test-Path -LiteralPath $BackupPath)) { Move-Item -LiteralPath $target -Destination $BackupPath }
+        Assert-SavedModuleRecoveryParent
+        if (Test-Path -LiteralPath $BackupPath) { throw "The saved module recovery path is now occupied; the restored files remain at $target." }
+        Move-Item -LiteralPath $target -Destination $BackupPath
         throw
     }
     Write-Host "Restored the saved official VRCFaceTracking module: $target"

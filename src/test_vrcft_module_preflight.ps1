@@ -99,6 +99,36 @@ try {
         Assert-QproSameTree $customLibs $true $before
         Assert-Test $true "$source GUID-folder installation was not accepted unchanged."
 
+        # Cloud Files tags are tested without altering this PC's OneDrive state.
+        # The filesystem item seam exercises the production source guard while
+        # real file reads, assembly identity and installed SHA-256 checks remain.
+        foreach ($tag in 0..15) {
+            $cloudTag = [uint32]2415919130 + [uint32]($tag * 4096)
+            Assert-Test (Test-QproSourceReparseTag $cloudTag $false) "A Cloud Files file tag was rejected."
+            Assert-Test (Test-QproSourceReparseTag $cloudTag $true) "A Cloud Files directory tag was rejected."
+        }
+        Assert-Test (-not (Test-QproSourceReparseTag ([uint32]2684354572) $false)) "A packaged file symlink was accepted."
+        Assert-Test (-not (Test-QproSourceReparseTag ([uint32]2415919132) $true)) "An unknown projected filesystem tag was accepted."
+        $originalSourceItem = (Get-Command Get-QproSourcePathItem).ScriptBlock
+        $fixtureSourceTag = [uint32]2415919130
+        function Get-QproSourcePathItem([string]$Path) {
+            $item = & $originalSourceItem $Path
+            if ($null -ne $item -and ($Path -eq $packagedModule -or $Path -eq $runtime)) {
+                $item.Attributes = $item.Attributes -bor [IO.FileAttributes]::ReparsePoint
+                $item.Tag = $fixtureSourceTag
+            }
+            return $item
+        }
+        try {
+            $null = Assert-Preflight $source
+            Assert-Test $true "A local cloud-flagged source was rejected."
+            $fixtureSourceTag = [uint32]2415919132
+            Expect-Failure { Assert-Preflight $source } "An unknown source reparse tag"
+            $fixtureSourceTag = [uint32]2684354572
+            Expect-Failure { Assert-Preflight $source } "A source file symlink"
+        } finally { Set-Item -LiteralPath Function:\Get-QproSourcePathItem -Value $originalSourceItem }
+        Expect-Failure { Assert-QproReadableSourcePath '\\fixture-host\fixture-share\Qpro.GazeBridge.dll' } "A network source path"
+
         $otherSource = if ($source -eq "SteamLink") { "VirtualDesktop" } else { "SteamLink" }
         Expect-Failure { Assert-Preflight $otherSource } "The opposite source"
         Expect-Failure { & $launcherProbe $runtime $otherSource } "The launcher's opposite source"
