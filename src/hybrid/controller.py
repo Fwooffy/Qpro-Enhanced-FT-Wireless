@@ -86,8 +86,17 @@ def inspect(adb: Adb, profile: dict, frida_version: str | None,
     driver = Path(program_files or os.environ.get("ProgramFiles", r"C:\Program Files")) / profile["pcDriverRelativePath"]
     problems, warnings = [], []
     driver_hash = hashlib.sha256(driver.read_bytes()).hexdigest() if driver.is_file() else None
-    if driver_hash != profile["pcDriverSha256"]:
-        problems.append("This Virtual Desktop Streamer driver has no validated hand profile.")
+    # Additional fingerprints share the individually inspected PC layout. A
+    # known PC build never admits an unknown headset version or live ABI.
+    admitted_drivers = (profile["pcDriverSha256"], *profile.get("additionalPcDriverSha256s", []))
+    if driver_hash not in admitted_drivers:
+        if driver_hash is None:
+            problems.append("The Virtual Desktop Streamer hand driver was not found. Install or repair "
+                            "Virtual Desktop Streamer, reopen SteamVR through Virtual Desktop, then check again.")
+        else:
+            problems.append("This Virtual Desktop Streamer driver has no validated hand profile. "
+                            "Send the PC driver SHA-256 from this check to Qpro support; reinstalling "
+                            "the hand components will not add support for a different driver build.")
     component_problems = []
     if frida_version != profile["fridaVersion"]:
         component_problems.append("Install the experimental hand components first (matching Frida is missing).")
@@ -99,7 +108,13 @@ def inspect(adb: Adb, profile: dict, frida_version: str | None,
     version = re.search(r"\bversionName=([^\s]+)", package)
     version = version.group(1) if version else None
     if version != profile["androidVersion"]:
-        problems.append("This headset Virtual Desktop version has no validated hand profile.")
+        if version is None:
+            problems.append("The headset Virtual Desktop version could not be read. Confirm that "
+                            "Virtual Desktop is installed on the selected Quest and check again.")
+        else:
+            problems.append("This headset Virtual Desktop version has no validated hand profile: "
+                            + version + ". This Qpro build currently checks version " + profile["androidVersion"]
+                            + ". Reinstalling the hand components does not change that compatibility limit.")
     required = ("hand_tracking_enabled", "multimodal_hands_and_controllers_enabled",
                 "simultaneous_hands_and_controllers_mode")
     # --getc reads the currently active headset user. --get instead reads the

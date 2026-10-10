@@ -31,7 +31,7 @@ bindings are not included in this first prototype.
 | Component | First admitted profile | Verification limit |
 | --- | --- | --- |
 | Headset Virtual Desktop | 1.34.22.0 | Exact version gate; sustained performance unverified |
-| PC Streamer driver | SHA-256 `ad3c99c7f7346613d4c7106fb94476be5859ca17a637a11cfc156184d466f36f` | Exact fingerprint gate; sustained performance unverified |
+| PC Streamer driver | Exact SHA-256 fingerprints in `hybrid/compatibility.json`; signed Streamer 1.34.23 PC driver also inspected | Private PC layout checked independently; no live test of the new PC/headset pair |
 | Python and Android helper | Frida 17.18.0, Windows x64 / Android ARM64 | Official downloads pinned by SHA-256 |
 | Thumb-rest sensor layout | Firmware build `51503870024400340` | Experimental read-only profile; live validation pending |
 | Steam Link | Not admitted | Controller identity and optical transport need separate validation |
@@ -41,6 +41,16 @@ Controllers** switch. Turn off Singularity's separate Frida Server before
 starting Qpro hands. Keep controller firmware current. Body-tracking
 interaction is unverified. A compatible version/fingerprint is an admission
 check, not proof that the feature works on every headset.
+
+The first checked headset version remains **Virtual Desktop Android 1.34.22.0**.
+The signed **Streamer 1.34.23** PC driver is admitted separately because its
+private hand layout was inspected and its OpenVR input interface is already
+supported by the adapter. This does **not** enable Android **1.34.23.0**: that
+headset build still needs managed hand-result and native caller evidence.
+If the compatibility check reports an unsupported headset version, send its
+Activity details to Qpro support. Reinstalling the hand components cannot add a
+missing hand profile. Ordinary face tracking can still be used with Hands +
+controllers turned off.
 
 Installing hand/controller components does not turn on headset hand tracking or
 Singularity's switch. The two boolean preference readings can report inactive

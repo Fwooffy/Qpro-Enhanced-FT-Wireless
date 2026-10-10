@@ -10,8 +10,11 @@ Virtual Desktop files. It is a prototype; live operation is not yet validated.
 - Rooted ARM64 Quest Pro with hand tracking enabled.
 - Singularity **Simultaneous Hands & Controllers** enabled and its separate
   Frida Server turned off.
-- Virtual Desktop Android **1.34.22.0** and the exact Streamer driver fingerprint
-  in `compatibility.json`.
+- Virtual Desktop Android **1.34.22.0** and one of the exact, independently
+  inspected Streamer driver fingerprints in `compatibility.json`.
+  The signed Streamer **1.34.23** PC driver shares the checked PC layout and is
+  admitted independently. Android **1.34.23.0** still needs its own hand-layout
+  evidence and is not admitted. The new PC/headset pair has not been live tested.
 - SteamVR running through Virtual Desktop. Steam Link is unsupported.
 - Hand components installed separately: Python Frida **17.18.0** and its matching
   Android ARM64 server. Tracking never downloads or installs dependencies.

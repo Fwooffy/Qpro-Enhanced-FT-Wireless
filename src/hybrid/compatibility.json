@@ -6,6 +6,9 @@
   "androidVersion": "1.34.22.0",
   "pcDriverRelativePath": "Virtual Desktop Streamer/OpenVRDriver/bin/win64/driver_VirtualDesktop.dll",
   "pcDriverSha256": "ad3c99c7f7346613d4c7106fb94476be5859ca17a637a11cfc156184d466f36f",
+  "additionalPcDriverSha256s": [
+    "70698c13cf40e5a21ea0ad241874ffb8ba2f400c2ab7ace7ad4605fc8c77ddd8"
+  ],
   "pcLayout": {
     "controllerTable": 632640,
     "skeletonTable": 632744,

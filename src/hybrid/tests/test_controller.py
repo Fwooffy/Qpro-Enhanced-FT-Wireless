@@ -256,6 +256,69 @@ class HybridTests(unittest.TestCase):
         report = controller.inspect(FakeAdb(headset), profile, "17.18.0", self.server, str(self.home))
         self.assertFalse(report["compatible"])
         self.assertEqual(len(report["problems"]), 2)
+        self.assertIn("reinstalling the hand components will not add support", report["problems"][0])
+        self.assertIn("unknown", report["problems"][1])
+        self.assertIn("currently checks version", report["problems"][1])
+
+    def test_reported_beta_version_is_refused_without_its_android_profile(self):
+        headset = dict(self.profile, androidVersion="1.34.23.0")
+        report = controller.inspect(FakeAdb(headset), self.profile, "17.18.0", self.server, str(self.home))
+        self.assertFalse(report["compatible"])
+        self.assertTrue(report["componentsReady"])
+        self.assertEqual(len(report["problems"]), 1)
+        self.assertIn("1.34.23.0", report["problems"][0])
+        self.assertIn("1.34.22.0", report["problems"][0])
+        self.assertIn("Reinstalling the hand components does not change", report["problems"][0])
+
+    def test_signed_beta_pc_profile_is_admitted_independently_of_android(self):
+        checked = controller.load_profile()
+        beta_hash = "70698c13cf40e5a21ea0ad241874ffb8ba2f400c2ab7ace7ad4605fc8c77ddd8"
+        self.assertEqual(checked["additionalPcDriverSha256s"], [beta_hash])
+        for android_version, expected_compatible in ((checked["androidVersion"], True), ("1.34.23.0", False)):
+            with self.subTest(android_version=android_version):
+                adb = FakeAdb(dict(self.profile, androidVersion=android_version))
+                with patch.object(controller.hashlib, "sha256", return_value=SimpleNamespace(hexdigest=lambda: beta_hash)):
+                    report = controller.inspect(adb, self.profile, "17.18.0", self.server, str(self.home))
+                self.assertEqual(report["compatible"], expected_compatible)
+                self.assertTrue(report["componentsReady"])
+                self.assertEqual(report["pcDriverSha256"], beta_hash)
+                self.assertFalse(report["runtimeValidated"])
+                self.assertEqual(len(report["problems"]), 0 if expected_compatible else 1)
+                if not expected_compatible:
+                    self.assertIn("headset Virtual Desktop version", report["problems"][0])
+                self.assertTrue(all(call[0] == "shell" for call in adb.calls))
+
+    def test_additional_driver_admission_requires_the_complete_hash(self):
+        for unknown_hash in ("70698c13", "70698c13cf40e5a21ea0ad241874ffb8ba2f400c2ab7ace7ad4605fc8c77ddd9"):
+            with self.subTest(unknown_hash=unknown_hash):
+                with patch.object(controller.hashlib, "sha256", return_value=SimpleNamespace(hexdigest=lambda: unknown_hash)):
+                    report = controller.inspect(FakeAdb(self.profile), self.profile, "17.18.0", self.server, str(self.home))
+                self.assertFalse(report["compatible"])
+                self.assertEqual(len(report["problems"]), 1)
+                self.assertIn("Streamer driver has no validated hand profile", report["problems"][0])
+
+    def test_missing_driver_has_install_guidance_without_an_unsupported_profile_claim(self):
+        (self.home / self.profile["pcDriverRelativePath"]).unlink()
+        report = controller.inspect(FakeAdb(self.profile), self.profile, "17.18.0", self.server, str(self.home))
+        self.assertFalse(report["compatible"])
+        self.assertIsNone(report["pcDriverSha256"])
+        self.assertEqual(len(report["problems"]), 1)
+        self.assertIn("driver was not found", report["problems"][0])
+        self.assertIn("Install or repair Virtual Desktop Streamer", report["problems"][0])
+
+    def test_unreadable_headset_version_is_not_reported_as_an_unsupported_build(self):
+        adb = FakeAdb(self.profile)
+        run = adb.run
+        def without_version(*args, **kwargs):
+            if args[:3] == ("shell", "dumpsys", "package"):
+                return "Unable to find package"
+            return run(*args, **kwargs)
+        adb.run = without_version
+        report = controller.inspect(adb, self.profile, "17.18.0", self.server, str(self.home))
+        self.assertFalse(report["compatible"])
+        self.assertIsNone(report["androidVersion"])
+        self.assertEqual(len(report["problems"]), 1)
+        self.assertIn("version could not be read", report["problems"][0])
 
     def test_target_is_never_shell_code(self):
         for target in ("x;reboot", "x y", "$(bad)", ""):
