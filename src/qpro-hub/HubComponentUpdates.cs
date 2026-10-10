@@ -82,7 +82,7 @@ internal static class HubComponentUpdates
 
     internal static Dictionary<string, string>? ReadRecipes(string runtimeRoot)
     {
-        using var document = ReadObject(Path.Combine(runtimeRoot, "release-manifest.json"));
+        using var document = ReadObject(Path.Combine(runtimeRoot, "release-manifest.json"), packageSource: true);
         if (document is null || !document.RootElement.TryGetProperty("componentUpdates", out var value)) return null;
         if (value.ValueKind != JsonValueKind.Object || Integer(value, "schema") != 1) return null;
         var keys = new HashSet<string>(StringComparer.Ordinal);
@@ -146,11 +146,12 @@ internal static class HubComponentUpdates
             if ((File.Exists(current) || Directory.Exists(current)) && File.GetAttributes(current).HasFlag(FileAttributes.ReparsePoint)) return true;
         return false;
     }
-    private static JsonDocument? ReadObject(string path)
+    private static JsonDocument? ReadObject(string path, bool packageSource = false)
     {
         try
         {
-            if (!RegularFile(path) || new FileInfo(path).Length > 65_536) return null;
+            bool readable = packageSource ? HubModuleInstallation.IsReadablePackageSource(path) : RegularFile(path);
+            if (!readable || new FileInfo(path).Length > 65_536) return null;
             var document = JsonDocument.Parse(File.ReadAllText(path), new JsonDocumentOptions { MaxDepth = 8 });
             if (document.RootElement.ValueKind == JsonValueKind.Object)
             {

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
 using QproFaceTracking.Hub;
@@ -29,6 +30,44 @@ var runtimeUpdate = Plan().Updates.Single();
 Check(!HubComponentUpdates.RuntimeUpdateVerified(runtimeUpdate, local), "Missing readiness receipt was accepted.");
 Json(Path.Combine(shared, "runtime-ready.json"), new { format = "qpro-runtime-ready-v1", python = sharedPython, recipeSha256 = a });
 Check(Plan().Updates.Count == 0 && HubComponentUpdates.RuntimeUpdateVerified(runtimeUpdate, local), "Matching runtime receipt was not recognized.");
+if (OperatingSystem.IsWindows())
+{
+    void MakeJunction(string link, string target)
+    {
+        var command = new ProcessStartInfo(Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe")
+        { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+        foreach (string argument in new[] { "/c", "mklink", "/J", link, target }) command.ArgumentList.Add(argument);
+        using var process = Process.Start(command) ?? throw new Exception("Could not start the junction fixture.");
+        string output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0) throw new Exception("Could not create the junction fixture: " + output);
+    }
+    string appLink = Path.Combine(fixture, "linked package");
+    string sharedLink = Path.Combine(fixture, "linked shared runtime");
+    MakeJunction(appLink, app);
+    MakeJunction(sharedLink, shared);
+    try
+    {
+        var linkedRecipes = HubComponentUpdates.ReadRecipes(appLink);
+        Check(linkedRecipes is not null && linkedRecipes["runtimeRecipe"] == a && linkedRecipes["rocmRecipe"] == b,
+            "Readable local package junction lost component recipes.");
+        Check(HubComponentUpdates.Inspect(appLink, local, modules, false, false, false).Updates.Count == 0,
+            "A linked package failed to recognize an existing valid runtime receipt.");
+        Json(Path.Combine(shared, "runtime-ready.json"), new { format = "qpro-runtime-ready-v1", python = sharedPython, recipeSha256 = b });
+        Check(HubComponentUpdates.Inspect(appLink, local, modules, false, false, false).Updates.Single().Kind == HubComponentKind.Runtime,
+            "A linked package hid a required private-runtime component update.");
+        Json(Path.Combine(shared, "runtime-ready.json"), new { format = "qpro-runtime-ready-v1", python = sharedPython, recipeSha256 = a });
+        Check(!HubComponentUpdates.ReceiptMatches(Path.Combine(sharedLink, "runtime-ready.json"), a, sharedPython, false),
+            "Allowing linked package reads relaxed installed runtime receipt checks.");
+    }
+    finally
+    {
+        // Directory.Delete removes only each junction; the fixture targets stay intact.
+        Directory.Delete(sharedLink);
+        Directory.Delete(appLink);
+    }
+    Check(File.Exists(manifest) && File.Exists(sharedPython), "Junction cleanup changed a fixture target.");
+}
 foreach (string invalid in new[] {
     "{}", "{broken", "{\"schema\":\"1\"}",
     JsonSerializer.Serialize(new { format = "qpro-runtime-ready-v1", python = sharedPython, recipeSha256 = b }),
