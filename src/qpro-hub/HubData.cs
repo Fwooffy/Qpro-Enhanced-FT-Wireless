@@ -350,7 +350,6 @@ internal sealed partial class HubForm
         if (LiveTrackingRunning) { MessageBox.Show(this, "Stop live tracking before importing a model."); return; }
         using var dialog = new OpenFileDialog { Title = "Import tongue model", Filter = "Qpro tongue model (*.qptonguemodel)|*.qptonguemodel", CheckFileExists = true };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        if (MessageBox.Show(this, "Only import model files from someone you trust. PyTorch model files are executable data when loaded.\n\nContinue?", "Trust this model?", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
         var models = Path.Combine(_root, "models");
         Directory.CreateDirectory(models);
         try

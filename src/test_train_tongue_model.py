@@ -192,7 +192,7 @@ class TongueTrainingTests(unittest.TestCase):
                         mock.patch.object(train_tongue_model.torch.jit, "script"), \
                         mock.patch("builtins.print"):
                     self.assertEqual(train_tongue_model.main(), 0)
-                candidate = torch.load(output, weights_only=False)
+                candidate = torch.load(output, weights_only=True)
                 self.assertEqual(candidate["inputPreprocessing"], expected)
                 self.assertEqual(candidate["checkpointEpoch"], 0)
                 self.assertEqual(modes_seen, [expected, expected])

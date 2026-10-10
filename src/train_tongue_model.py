@@ -23,6 +23,7 @@ from tongue_visibility_calibration import (
 )
 from qpro_gpu import validated_torch_device_name
 from label_capture import require_current_tongue_cache
+from model_checkpoint import load_model_checkpoint
 from tongue_image_processing import (
     MODES, preprocess_stereo_images, resolve_input_preprocessing,
 )
@@ -735,7 +736,7 @@ def main() -> int:
     initial = None
     if arguments.initial_checkpoint:
         initial_path = Path(arguments.initial_checkpoint).resolve()
-        initial = torch.load(initial_path, map_location="cpu", weights_only=False)
+        initial = load_model_checkpoint(initial_path)
         if list(initial["targetNames"]) != target_names:
             raise ValueError("Initial checkpoint target schema does not match the dataset")
         if str(initial.get("architecture")) != arguments.architecture:
@@ -884,7 +885,7 @@ def main() -> int:
             best_score = score
             save_checkpoint(metrics, score_description, epoch)
             print(f"  Saved best checkpoint: {output}")
-    checkpoint = torch.load(output, map_location="cpu", weights_only=False)
+    checkpoint = load_model_checkpoint(output)
     metrics = checkpoint["validation"]
     print(
         f"Training complete: MAE={metrics['mae']:.4f}; active MAE={metrics['activeMae']:.4f}; "

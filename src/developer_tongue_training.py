@@ -34,6 +34,7 @@ from tongue_image_processing import (
     MODES, preprocess_stereo_images, resolve_input_preprocessing,
 )
 from train_tongue_model import SIGNED_TARGETS, create_model
+from model_checkpoint import load_model_checkpoint
 
 
 ALLOWED_SESSION_TYPES = {
@@ -336,7 +337,7 @@ class ModelPair:
         self.input_preprocessing = []
         checkpoints = []
         for path in (gate_path, direction_path):
-            checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+            checkpoint = load_model_checkpoint(path)
             names = list(checkpoint["targetNames"])
             if names != list(TONGUE_TARGET_NAMES):
                 raise ValueError(f"Checkpoint target schema is incompatible: {path}")
@@ -651,7 +652,7 @@ def refinement_command(
 
 def validate_public_checkpoint_metadata(path: Path) -> None:
     """Reject private absolute paths embedded in a distributable .pt file."""
-    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    checkpoint = load_model_checkpoint(path)
     if not isinstance(checkpoint, dict):
         raise ValueError(f"Expected checkpoint metadata dictionary: {path}")
     parent = checkpoint.get("parentCheckpoint")
@@ -678,7 +679,7 @@ def validate_refinement_parent(
     expected_architecture: str, expected_image_size: int,
 ) -> int:
     """Confirm the saved branch really started from the intended v8 weights."""
-    checkpoint = torch.load(candidate, map_location="cpu", weights_only=False)
+    checkpoint = load_model_checkpoint(candidate)
     if (checkpoint.get("parentCheckpoint") != parent.name
             or checkpoint.get("parentCheckpointSha256") != expected_sha256
             or checkpoint.get("architecture") != expected_architecture

@@ -23,6 +23,7 @@ from qpro_gpu import validated_torch_device_name
 from label_capture import AmbiguousTongueSourceError, native_tongue_out
 from tongue_image_processing import preprocess_stereo_images, resolve_input_preprocessing
 from gpu_readback import GPUReadbackCancelled, copy_to_cpu
+from model_checkpoint import load_model_checkpoint
 
 
 TONGUE_PACKET = struct.Struct("<4sBBH12f")
@@ -380,7 +381,7 @@ class LiveTongueModelPreview:
         self.checkpoint_path = Path(checkpoint_path).resolve()
         device_name = validated_torch_device_name(torch, device_name)
         self.device = torch.device(device_name)
-        checkpoint = torch.load(self.checkpoint_path, map_location="cpu", weights_only=False)
+        checkpoint = load_model_checkpoint(self.checkpoint_path)
         self.target_names = list(checkpoint["targetNames"])
         self.image_size = int(checkpoint["imageSize"])
         self.input_preprocessing = resolve_input_preprocessing(checkpoint)
@@ -394,9 +395,7 @@ class LiveTongueModelPreview:
         self.direction_input_preprocessing = self.input_preprocessing
         if direction_checkpoint_path:
             self.direction_checkpoint_path = Path(direction_checkpoint_path).resolve()
-            direction_checkpoint = torch.load(
-                self.direction_checkpoint_path, map_location="cpu", weights_only=False
-            )
+            direction_checkpoint = load_model_checkpoint(self.direction_checkpoint_path)
             direction_names = list(direction_checkpoint["targetNames"])
             cheek_names = ["cheekPuffLeft", "cheekPuffRight"]
             if direction_names != self.target_names and direction_names != self.target_names + cheek_names:

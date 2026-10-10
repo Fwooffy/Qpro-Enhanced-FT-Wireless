@@ -214,7 +214,7 @@ internal static class Program
             "python-runtime\\python.3.12.10.nupkg", "python-runtime\\LICENSE.txt", "python-runtime\\README.txt",
             "SFX\\succeed.wav", "SFX\\trainingComplete.wav", "SFX\\warning.wav",
             "calibration_inspect.py", "pupil_dilation.py", "pupil_gaze_calibration.py", "qpro_gpu.py", "gpu_readback.py",
-            "tongue_visibility_calibration.py", "model_preview.py", "hybrid_preview.py", "train_model.py",
+            "tongue_visibility_calibration.py", "model_checkpoint.py", "model_preview.py", "hybrid_preview.py", "train_model.py",
             "libquestpro-camera-streamer-v8.so", "questpro-camera-relay-v8", "questpro-camera-injector",
             "vd-label-bridge\\bin\\Release\\net10.0\\Qpro.VirtualDesktopLabelBridge.exe",
             "vrcft-gaze-bridge\\bin\\Release\\net10.0\\Qpro.GazeBridge.dll"

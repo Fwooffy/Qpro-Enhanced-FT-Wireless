@@ -168,6 +168,7 @@ $runtimeFiles = @(
     "label_capture.py",
     "tongue_model_preview.py",
     "tongue_image_processing.py",
+    "model_checkpoint.py",
     "model_preview.py",
     "hybrid_preview.py",
     "train_tongue_model.py",

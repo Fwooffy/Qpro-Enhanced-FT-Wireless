@@ -14,6 +14,7 @@ import torch
 
 from train_model import QuestProTrackingModel
 from qpro_gpu import validated_torch_device_name
+from model_checkpoint import load_model_checkpoint
 
 
 @dataclass
@@ -28,9 +29,7 @@ class LiveModelPreview:
         checkpoint_path = Path(checkpoint_path).resolve()
         device_name = validated_torch_device_name(torch, device_name)
         self.device = torch.device(device_name)
-        checkpoint = torch.load(
-            checkpoint_path, map_location=self.device, weights_only=True
-        )
+        checkpoint = load_model_checkpoint(checkpoint_path, map_location=self.device)
         self.expression_names = list(checkpoint["expressionNames"])
         self.image_size = int(checkpoint["imageSize"])
         self.model = QuestProTrackingModel(len(self.expression_names)).to(self.device)
