@@ -7,6 +7,7 @@ import math
 import tempfile
 import threading
 import unittest
+import venv
 from unittest.mock import patch
 from types import SimpleNamespace
 import io
@@ -601,6 +602,93 @@ class ComponentTests(unittest.TestCase):
         self.assertIn(output, activity.getvalue())
         self.assertIn('CONTROLLER_CHECK ', activity.getvalue())
         self.assertNotIn('CONTROLLER_ERROR ', activity.getvalue())
+
+    def test_check_uses_installed_private_python_and_explicit_helper(self):
+        output = ('HANDS_CHECK {"compatible": false, "problems": '
+                  '["This Virtual Desktop Streamer driver has no validated hand profile."], '
+                  '"componentsReady": true, "componentProblems": []}\n')
+        result = module.subprocess.CompletedProcess(['fixture-python'], 4, output, '')
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+            local = Path(temporary)
+            hands, _ = module.managed_paths(local)
+            python = hands / '.venv' / 'Scripts' / 'python.exe'
+            python.parent.mkdir(parents=True)
+            python.touch()
+            (hands / 'frida-server').touch()
+            (hands / 'ready.json').touch()
+            before = sorted(path.relative_to(local) for path in local.rglob('*'))
+            with patch.dict(module.os.environ, {'LOCALAPPDATA': temporary}), \
+                 patch.object(module, 'select_target', return_value='quest'), \
+                 patch.object(module.subprocess, 'run', return_value=result) as execute, \
+                 contextlib.redirect_stdout(io.StringIO()) as activity:
+                code = module.entry_point(['check', '--root', str(HERE), '--adb', 'fake-adb'])
+            command = execute.call_args.args[0]
+            self.assertEqual(command[0], str(python))
+            self.assertEqual(command[command.index('--frida-server') + 1], str(hands / 'frida-server'))
+            self.assertIn('--check', command)
+            self.assertNotIn('--stop-file', command)
+            self.assertEqual(code, 4)  # Installed components do not validate a new driver.
+            self.assertIn('no validated hand profile', activity.getvalue())
+            self.assertEqual(before, sorted(path.relative_to(local) for path in local.rglob('*')))
+
+    def test_check_before_installation_keeps_inspection_read_only(self):
+        result = module.subprocess.CompletedProcess(['fixture-python'], 0,
+            'HANDS_CHECK {"compatible": true, "problems": [], "componentsReady": false}\n', '')
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+            local = Path(temporary)
+            hands, _ = module.managed_paths(local)
+            with patch.dict(module.os.environ, {'LOCALAPPDATA': temporary}), \
+                 patch.object(module, 'select_target', return_value='quest'), \
+                 patch.object(module.subprocess, 'run', return_value=result) as execute, \
+                 contextlib.redirect_stdout(io.StringIO()) as activity:
+                code = module.entry_point(['check', '--root', str(HERE), '--adb', 'fake-adb'])
+            command = execute.call_args.args[0]
+            self.assertEqual(command[0], module.sys.executable)
+            self.assertEqual(command[command.index('--frida-server') + 1], str(hands / 'frida-server'))
+            self.assertEqual(code, 0)
+            self.assertFalse(hands.exists())
+            self.assertIn('"frida": "not-installed"', activity.getvalue())
+
+    @unittest.skipUnless(module.os.name == 'nt', 'The private hand interpreter is a Windows environment.')
+    def test_check_reads_components_from_real_private_interpreter(self):
+        # A temporary venv has a fixture Frida module; the parent runtime does
+        # not. Running the child proves import lookup and helper selection,
+        # without touching installed components, a headset or SteamVR.
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+            local = Path(temporary)
+            hands, _ = module.managed_paths(local)
+            venv.EnvBuilder(with_pip=False).create(hands / '.venv')
+            site_packages = hands / '.venv' / 'Lib' / 'site-packages'
+            (site_packages / 'frida.py').write_text("__version__ = '" + module.FRIDA_VERSION + "'\n")
+            (hands / 'frida-server').write_bytes(b'fixture helper')
+            (hands / 'ready.json').write_text('{}')
+            root = local / 'fixture-release'
+            controller = root / 'hybrid' / 'controller.py'
+            controller.parent.mkdir(parents=True)
+            controller.write_text(
+                'import argparse, json\n'
+                'from pathlib import Path\n'
+                'import frida\n'
+                'parser = argparse.ArgumentParser()\n'
+                'parser.add_argument("--target")\n'
+                'parser.add_argument("--adb")\n'
+                'parser.add_argument("--check", action="store_true")\n'
+                'parser.add_argument("--frida-server", type=Path)\n'
+                'args = parser.parse_args()\n'
+                'ready = args.check and args.frida_server.is_file()\n'
+                'print("HANDS_CHECK " + json.dumps({"compatible": True, "problems": [], '
+                '"fridaVersion": frida.__version__, "componentsReady": ready, '
+                '"componentProblems": [] if ready else ["helper missing"]}))\n')
+            with patch.dict(module.os.environ, {'LOCALAPPDATA': temporary}), \
+                 patch.object(module, 'select_target', return_value='quest'), \
+                 contextlib.redirect_stdout(io.StringIO()) as activity:
+                code = module.entry_point(['check', '--root', str(root), '--adb', 'fake-adb'])
+            report = json.loads(next(line.partition(' ')[2] for line in activity.getvalue().splitlines()
+                                     if line.startswith('HANDS_CHECK ')))
+            self.assertEqual(code, 0, activity.getvalue())
+            self.assertEqual(report['fridaVersion'], module.FRIDA_VERSION)
+            self.assertTrue(report['componentsReady'])
+            self.assertEqual(report['componentProblems'], [])
 
     def test_run_reports_preflight_reasons_and_startup_errors_with_original_codes(self):
         reasons = ['hand_tracking_enabled is false', 'multimodal_hands_and_controllers_enabled is false']

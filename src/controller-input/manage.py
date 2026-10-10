@@ -711,8 +711,17 @@ def main(argv=None):
         adb = Path(args.adb) if args.adb else root / 'platform-tools' / 'adb.exe'
         target = select_target(adb, args.target)
         if args.action == 'check':
-            result = subprocess.run([sys.executable, '-u', str(root / 'hybrid' / 'controller.py'),
-                                     '--adb', str(adb), '--target', target, '--check'],
+            hands, _ = managed_paths(local)
+            python = hands / '.venv' / 'Scripts' / 'python.exe'
+            # Inspect the same private Frida environment and Android helper
+            # used by run. The tracking runtime deliberately does not own them.
+            # Before installation, the parent Python can still inspect the
+            # headset and driver without creating or downloading components.
+            if not python.is_file():
+                python = Path(sys.executable)
+            result = subprocess.run([str(python), '-u', str(root / 'hybrid' / 'controller.py'),
+                                     '--adb', str(adb), '--target', target,
+                                     '--frida-server', str(hands / 'frida-server'), '--check'],
                                     timeout=30, text=True, capture_output=True, creationflags=NO_WINDOW)
             output = result.stdout or ''
             errors = result.stderr or ''
