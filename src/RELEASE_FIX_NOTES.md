@@ -8,6 +8,10 @@ Follow the PDF guide included in the ZIP, or use the [text setup instructions](h
 
 ## What's in V2.1.2
 
+- **Window resizing and restore:** Buffered the Hub's layout containers and limited responsive text work to the visible page. Minimized windows defer that work until restored, and corner resizing groups repeated requests instead of continually relaying out hidden pages. The approved page style remains unchanged.
+- **Linked app folders:** Module installation and file checks accept local app-folder junctions, directory symlinks and Windows Cloud Files. New module recovery copies are saved in `%LOCALAPPDATA%\QproFaceTracking\module-recovery`. Installed module and recovery destinations retain their existing path checks. For OneDrive, keep the extracted app available locally with **Always keep on this device**.
+- **Hand component checks:** Compatibility checks now use the same private hand environment and Android helper as startup. This fixes reports that Frida and the helper were missing after a successful install. An unsupported Virtual Desktop version gives its version and required next step instead of repeatedly asking for component installation.
+- **Virtual Desktop PC driver:** Added the exact inspected, signed 1.34.23 beta PC driver fingerprint to the existing PC hand layout. The headset 1.34.23.0 hand layout remains unsupported pending its own validation. Neither admission nor component installation confirms live finger routing or performance.
 - **Activity scrolling:** New output preserves the part of the log you are reading, including while scrolling down and when old history is trimmed. Automatic scrolling follows new messages only when the view is already at the bottom and no text is selected.
 - **Magisk gaze status:** Removed repeated changes between the optional gaze message and the generic setup status. Completed checks remain labeled as the last checked result until a new result or connection change. Setup animation now updates button borders without repeating module checks or rewriting status labels.
 - **GPU camera CPU usage:** Tongue and pupil results use asynchronous GPU readback with sleeping completion checks. This reduces CPU work while waiting for GPU results. Activity now reports `worker_cpu_ms` alongside processing time. CPU-only inference keeps its existing thread configuration, and model weights, precision and freshness checks are preserved.
@@ -76,9 +80,11 @@ Working tongue models from V2.0 onward can be exported through **Model manager**
 
 ## Test status
 
+The window regression fixture covers all five pages through native minimize/restore and repeated size-change messages, checks stable control handles and wrapping, and preserves the Activity log reading position and selection while messages arrive. Real local directory junctions and rollback failures were tested for module installation; OneDrive Cloud Files tags were simulated. Physical corner dragging and real OneDrive hydration remain untested.
+
 The latest Activity tests use a displayed Windows log control and cover continued output while scrolling, bottom following, selected text, wrapped lines and history trimming. Gaze status tests cover repeated refreshes, pending checks, changed connections and successful or failed recovery. Physical mouse-thumb dragging has not been tested.
 
-All 48 offline controller component tests pass. Local child-process fixtures reproduce an optional controller failure while camera/gaze workers remain active, then verify that explicit Stop reaches both stop signals. They cover delayed output, incomplete cleanup, late readiness, source changes and stop-file write failures. Live headset sensor startup still needs confirmation.
+All 51 offline controller component tests pass. Local child-process fixtures reproduce an optional controller failure while camera/gaze workers remain active, then verify that explicit Stop reaches both stop signals. They cover delayed output, incomplete cleanup, late readiness, source changes and stop-file write failures. Live headset sensor startup still needs confirmation.
 
 An offline concurrent replay of 192 recorded frames on a Radeon RX 7900 XTX with ROCm 10.1 reduced mean process CPU time from about 30.27 to 25.07 ms per tongue-and-pupil pair (about 17%). Mean elapsed time per pair changed from 14.39 to 14.91 ms. Raw tongue predictions and pupil detections matched exactly. This is a local AMD result; the reported RTX 5060 Ti system and live VRChat frame rates still need confirmation. No training or model replacement was used for this change.
 
