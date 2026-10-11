@@ -195,7 +195,7 @@ internal sealed partial class HubForm
         bool connected = false;
         try
         {
-            AppendLog("Reconnecting the selected USB Quest Pro. Keep it awake and approve USB debugging if requested.");
+            AppendLog("Checking the selected USB Quest Pro. Keep it awake and approve USB debugging if requested. A working connection is kept; recovery runs only if it is needed.");
             connected = await _environment.ReconnectUsbAsync();
             if (_closingInProgress || IsDisposed) return;
             AppendLog(_environment.UsbConnectionMessage);

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -118,23 +119,27 @@ internal sealed class HubUsbConnection
                     return Fail(generation, "The connection could not be confirmed as a single physical USB headset. Disconnect other Android devices and retry.");
             }
 
-            var shouldReconnect = forceReconnect || selected.State == "offline" && allowRecovery;
+            // Reconnect is a recovery entry, not an unconditional reset. Resetting
+            // an authorized, responsive USB transport can make Windows lose it
+            // until its ADB interface is reopened. Verify that connection first.
+            var identityVerified = false;
+            if (selected.State == "device")
+            {
+                var model = await RunProbeAsync(["-s", selected.Serial, "shell", "getprop", "ro.product.model"], 3, generation);
+                var product = await RunProbeAsync(["-s", selected.Serial, "shell", "getprop", "ro.product.device"], 3, generation);
+                identityVerified = Succeeded(model) && Succeeded(product);
+                if (identityVerified && !IsQuestPro(model.Output, product.Output))
+                    return Fail(generation, "The connected USB device is not a Meta Quest Pro. Qpro's camera and gaze features require a Quest Pro.");
+                // Only a physically confirmed remembered headset is eligible for
+                // recovery when its identity commands have stopped responding.
+                if (!identityVerified && (remembered is null || !forceReconnect && !allowRecovery))
+                    return Fail(generation, "The USB connection responded, but the headset identity could not be read. Keep it awake and retry.");
+            }
+            var shouldReconnect = !identityVerified && (forceReconnect || allowRecovery);
             if (selected.State == "offline" && !shouldReconnect)
                 return Fail(generation, "The remembered USB headset is offline. Keep it awake, then use Reconnect USB to refresh this connection.");
             if (shouldReconnect)
             {
-                // A connected device can report its identity before an explicit
-                // refresh. Do not reconnect a newly discovered phone or headset
-                // of another type merely because it is the only USB device.
-                if (selected.State == "device")
-                {
-                    var beforeModel = await RunProbeAsync(["-s", selected.Serial, "shell", "getprop", "ro.product.model"], 3, generation);
-                    var beforeProduct = await RunProbeAsync(["-s", selected.Serial, "shell", "getprop", "ro.product.device"], 3, generation);
-                    if (!Succeeded(beforeModel) || !Succeeded(beforeProduct))
-                        return Fail(generation, "The USB connection could not be identified before reconnecting. Keep the headset awake and retry.");
-                    if (!IsQuestPro(beforeModel.Output, beforeProduct.Output))
-                        return Fail(generation, "The connected USB device is not a Meta Quest Pro. Qpro has not reconnected it.");
-                }
                 // Do not use reconnect offline: ADB applies that command to all
                 // offline transports, even when a serial option is supplied.
                 if (!BeginReconnect(generation))
@@ -142,22 +147,23 @@ internal sealed class HubUsbConnection
                 var reconnect = await RunProbeAsync(["-s", selected.Serial, "reconnect"], 3, generation);
                 if (!Succeeded(reconnect))
                     return Fail(generation, "ADB could not refresh the selected USB connection. Keep the headset awake and retry after a short wait.");
-                await _delay(TimeSpan.FromMilliseconds(400));
-                devices = await ListDevicesAsync(generation, remembered, false, afterReconnect: true);
                 var reconnectSerial = selected.Serial;
-                selected = devices?.SingleOrDefault(device => device.Serial == reconnectSerial);
+                selected = await WaitForReadyUsbAsync(reconnectSerial, generation);
                 if (selected is null || selected.State != "device")
                     return Fail(generation, selected?.State == "unauthorized"
                         ? "USB reconnected, but debugging still needs approval inside the headset."
                         : "USB reconnect finished, but the Quest Pro is not ready yet. Keep it awake and check the cable if it stays offline.");
             }
 
-            var model = await RunProbeAsync(["-s", selected.Serial, "shell", "getprop", "ro.product.model"], 3, generation);
-            var product = await RunProbeAsync(["-s", selected.Serial, "shell", "getprop", "ro.product.device"], 3, generation);
-            if (!Succeeded(model) || !Succeeded(product))
-                return Fail(generation, "The USB connection responded, but the headset identity could not be read. Keep it awake and retry.");
-            if (!IsQuestPro(model.Output, product.Output))
-                return Fail(generation, "The connected USB device is not a Meta Quest Pro. Qpro's camera and gaze features require a Quest Pro.");
+            if (!identityVerified)
+            {
+                var model = await RunProbeAsync(["-s", selected.Serial, "shell", "getprop", "ro.product.model"], 3, generation);
+                var product = await RunProbeAsync(["-s", selected.Serial, "shell", "getprop", "ro.product.device"], 3, generation);
+                if (!Succeeded(model) || !Succeeded(product))
+                    return Fail(generation, "The USB connection responded, but the headset identity could not be read. Keep it awake and retry.");
+                if (!IsQuestPro(model.Output, product.Output))
+                    return Fail(generation, "The connected USB device is not a Meta Quest Pro. Qpro's camera and gaze features require a Quest Pro.");
+            }
 
             lock (_stateLock)
             {
@@ -238,15 +244,41 @@ internal sealed class HubUsbConnection
 
     private sealed record UsbDevice(string Serial, string State);
 
+    private async Task<UsbDevice?> WaitForReadyUsbAsync(string serial, long generation)
+    {
+        // Recovery may briefly remove the selected interface from enumeration.
+        // Poll only for that serial; do not reset the server or other devices.
+        var elapsed = Stopwatch.StartNew();
+        UsbDevice? last = null;
+        foreach (var delayMilliseconds in new[] { 0, 400, 800, 1200, 1600, 1800 })
+        {
+            lock (_stateLock) { if (_selectionGeneration != generation) return null; }
+            var remaining = TimeSpan.FromSeconds(8) - elapsed.Elapsed;
+            if (remaining <= TimeSpan.Zero) break;
+            if (delayMilliseconds > 0)
+                await _delay(TimeSpan.FromMilliseconds(Math.Min(delayMilliseconds, remaining.TotalMilliseconds)));
+            lock (_stateLock) { if (_selectionGeneration != generation) return null; }
+            remaining = TimeSpan.FromSeconds(8) - elapsed.Elapsed;
+            if (remaining <= TimeSpan.Zero) break;
+            var timeout = Math.Clamp((int)Math.Ceiling(remaining.TotalSeconds), 1, 2);
+            var result = await RunProbeAsync(["devices", "-l"], timeout, generation);
+            lock (_stateLock) { if (_selectionGeneration != generation) return null; }
+            if (result.Output.Contains("stopped for Hub shutdown", StringComparison.OrdinalIgnoreCase)) return null;
+            last = ParseDevices(result)?.SingleOrDefault(device => device.Serial == serial);
+            if (last?.State is "device" or "unauthorized") return last;
+        }
+        return last;
+    }
+
     private async Task<List<UsbDevice>?> ListDevicesAsync(long generation, string? remembered,
-        bool forceReconnect, bool afterReconnect = false)
+        bool forceReconnect)
     {
         bool initial;
         lock (_stateLock)
         {
             if (_selectionGeneration != generation) return null;
-            initial = !afterReconnect && !_initialEnumerationComplete;
-            if (!afterReconnect) _initialEnumerationComplete = true;
+            initial = !_initialEnumerationComplete;
+            _initialEnumerationComplete = true;
         }
         // Start the daemon separately on reopening. A short devices timeout can
         // otherwise kill its freshly spawned daemon along with the client.
@@ -260,7 +292,7 @@ internal sealed class HubUsbConnection
         var devices = ParseDevices(result);
         var missing = devices is null || devices.Count == 0 ||
             remembered is not null && !devices.Any(device => device.Serial == remembered);
-        if (afterReconnect || !missing || result.Output.Contains("stopped for Hub shutdown", StringComparison.OrdinalIgnoreCase))
+        if (!missing || result.Output.Contains("stopped for Hub shutdown", StringComparison.OrdinalIgnoreCase))
             return devices;
 
         // Closing the Hub deliberately stops ADB. Its next startup can take

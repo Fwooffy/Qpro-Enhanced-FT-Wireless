@@ -149,8 +149,88 @@ try
         "Allowing offline recovery reconnected a healthy transport.");
     now += TimeSpan.FromSeconds(31);
     Check(await recovering.ProbeAsync(forceReconnect: true), "Explicit reconnect of a healthy Quest failed.");
-    Check(offlineFixture.Commands.Count(command => command.Arguments.Contains("reconnect")) == beforeNormal + 1,
-        "Explicit reconnect did not refresh the connection.");
+    Check(offlineFixture.Commands.Count(command => command.Arguments.Contains("reconnect")) == beforeNormal,
+        "Explicit retry reset a healthy USB connection.");
+
+    var healthyReset = new AdbFixture();
+    var healthyResetPath = await SavedSelection("healthy-reset-regression", healthyReset);
+    var healthyRetry = Create(healthyResetPath, healthyReset);
+    // Reproduce the Windows regression: a reset of a healthy transport makes
+    // it disappear. A successful retry must never invoke this callback.
+    healthyReset.OnReconnect = () => healthyReset.Devices.Clear();
+    Check(await healthyRetry.ProbeAsync(forceReconnect: true), "Healthy explicit retry lost an authorized Quest.");
+    Check(healthyReset.Commands.All(command => !command.Arguments.Contains("reconnect")),
+        "Healthy verification unnecessarily reset the transport.");
+    Check(healthyRetry.VerifiedSerial == AdbFixture.Quest && healthyReset.Devices.Count == 1,
+        "Healthy retry changed the connected device or readiness.");
+    Check(await healthyRetry.ProbeAsync(forceReconnect: true), "Repeated healthy retry was blocked by recovery cooldown.");
+
+    var lateRecovery = new AdbFixture();
+    var latePath = await SavedSelection("late-recovery", lateRecovery);
+    var lateUsb = Create(latePath, lateRecovery);
+    lateRecovery.Devices.Add(new("PHONEFIXTURE", "device", "Phone", "phone"));
+    lateRecovery.Devices[0] = lateRecovery.Devices[0] with { State = "offline" };
+    var recoveryStarted = false;
+    var recoveryEnumerations = 0;
+    lateRecovery.OnReconnect = () => { recoveryStarted = true; lateRecovery.Devices[0] = lateRecovery.Devices[0] with { State = "device" }; };
+    lateRecovery.Override = (arguments, _) => recoveryStarted && arguments.SequenceEqual(["devices", "-l"]) && ++recoveryEnumerations <= 3
+        ? Task.FromResult<(bool, int, string)>((true, 0, "List of devices attached\nPHONEFIXTURE\tdevice\n")) : null;
+    Check(await lateUsb.ProbeAsync(forceReconnect: true) && recoveryEnumerations == 4,
+        "Recovery stopped after one short enumeration instead of waiting for the selected USB interface.");
+    Check(lateRecovery.Commands.Count(command => command.Arguments.Contains("reconnect")) == 1,
+        "Late enumeration reset the selected transport repeatedly.");
+    Check(lateRecovery.Commands.All(command => !command.Arguments.Contains("PHONEFIXTURE") && !command.Arguments.Contains("kill-server")),
+        "Late recovery touched another device or reset the server.");
+    Check(lateUsb.VerifiedSerial == AdbFixture.Quest, "Late recovery silently selected a different device.");
+
+    var absentRecovery = new AdbFixture();
+    var absentPath = await SavedSelection("absent-after-recovery", absentRecovery);
+    var absentUsb = Create(absentPath, absentRecovery);
+    var savedBeforeRecovery = File.ReadAllText(absentPath);
+    absentRecovery.Devices[0] = absentRecovery.Devices[0] with { State = "offline" };
+    var absentPolling = false;
+    var absentEnumerations = 0;
+    absentRecovery.OnReconnect = () => { absentPolling = true; absentRecovery.Devices.Clear(); };
+    absentRecovery.Override = (arguments, _) => absentPolling && arguments.SequenceEqual(["devices", "-l"])
+        ? AbsentEnumeration() : null;
+    Task<(bool, int, string)> AbsentEnumeration() { absentEnumerations++; return Task.FromResult((true, 0, "List of devices attached\n")); }
+    Check(!await absentUsb.ProbeAsync(forceReconnect: true) && absentEnumerations == 6,
+        "Missing recovered interface was accepted or enumeration was not bounded.");
+    Check(absentRecovery.Commands.Where(command => absentPolling && command.Arguments.SequenceEqual(["devices", "-l"])).TakeLast(6).All(command => command.Timeout <= 2),
+        "Recovery enumeration used an unbounded command timeout.");
+    Check(absentUsb.RememberedSerial == AdbFixture.Quest && absentUsb.VerifiedSerial is null && File.ReadAllText(absentPath) == savedBeforeRecovery,
+        "Failed recovery discarded the remembered headset or reported it ready.");
+
+    var needApproval = new AdbFixture();
+    var approvalPath = await SavedSelection("approval-after-recovery", needApproval);
+    var approvalUsb = Create(approvalPath, needApproval);
+    needApproval.Devices[0] = needApproval.Devices[0] with { State = "offline" };
+    needApproval.OnReconnect = () => needApproval.Devices[0] = needApproval.Devices[0] with { State = "unauthorized" };
+    Check(!await approvalUsb.ProbeAsync(forceReconnect: true) && approvalUsb.StatusReason.Contains("approval", StringComparison.OrdinalIgnoreCase),
+        "Recovery bypassed authorization or lost approval guidance.");
+    Check(needApproval.Commands.All(command => !command.Arguments.Contains("getprop")),
+        "An unauthorized recovered headset was queried for identity.");
+
+    var unresponsive = new AdbFixture();
+    var unresponsivePath = await SavedSelection("remembered-unresponsive", unresponsive);
+    var unresponsiveUsb = Create(unresponsivePath, unresponsive);
+    var identityHung = true;
+    unresponsive.Override = (arguments, _) => identityHung && arguments.LastOrDefault() == "ro.product.model"
+        ? Task.FromResult<(bool, int, string)>((false, -1, "fixture identity timed out")) : null;
+    Check(!await unresponsiveUsb.ProbeAsync() && unresponsive.Commands.All(command => !command.Arguments.Contains("reconnect")),
+        "Read-only polling reset an unresponsive device automatically.");
+    unresponsive.OnReconnect = () => identityHung = false;
+    Check(await unresponsiveUsb.ProbeAsync(forceReconnect: true), "Explicit recovery of the remembered unresponsive headset failed.");
+    Check(unresponsive.Commands.Count(command => command.Arguments.Contains("reconnect")) == 1 && unresponsiveUsb.FailureDetail is null,
+        "Recovered identity left stale diagnostics or reset repeatedly.");
+
+    var unknownUnresponsive = new AdbFixture();
+    unknownUnresponsive.Override = (arguments, _) => arguments.LastOrDefault() == "ro.product.model"
+        ? Task.FromResult<(bool, int, string)>((false, -1, "fixture identity timed out")) : null;
+    Check(!await Create(Config("unknown-unresponsive"), unknownUnresponsive).ProbeAsync(forceReconnect: true),
+        "An unidentified fresh USB device was reported ready.");
+    Check(unknownUnresponsive.Commands.All(command => !command.Arguments.Contains("reconnect")),
+        "An unidentified fresh device was reset as though it were a remembered Quest.");
 
     var failedReconnectFixture = new AdbFixture();
     var failedReconnectPath = await SavedSelection("reconnect-failure", failedReconnectFixture);
@@ -252,6 +332,39 @@ try
         Check(!await pending, "Invalidated in-flight probe reported success.");
         Check(invalidated.VerifiedSerial is null && invalidated.RememberedSerial is null && !File.Exists(slowPath),
             "An in-flight probe restored or saved a selection after it was cleared.");
+    }
+    foreach (var forget in new[] { false, true })
+    {
+        var inRecovery = new AdbFixture();
+        var recoveryPath = await SavedSelection("inflight-recovery-" + forget, inRecovery);
+        var beforeRecovery = File.ReadAllText(recoveryPath);
+        var recoveryUsb = Create(recoveryPath, inRecovery);
+        inRecovery.Devices[0] = inRecovery.Devices[0] with { State = "offline" };
+        var recoveringNow = false;
+        var pollStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releasePoll = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        inRecovery.OnReconnect = () => recoveringNow = true;
+        inRecovery.Override = (arguments, _) => recoveringNow && arguments.SequenceEqual(["devices", "-l"])
+            ? DelayedRecovery() : null;
+        async Task<(bool, int, string)> DelayedRecovery()
+        {
+            pollStarted.SetResult();
+            await releasePoll.Task;
+            return (true, 0, "List of devices attached\n" + AdbFixture.Quest + "\tdevice\n");
+        }
+        var pending = recoveryUsb.ProbeAsync(forceReconnect: true);
+        await pollStarted.Task;
+        var commandsAtInvalidation = inRecovery.Commands.Count;
+        if (forget) recoveryUsb.Forget(); else recoveryUsb.ClearVerification();
+        releasePoll.SetResult();
+        Check(!await pending && recoveryUsb.VerifiedSerial is null,
+            "An obsolete recovery poll restored readiness after selection invalidation.");
+        Check(inRecovery.Commands.Count == commandsAtInvalidation,
+            "Invalidated recovery queued more identity or enumeration commands.");
+        Check(forget
+            ? recoveryUsb.RememberedSerial is null && !File.Exists(recoveryPath)
+            : recoveryUsb.RememberedSerial == AdbFixture.Quest && File.ReadAllText(recoveryPath) == beforeRecovery,
+            "Invalidated recovery changed the user's remembered selection.");
     }
     var keepRemembered = new AdbFixture();
     var keepPath = await SavedSelection("clear-current", keepRemembered);
