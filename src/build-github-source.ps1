@@ -55,6 +55,7 @@ $sourceFiles = @(
     "build-and-run.ps1",
     "build-release.ps1",
     "build-guide.py",
+    "PDF_GUIDE.md",
     "build-github-source.ps1",
     "Connect-QproWireless.ps1",
     "Connect-QproWireless.cmd",
