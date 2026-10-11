@@ -398,6 +398,7 @@ def _rates(prediction: np.ndarray, target: np.ndarray, native: np.ndarray,
     visibility = TONGUE_TARGET_NAMES.index("visibility")
     horizontal = TONGUE_TARGET_NAMES.index("horizontal")
     vertical = TONGUE_TARGET_NAMES.index("vertical")
+    extension = TONGUE_TARGET_NAMES.index("extension")
     expected = target[:, visibility] >= 0.5
     score = camera_weight * prediction[:, visibility] + (1.0 - camera_weight) * native
     observed = score >= threshold
@@ -428,6 +429,9 @@ def _rates(prediction: np.ndarray, target: np.ndarray, native: np.ndarray,
         "falseNegativeRate": missed / int(np.count_nonzero(visible)) if np.any(visible) else None,
         "directionSamples": int(np.count_nonzero(direction)),
         "directionMae": float(np.mean(direction_error[direction])) if np.any(direction) else None,
+        "extensionMae": float(np.mean(np.abs(prediction[visible, extension] - target[visible, extension]))) if np.any(visible) else None,
+        "horizontalMae": float(np.mean(np.abs(prediction[visible, horizontal] - target[visible, horizontal]))) if np.any(visible) else None,
+        "verticalMae": float(np.mean(np.abs(prediction[visible, vertical] - target[visible, vertical]))) if np.any(visible) else None,
     }
 
 
@@ -441,6 +445,10 @@ def summarize(prediction: np.ndarray, target: np.ndarray, native: np.ndarray,
     result["perWearer"] = {
         str(wearer): _rates(prediction, target, native, camera_weight, threshold, wearer_ids == wearer)
         for wearer in np.unique(wearer_ids)
+    }
+    result["perSession"] = {
+        str(session): _rates(prediction, target, native, camera_weight, threshold, session_ids == session)
+        for session in np.unique(session_ids)
     }
     per_prompt = []
     for session_id in np.unique(session_ids):
@@ -468,6 +476,36 @@ def summarize(prediction: np.ndarray, target: np.ndarray, native: np.ndarray,
     return result
 
 
+def _regression_problems(previous: dict[str, object], current: dict[str, object], scope: str) -> list[str]:
+    """Prevent averages from concealing an axis, pose or session regression.
+
+    The epsilon only accommodates float32 arithmetic noise. It is not an
+    allowance for a worse pose. Missing or non-finite evidence fails closed.
+    """
+    problems = []
+    for metric in ("samples", "hidden", "visible", "directionSamples"):
+        if previous.get(metric) != current.get(metric) or metric not in current:
+            problems.append(f"Evaluation coverage differs for {scope}: {metric}")
+    for metric in ("falsePositive", "missedVisible"):
+        before, after = previous.get(metric), current.get(metric)
+        if not isinstance(before, (int, float)) or not isinstance(after, (int, float)) or not np.isfinite([before, after]).all():
+            problems.append(f"Missing or invalid {metric} evidence for {scope}")
+        elif after > before:
+            problems.append(f"{metric} regressed for {scope}")
+    for metric in ("f1", "directionMae", "extensionMae", "horizontalMae", "verticalMae"):
+        if metric not in previous or metric not in current:
+            problems.append(f"Missing {metric} evidence for {scope}")
+            continue
+        before, after = previous[metric], current[metric]
+        if before is None and after is None:
+            continue
+        if not isinstance(before, (int, float)) or not isinstance(after, (int, float)) or not np.isfinite([before, after]).all():
+            problems.append(f"Invalid {metric} evidence for {scope}")
+        elif (before - after if metric == "f1" else after - before) > 1e-6:
+            problems.append(f"{metric} regressed for {scope}")
+    return problems
+
+
 def promotion_gate(baseline: dict[str, object], candidate: dict[str, object],
                    train_wearers: set[str], holdout_wearers: set[str]) -> list[str]:
     """Return concrete reasons that a candidate cannot be staged for release."""
@@ -481,8 +519,7 @@ def promotion_gate(baseline: dict[str, object], candidate: dict[str, object],
             problems.append(f"Holdout needs at least four visible {corner} diagonal stills")
             continue
         baseline_corner = baseline["diagonalCorners"][corner]
-        if values["directionMae"] > baseline_corner["directionMae"] + 0.10:
-            problems.append(f"Direction error regressed on {corner} diagonals")
+        problems.extend(_regression_problems(baseline_corner, values, f"{corner} diagonals"))
     if candidate["f1"] < 0.80:
         problems.append("Candidate visibility F1 is below 0.80")
     if candidate["falsePositiveRate"] is None or candidate["falsePositiveRate"] > 0.10:
@@ -491,27 +528,28 @@ def promotion_gate(baseline: dict[str, object], candidate: dict[str, object],
         problems.append("Candidate visible false-negative rate exceeds 0.25")
     if candidate["directionMae"] is None or candidate["directionMae"] > 0.35:
         problems.append("Candidate X/Y direction MAE exceeds 0.35")
-    if candidate["f1"] < baseline["f1"] - 0.01:
-        problems.append("Visibility F1 regressed against the bundled model")
-    if candidate["falsePositiveRate"] is not None and baseline["falsePositiveRate"] is not None:
-        if candidate["falsePositiveRate"] > baseline["falsePositiveRate"] + 0.02:
-            problems.append("Hidden false-positive rate regressed against the bundled model")
-    if candidate["directionMae"] is not None and baseline["directionMae"] is not None:
-        if candidate["directionMae"] > baseline["directionMae"] + 0.02:
-            problems.append("X/Y direction error regressed against the bundled model")
-    for wearer, values in candidate.get("perWearer", {}).items():
-        previous = baseline["perWearer"][wearer]
-        if values["visible"] >= 24 and values["hidden"] >= 24:
-            if values["f1"] < previous["f1"] - 0.05:
-                problems.append(f"Visibility regressed for holdout wearer {wearer}")
-            if values["falsePositiveRate"] > previous["falsePositiveRate"] + 0.05:
-                problems.append(f"Hidden false positives regressed for holdout wearer {wearer}")
-            if (values["directionMae"] is not None and previous["directionMae"] is not None
-                    and values["directionMae"] > previous["directionMae"] + 0.08):
-                problems.append(f"X/Y direction regressed for holdout wearer {wearer}")
+    problems.extend(_regression_problems(baseline, candidate, "all holdout stills"))
+    for group in ("perWearer", "perSession"):
+        previous = baseline.get(group, {})
+        current = candidate.get(group, {})
+        if not previous or set(previous) != set(current):
+            problems.append(f"Missing or mismatched {group} evidence")
+            continue
+        for key, values in current.items():
+            problems.extend(_regression_problems(previous[key], values, f"{group} {key}"))
+    def pose_map(report):
+        return {(item["sessionId"], item["promptId"]): item for item in report.get("perPrompt", [])}
+    previous, current = pose_map(baseline), pose_map(candidate)
+    if not previous or set(previous) != set(current):
+        problems.append("Missing or mismatched per-pose evidence")
+    else:
+        for key, values in current.items():
+            if values["samples"] >= 4:
+                problems.extend(_regression_problems(previous[key], values, f"pose {values['prompt']} in session {key[0]}"))
     materially_better = (
         candidate["f1"] >= baseline["f1"] + 0.02
         or (baseline["directionMae"] is not None
+            and baseline["directionMae"] > 0.0
             and candidate["directionMae"] is not None
             and candidate["directionMae"] <= baseline["directionMae"] * 0.85)
     )
@@ -855,6 +893,13 @@ def main() -> int:
             {"gate": trained_epochs[0], "direction": trained_epochs[1]}
             if trained_epochs is not None else None
         ),
+        "regressionPolicy": {
+            "metricEpsilon": 1e-6,
+            "scopes": ["overall", "wearer", "session", "pose", "diagonal"],
+            "poseMinimumStills": 4,
+            "axes": ["extension", "horizontal", "vertical"],
+            "additionalVisibilityErrorsAllowed": 0,
+        },
         "baseline": baseline,
         "candidate": candidate,
         "offlineGatePassed": not problems,

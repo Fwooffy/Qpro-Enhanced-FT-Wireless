@@ -1,4 +1,5 @@
 import json
+import copy
 import sys
 import tempfile
 import unittest
@@ -234,6 +235,10 @@ class DeveloperTongueTrainingTests(unittest.TestCase):
         self.assertEqual(report["perPrompt"][0]["falsePositiveRate"], 0.5)
         self.assertEqual(report["diagonalCorners"]["upper-left"]["visible"], 2)
         self.assertEqual(report["frozenGate"]["threshold"], 0.5)
+        self.assertEqual(report["perSession"]["s"]["samples"], 4)
+        self.assertEqual(report["extensionMae"], 0.0)
+        self.assertEqual(report["horizontalMae"], 0.0)
+        self.assertEqual(report["verticalMae"], 0.0)
 
     def test_model_pair_evaluates_separate_cache_with_checkpoint_gate(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -565,13 +570,7 @@ class DeveloperTongueTrainingTests(unittest.TestCase):
                 self.assertFalse(_complete_curriculum(cache, metadata))
 
     def test_promotion_requires_unseen_wearer_and_material_improvement(self):
-        corners = {name: {"visible": 6, "directionMae": 0.20}
-                   for name in ("upper-left", "upper-right", "lower-left", "lower-right")}
-        baseline = {"f1": 0.82, "falsePositiveRate": 0.08, "directionMae": 0.20,
-                    "diagonalCorners": corners}
-        candidate = {"f1": 0.86, "falsePositiveRate": 0.06, "falseNegativeRate": 0.10,
-                     "directionMae": 0.18, "hidden": 48, "visible": 48,
-                     "diagonalCorners": corners}
+        baseline, candidate = self.passing_reports()
         self.assertEqual(promotion_gate(baseline, candidate, {"a"}, {"b"}), [])
         self.assertTrue(any("wearer" in issue for issue in
                             promotion_gate(baseline, candidate, {"a"}, {"a"})))
@@ -579,6 +578,58 @@ class DeveloperTongueTrainingTests(unittest.TestCase):
         candidate["directionMae"] = 0.19
         self.assertTrue(any("Neither" in issue for issue in
                             promotion_gate(baseline, candidate, {"a"}, {"b"})))
+
+    @staticmethod
+    def passing_reports():
+        metrics = {"samples": 96, "hidden": 48, "visible": 48,
+                   "falsePositive": 4, "missedVisible": 8, "directionSamples": 24,
+                   "f1": 0.82, "falsePositiveRate": 0.08, "falseNegativeRate": 0.17,
+                   "directionMae": 0.20, "extensionMae": 0.20,
+                   "horizontalMae": 0.20, "verticalMae": 0.20}
+        corners = {name: dict(metrics, samples=6, hidden=0, visible=6, directionSamples=6)
+                   for name in ("upper-left", "upper-right", "lower-left", "lower-right")}
+        baseline = dict(metrics, diagonalCorners=corners,
+                        perWearer={"b": dict(metrics)}, perSession={"s": dict(metrics)},
+                        perPrompt=[dict(metrics, sessionId="s", promptId=0, prompt="left")])
+        candidate = copy.deepcopy(baseline)
+        candidate.update(f1=0.86, falsePositiveRate=0.06, falseNegativeRate=0.10,
+                         directionMae=0.18, falsePositive=3, missedVisible=5)
+        return baseline, candidate
+
+    def test_improved_average_cannot_hide_axis_pose_or_session_regression(self):
+        for scope in ("aggregate", "wearer", "session", "pose", "diagonal"):
+            for metric in ("extensionMae", "horizontalMae", "verticalMae", "falsePositive", "missedVisible"):
+                with self.subTest(scope=scope, metric=metric):
+                    baseline, candidate = self.passing_reports()
+                    previous, current = {
+                        "aggregate": (baseline, candidate),
+                        "wearer": (baseline["perWearer"]["b"], candidate["perWearer"]["b"]),
+                        "session": (baseline["perSession"]["s"], candidate["perSession"]["s"]),
+                        "pose": (baseline["perPrompt"][0], candidate["perPrompt"][0]),
+                        "diagonal": (baseline["diagonalCorners"]["upper-left"], candidate["diagonalCorners"]["upper-left"]),
+                    }[scope]
+                    current[metric] = previous[metric] + (1 if metric in ("falsePositive", "missedVisible") else 0.001)
+                    self.assertTrue(any(metric in issue and "regressed" in issue
+                                        for issue in promotion_gate(baseline, candidate, {"a"}, {"b"})))
+
+    def test_promotion_rejects_nonfinite_missing_and_mismatched_evidence(self):
+        for value in (float("nan"), float("inf"), None):
+            baseline, candidate = self.passing_reports()
+            candidate["perSession"]["s"]["verticalMae"] = value
+            self.assertTrue(any("Invalid verticalMae" in issue
+                                for issue in promotion_gate(baseline, candidate, {"a"}, {"b"})))
+        baseline, candidate = self.passing_reports()
+        del candidate["horizontalMae"]
+        self.assertTrue(any("Missing horizontalMae" in issue
+                            for issue in promotion_gate(baseline, candidate, {"a"}, {"b"})))
+        candidate["horizontalMae"] = 0.20
+        del candidate["perSession"]
+        self.assertTrue(any("perSession evidence" in issue
+                            for issue in promotion_gate(baseline, candidate, {"a"}, {"b"})))
+        baseline, candidate = self.passing_reports()
+        candidate["visible"] = 49
+        self.assertTrue(any("coverage differs" in issue
+                            for issue in promotion_gate(baseline, candidate, {"a"}, {"b"})))
 
     def test_full_capture_has_fixed_diagonals_and_matched_nuisance_cards(self):
         self.assertEqual(len(TONGUE_STILL_PROMPTS), 58)

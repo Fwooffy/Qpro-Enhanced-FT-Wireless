@@ -134,14 +134,28 @@ training cache and uses its ordinary per-card repetition split to select
 checkpoints. The reserved
 sessions are evaluated afterward with each checkpoint's **frozen** visibility
 weight and threshold. The report includes overall visibility precision,
-recall, F1, hidden false-positive rate, visible miss rate, X/Y direction
-error, results by wearer and card, and all four diagonal corners. The
+recall, F1, hidden false-positive rate, visible miss rate, separate extension,
+horizontal and vertical errors, results by wearer, recording and card, and all four diagonal corners. The
 offline gate requires every holdout wearer to be unseen, complete Full and
 Focused coverage on both sides, minimum absolute
-quality, no material regressions, and an improvement in visibility or X/Y
+quality, no regressions beyond a 0.000001 floating-point allowance, and an improvement in visibility or X/Y
 direction. At least one branch must improve beyond its epoch-zero v8 copy.
 A passing run writes an `offline-gate-pair` folder for review. A failed
 run keeps its diagnostics but does not stage a pair.
+
+The comparison checks each axis independently in every recording and wearer,
+not just the average across the dataset. It also checks individual pose cards
+with at least four stills and each required diagonal corner. Extra hidden
+false positives or visible misses block promotion even if the total F1 improves.
+Missing, mismatched or non-finite comparison evidence blocks promotion too.
+These checks prevent improvements on easy poses from hiding a worse direction
+or recording. They do not turn intended pose labels into measured ground truth.
+
+Include clean-shaven and facial-hair wearers, multiple headset fits, gentle
+extension strengths and ordinary hidden-tongue mouth expressions in independent
+evaluation. Record appearance and fit in private review notes rather than
+guessing from the images. If a group has no independent recordings, report that
+coverage as missing and avoid claiming that the model was validated for it.
 
 The comparison measures agreement with reviewed **prompted poses**. It is not
 proof of accuracy for every wearer. The still-frame audit does not reproduce
