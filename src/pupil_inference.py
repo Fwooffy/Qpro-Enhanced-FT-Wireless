@@ -10,6 +10,7 @@ import numpy as np
 
 from pupil_dilation import PupilBroadcaster, RelativePupilTracker
 from gpu_readback import GPUReadbackCancelled
+from tracking_budget import InferenceCadence
 
 
 @dataclass(frozen=True)
@@ -39,9 +40,14 @@ class PupilInferenceWorker:
 
     maximum_age_seconds = 0.5
 
-    def __init__(self, tracker: RelativePupilTracker, broadcaster: PupilBroadcaster) -> None:
+    def __init__(
+        self, tracker: RelativePupilTracker, broadcaster: PupilBroadcaster,
+        maximum_fps: float = 0.0,
+    ) -> None:
         self.tracker = tracker
         self.broadcaster = broadcaster
+        cadence = InferenceCadence(maximum_fps)
+        self._cadence = cadence if cadence.limited else None
         self._condition = threading.Condition()
         self._pending: tuple[np.ndarray, list[int], float] | None = None
         self._latest: PupilResult | None = None
@@ -111,8 +117,17 @@ class PupilInferenceWorker:
                     self._condition.wait_for(lambda: not self._running or self._pending is not None, timeout=0.1)
                     if not self._running:
                         return
+                    if self._pending is not None and self._cadence is not None:
+                        delay = self._cadence.delay(time.perf_counter())
+                        if delay > 0:
+                            # Leave the pair pending: arriving frames replace
+                            # it while this worker sleeps toward its next slot.
+                            self._condition.wait(timeout=delay)
+                            continue
                     item = self._pending
                     self._pending = None
+                    if item is not None and self._cadence is not None:
+                        self._cadence.started(time.perf_counter())
                 if item is None:
                     if time.perf_counter() - last_input > self.maximum_age_seconds:
                         self._send((None, None))

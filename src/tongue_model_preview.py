@@ -26,6 +26,7 @@ from label_capture import AmbiguousTongueSourceError, native_tongue_out
 from tongue_image_processing import preprocess_stereo_images, resolve_input_preprocessing
 from gpu_readback import GPUReadbackCancelled, copy_to_cpu
 from model_checkpoint import load_model_checkpoint
+from tracking_budget import InferenceCadence
 
 
 TONGUE_PACKET = struct.Struct("<4sBBH12f")
@@ -645,11 +646,14 @@ class TongueInferenceWorker:
         broadcaster: TongueBroadcaster,
         render_preview: bool = True,
         cheek_broadcaster=None,
+        maximum_fps: float = 0.0,
     ) -> None:
         self.preview = preview
         self.broadcaster = broadcaster
         self.render_preview = render_preview
         self.cheek_broadcaster = cheek_broadcaster
+        cadence = InferenceCadence(maximum_fps)
+        self._cadence = cadence if cadence.limited else None
         self._condition = threading.Condition()
         self._pending: tuple[
             np.ndarray, dict[str, object] | None, list[str], float
@@ -725,9 +729,16 @@ class TongueInferenceWorker:
                         self._condition.wait()
                     if not self._running:
                         return
+                    if self._cadence is not None:
+                        delay = self._cadence.delay(time.perf_counter())
+                        if delay > 0:
+                            self._condition.wait(timeout=delay)
+                            continue
                     strip, factory_sample, factory_names, submitted_at = self._pending
                     self._pending = None
                     dropped = self._dropped_frames
+                    if self._cadence is not None:
+                        self._cadence.started(time.perf_counter())
                 cpu_started = time.thread_time()
                 prediction = self.preview.predict(
                     strip, factory_sample, factory_names

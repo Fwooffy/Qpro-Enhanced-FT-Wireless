@@ -28,6 +28,7 @@ from tongue_still_capture import (
 )
 from label_capture import LabelSidecarRecorder
 from companion_lifecycle import CompanionLifetime
+from tracking_budget import PROFILE_RATES, resolve_tracking_budget
 
 
 HEADER = struct.Struct("<8sIIQQIIIIIIQ")
@@ -489,6 +490,14 @@ def main() -> int:
     parser.add_argument("--mjpeg-port", type=int, default=8081)
     parser.add_argument("--no-window", action="store_true")
     parser.add_argument(
+        "--tracking-profile", choices=tuple(PROFILE_RATES), default="responsive",
+        help="responsive keeps current cadence; balanced/low-cpu sample pupils less often",
+    )
+    parser.add_argument("--tongue-processing-fps", type=float, default=None,
+                        help="optional tongue/camera-cheek processing cap: 0 or 5–120 FPS")
+    parser.add_argument("--pupil-processing-fps", type=float, default=None,
+                        help="optional pupil processing cap: 0 or 5–120 FPS")
+    parser.add_argument(
         "--record",
         nargs="?",
         const="auto",
@@ -560,6 +569,14 @@ def main() -> int:
     parser.add_argument("--gaze-calibration-seconds", type=int, default=60)
     parser.add_argument("--convergence-calibration-seconds", type=int, default=40)
     arguments = parser.parse_args()
+    try:
+        tracking_budget = resolve_tracking_budget(
+            arguments.tracking_profile,
+            tongue_fps=arguments.tongue_processing_fps,
+            pupil_fps=arguments.pupil_processing_fps,
+        )
+    except ValueError as error:
+        parser.error(str(error))
     if (arguments.companion_pid is None) != (arguments.companion_start_filetime is None):
         parser.error("--companion-pid and --companion-start-filetime must be supplied together")
     if arguments.companion_pid is not None and (
@@ -655,6 +672,24 @@ def main() -> int:
         parser.error("--gaze-calibration-seconds must be at least 10")
     if arguments.convergence_calibration_seconds < 10:
         parser.error("--convergence-calibration-seconds must be at least 10")
+
+    if arguments.tongue_model or arguments.pupil_output:
+        def describe_rate(rate: float) -> str:
+            return "camera cadence" if rate == 0 else f"up to {rate:g} FPS"
+
+        print(
+            f"Tracking processing profile: {tracking_budget.profile}. "
+            f"Tongue/camera cheeks: {describe_rate(tracking_budget.tongue_fps)}; "
+            f"pupils: {describe_rate(tracking_budget.pupil_fps)}. "
+            "Camera recording and model resolution are unchanged.", flush=True,
+        )
+        if ((arguments.pupil_output and tracking_budget.pupil_fps > 0)
+                or (arguments.tongue_model and tracking_budget.tongue_fps > 0)):
+            print(
+                "Lower processing rates reduce CPU work by sampling fewer frames; "
+                "pupil warm-up and expression response can take longer. "
+                "Choose Responsive for the original processing cadence.", flush=True,
+            )
 
     shared = SharedPreview()
     server = start_mjpeg_server(shared, arguments.mjpeg_port)
@@ -846,6 +881,7 @@ def main() -> int:
                 tongue_model_preview, tongue_broadcaster,
                 render_preview=not arguments.no_window,
                 cheek_broadcaster=cheek_broadcaster,
+                maximum_fps=tracking_budget.tongue_fps,
             )
             print(
                 f"Loaded opt-in stereo tongue model on "
@@ -886,7 +922,9 @@ def main() -> int:
 
             pupil_tracker = RelativePupilTracker(sensitivity=arguments.pupil_sensitivity)
             pupil_broadcaster = PupilBroadcaster()
-            pupil_worker = PupilInferenceWorker(pupil_tracker, pupil_broadcaster)
+            pupil_worker = PupilInferenceWorker(
+                pupil_tracker, pupil_broadcaster, maximum_fps=tracking_budget.pupil_fps,
+            )
             print(
                 f"INFERENCE_BACKEND feature=pupil backend={pupil_tracker.backend} "
                 f"device={pupil_tracker.device} name={pupil_tracker.device_name}",

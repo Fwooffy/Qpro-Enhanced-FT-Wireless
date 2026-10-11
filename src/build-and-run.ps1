@@ -7,6 +7,12 @@ param(
     [string]$CameraMode = "all",
     [ValidateRange(0, 120)]
     [int]$MaxFps = 30,
+    [ValidateSet("responsive", "balanced", "low-cpu")]
+    [string]$TrackingProfile = "responsive",
+    [ValidateScript({ $_ -eq 0 -or ($_ -ge 5 -and $_ -le 120) })]
+    [Nullable[double]]$TongueProcessingFps = $null,
+    [ValidateScript({ $_ -eq 0 -or ($_ -ge 5 -and $_ -le 120) })]
+    [Nullable[double]]$PupilProcessingFps = $null,
     [ValidateRange(1024, 65535)]
     [int]$StreamPort = 27273,
     [string]$AdbTarget = "",
@@ -517,6 +523,13 @@ try {
         }
     }
     $receiverArguments = @(".\receiver.py", "--port", "$StreamPort")
+    $receiverArguments += @("--tracking-profile", $TrackingProfile.ToLowerInvariant())
+    if ($null -ne $TongueProcessingFps) {
+        $receiverArguments += @("--tongue-processing-fps", $TongueProcessingFps.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+    }
+    if ($null -ne $PupilProcessingFps) {
+        $receiverArguments += @("--pupil-processing-fps", $PupilProcessingFps.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+    }
     if ($CompanionPid -gt 0) {
         $receiverArguments += @("--companion-pid", "$CompanionPid", "--companion-start-filetime", "$CompanionStartFileTime")
     }

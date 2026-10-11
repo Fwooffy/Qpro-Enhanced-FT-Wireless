@@ -111,6 +111,7 @@ $sourceFiles = @(
     "pupil_dilation.py",
     "pupil_gpu.py",
     "pupil_inference.py",
+    "tracking_budget.py",
     "cheek_camera.py",
     "cheek_still_capture.py",
     "prepare_cheek_stills.py",
