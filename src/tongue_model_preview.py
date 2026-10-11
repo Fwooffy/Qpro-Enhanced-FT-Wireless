@@ -18,7 +18,9 @@ if torch.version.hip:
     # Windows MIOpen HIPRTC cannot compile these tongue-model BatchNorm kernels.
     torch.backends.cudnn.enabled = False
 
-from train_tongue_model import create_model
+from train_tongue_model import (
+    FrozenTongueCheekModel, SpatialStereoTongueModel, StereoTongueModel, create_model,
+)
 from qpro_gpu import validated_torch_device_name
 from label_capture import AmbiguousTongueSourceError, native_tongue_out
 from tongue_image_processing import preprocess_stereo_images, resolve_input_preprocessing
@@ -96,6 +98,40 @@ def format_tongue_status(
     )
 
 
+class _BatchedStereoInferenceModel(torch.nn.Module):
+    """Run the shared eval encoder once for both views, then keep stereo fusion.
+
+    Fixed BatchNorm statistics have already been folded into convolutions. The
+    two views remain independent until the original stereo fusion; batching
+    only avoids launching the same encoder twice for each camera pair.
+    """
+
+    def __init__(self, model: torch.nn.Module) -> None:
+        super().__init__()
+        self.model = model
+
+    @staticmethod
+    def _features(model: torch.nn.Module, cameras: torch.Tensor) -> torch.Tensor:
+        views = torch.cat((cameras[:, 0:1], cameras[:, 1:2]), dim=0)
+        left, right = model.encoder(views).chunk(2, dim=0)
+        stereo = torch.cat((left, right, torch.abs(left - right), left * right), dim=1)
+        if isinstance(model, SpatialStereoTongueModel):
+            fused = model.stereo_fusion(stereo)
+            return torch.cat((
+                torch.nn.functional.adaptive_avg_pool2d(fused, 1).flatten(1),
+                torch.nn.functional.adaptive_max_pool2d(fused, 1).flatten(1),
+            ), dim=1)
+        return stereo
+
+    def forward(self, cameras: torch.Tensor) -> torch.Tensor:
+        if isinstance(self.model, FrozenTongueCheekModel):
+            features = self._features(self.model.parent, cameras)
+            tongue = self.model.parent.tongue_from_features(features)
+            return torch.cat((tongue, self.model.cheeks_from_features(features)), dim=1)
+        features = self._features(self.model, cameras)
+        return self.model.tongue_from_features(features)
+
+
 def _prepare_inference_model(model: torch.nn.Module, device: torch.device) -> torch.nn.Module:
     """Fold fixed normalization into convolutions on this loaded eval copy.
 
@@ -128,6 +164,13 @@ def _prepare_inference_model(model: torch.nn.Module, device: torch.device) -> to
         # This layout speeds up the CPU convolution backend without changing
         # the stereo input contract or global thread settings used by pupils.
         model.to(memory_format=torch.channels_last)
+    # Keep training classes and checkpoint schemas unchanged. Unsupported or
+    # input-dependent normalization must retain its original forward path.
+    parent = model.parent if isinstance(model, FrozenTongueCheekModel) else model
+    if (device.type == "cpu"
+            and isinstance(parent, (StereoTongueModel, SpatialStereoTongueModel))
+            and not any(isinstance(layer, torch.nn.BatchNorm2d) for layer in model.modules())):
+        return _BatchedStereoInferenceModel(model).eval()
     return model
 
 
@@ -300,6 +343,8 @@ class TonguePrediction:
     completed_frames: int = 0
     native_status: str = "unavailable"
     worker_cpu_ms: float = 0.0
+    preprocess_ms: float = 0.0
+    transfer_ms: float = 0.0
 
 
 class TongueVisibilityHold:
@@ -463,6 +508,7 @@ class LiveTongueModelPreview:
             )
         started = time.perf_counter()
         inputs = self._inputs(strip, self.image_size, self.input_preprocessing)
+        preprocess_ms = (time.perf_counter() - started) * 1000.0
         with torch.inference_mode():
             model_values = self.model(inputs)[0]
             if self.direction_model is not None:
@@ -472,10 +518,12 @@ class LiveTongueModelPreview:
                 ):
                     direction_inputs = inputs
                 else:
+                    direction_prepare_started = time.perf_counter()
                     direction_inputs = self._inputs(
                         strip, self.direction_image_size,
                         self.direction_input_preprocessing,
                     )
+                    preprocess_ms += (time.perf_counter() - direction_prepare_started) * 1000.0
                 # Preserve the float32 gate value if a custom direction head
                 # emits a lower-precision tensor. Released models use float32.
                 direction_values = self.direction_model(direction_inputs)[0].float().clone()
@@ -485,9 +533,11 @@ class LiveTongueModelPreview:
             # One owned readback covers both heads on the current stream.
             # Sleeping while it finishes avoids a driver wait occupying a
             # CPU core and lets Stop cancel before any output is published.
+            transfer_started = time.perf_counter()
             values = copy_to_cpu(
                 model_values.float(), cancelled=getattr(self, "_readback_cancelled", None),
             ).numpy()
+            transfer_ms = (time.perf_counter() - transfer_started) * 1000.0
         completed_at = time.perf_counter()
         inference_ms = (completed_at - started) * 1000.0
         smoothed = self._motion_filter.update(values, completed_at)
@@ -519,6 +569,8 @@ class LiveTongueModelPreview:
             visible=visible,
             inference_ms=inference_ms,
             native_status=native_status,
+            preprocess_ms=preprocess_ms,
+            transfer_ms=transfer_ms,
         )
 
     def render(

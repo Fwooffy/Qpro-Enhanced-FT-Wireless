@@ -26,6 +26,7 @@ class PupilResult:
     completed_at: float
     device_name: str = "CPU"
     worker_cpu_ms: float = 0.0
+    completed_frames: int = 0
 
 
 class PupilInferenceWorker:
@@ -46,6 +47,7 @@ class PupilInferenceWorker:
         self._latest: PupilResult | None = None
         self._error: BaseException | None = None
         self._dropped = 0
+        self._completed = 0
         self._running = True
         self._broadcaster_lock = threading.Lock()
         self._broadcaster_closed = False
@@ -126,6 +128,7 @@ class PupilInferenceWorker:
                 worker_cpu_ms = (time.thread_time() - cpu_started) * 1000
                 finished = time.perf_counter()
                 stale = finished - submitted_at > self.maximum_age_seconds
+                self._completed += 1
                 result = PupilResult(
                     (None, None) if stale else values,
                     (None, None) if stale else self.tracker.detections,
@@ -135,6 +138,7 @@ class PupilInferenceWorker:
                     (finished - started) * 1000, (finished - submitted_at) * 1000,
                     self._dropped, finished, getattr(self.tracker, "device_name", "CPU"),
                     worker_cpu_ms,
+                    self._completed,
                 )
                 with self._condition:
                     if not self._running:

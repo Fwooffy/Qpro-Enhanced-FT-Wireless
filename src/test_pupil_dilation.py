@@ -13,6 +13,7 @@ from pupil_dilation import (
     RelativePupilTracker,
     detect_pupil,
     encode_pupil_packet,
+    _thresholds,
 )
 from receiver import stereo_mouth_strip
 
@@ -26,6 +27,23 @@ def eye(radius: int, center: tuple[int, int] = (200, 200)) -> np.ndarray:
 
 
 class PupilDilationTests(unittest.TestCase):
+    def test_histogram_thresholds_keep_linear_percentile_cutoffs(self) -> None:
+        def reference(clean):
+            low = int(np.min(clean))
+            return sorted(set([low + 10, low + 20] + [int(value) for value in np.percentile(clean, (5, 10, 15, 20, 25, 30))]))
+
+        for size in (1, 2, 3, 19, 20, 21, 97, 93800):
+            for seed in range(12):
+                frame = np.random.default_rng(seed).integers(0, 256, (1, size), dtype=np.uint8)
+                with self.subTest(size=size, seed=seed):
+                    self.assertEqual(_thresholds(frame), reference(frame))
+        for value in (0, 18, 250, 255):
+            frame = np.full((280, 335), value, dtype=np.uint8)
+            self.assertEqual(_thresholds(frame), reference(frame))
+        # Strided camera/ROI views must retain the same intensity counts.
+        frame = eye(24)[75:355, 55:390]
+        self.assertEqual(_thresholds(frame), reference(frame))
+
     def test_dark_pupil_changes_size_and_position(self) -> None:
         for radius, center in ((24, (200, 200)), (35, (245, 175))):
             detection = detect_pupil(eye(radius, center))
@@ -182,6 +200,11 @@ class PupilDilationTests(unittest.TestCase):
         self.assertEqual(mouth.shape, (400, 800))
         self.assertTrue(np.all(mouth[:, :400] == 42))
         self.assertTrue(np.all(mouth[:, 400:] == 83))
+        self.assertTrue(np.shares_memory(mouth, strip))
+        # Unordered/non-adjacent caller layouts still preserve left/right.
+        reordered = stereo_mouth_strip(strip, [3, 0, 1, 2, 4])
+        self.assertEqual(reordered[0, 0], strip[0, 1200])
+        self.assertEqual(reordered[0, 400], strip[0, 0])
 
     def test_gpu_initialization_failure_uses_cpu(self) -> None:
         with patch("pupil_gpu.TorchPupilPreprocessor", side_effect=RuntimeError("driver unavailable")):

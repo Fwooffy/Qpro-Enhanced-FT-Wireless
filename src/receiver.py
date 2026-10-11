@@ -84,12 +84,65 @@ def stereo_mouth_strip(strip: np.ndarray, camera_ids: list[int]) -> np.ndarray:
     """Select cameras 2 and 3 even when the stream also carries both eyes."""
     if 2 not in camera_ids or 3 not in camera_ids:
         raise ValueError("Tongue output requires both face cameras (2 and 3)")
+    left, right = camera_ids.index(2), camera_ids.index(3)
+    if right == left + 1:
+        # Stream camera IDs are ordered, so both mouth panes share immutable
+        # payload bytes. Retain a view instead of copying 320 KB per frame.
+        return strip[:, left * CAMERA_WIDTH:(right + 1) * CAMERA_WIDTH]
     panels = [
         strip[:, camera_ids.index(camera_id) * CAMERA_WIDTH:
               (camera_ids.index(camera_id) + 1) * CAMERA_WIDTH]
         for camera_id in (2, 3)
     ]
     return np.concatenate(panels, axis=1)
+
+
+def format_tracking_health(
+    *, camera_fps: float, inference_fps: float, frame_age_ms: float,
+    decode_ms: float, prediction=None, tongue_enabled: bool = False,
+    cheek_enabled: bool = False, pupil_result=None, pupil_enabled: bool = False,
+    pupil_seen: bool = False, now: float | None = None,
+) -> str:
+    """One periodic snapshot; ages include time since the result completed.
+
+    Raw camera panes only need a NumPy view. GPU transfer timing includes the
+    wait for queued kernels to finish, so it is not an isolated copy benchmark.
+    The Hub expires this snapshot when reception stops producing new frames.
+    """
+    now = time.perf_counter() if now is None else now
+    pipeline_ms = getattr(prediction, "pipeline_ms", -1.0)
+    result_age_ms = getattr(prediction, "age_ms", -1.0)
+    age = pipeline_ms + result_age_ms
+    fresh = bool(prediction is not None and np.isfinite(age)
+                 and pipeline_ms >= 0 and result_age_ms >= 0)
+    tongue = "off" if not tongue_enabled else (
+        "warming" if prediction is None else "stale" if not fresh or age > 300 else
+        "visible" if prediction.visible else "hidden"
+    )
+    cheek = "off" if not cheek_enabled else (
+        "warming" if prediction is None else "valid" if fresh and age <= 500 else "stale"
+    )
+    pupil_age = -1.0
+    if pupil_result is not None:
+        pupil_age = pupil_result.age_ms + max(0.0, now - pupil_result.completed_at) * 1000.0
+    pupil = "off" if not pupil_enabled else (
+        ("stale" if pupil_seen else "warming") if pupil_result is None else
+        "stale" if not np.isfinite(pupil_age) or pupil_age > 500 else
+        "valid" if all(value is not None for value in pupil_result.values) else "invalid"
+    )
+    return (
+        f"TRACKING_HEALTH camera_fps={camera_fps:.1f} inference_fps={inference_fps:.1f} "
+        f"frame_age_ms={frame_age_ms:.1f} decode_ms={decode_ms:.3f} "
+        f"preprocess_ms={getattr(prediction, 'preprocess_ms', -1.0):.3f} "
+        f"inference_ms={getattr(prediction, 'inference_ms', -1.0):.1f} "
+        f"transfer_ms={getattr(prediction, 'transfer_ms', -1.0):.3f} "
+        f"pipeline_ms={pipeline_ms:.1f} result_age_ms={result_age_ms:.1f} "
+        f"dropped_frames={getattr(prediction, 'dropped_frames', 0)} "
+        f"tongue={tongue} cheek={cheek} pupil={pupil} "
+        f"pupil_ms={getattr(pupil_result, 'processing_ms', -1.0):.1f} "
+        f"pupil_age_ms={pupil_age:.1f} "
+        f"pupil_dropped_frames={getattr(pupil_result, 'dropped_frames', 0)}"
+    )
 
 
 @dataclass
@@ -660,6 +713,9 @@ def main() -> int:
     last_cheek_status = 0.0
     last_tongue_status = None
     last_tongue_completed = 0
+    last_health_status = fps_started
+    last_health_completed = 0
+    pupil_seen = False
     open_source_window_name = "Quest Pro open-source model preview"
     open_source_preview = None
     hybrid_preview = None
@@ -943,6 +999,7 @@ def main() -> int:
             if payload_size != width * height:
                 raise ValueError("Invalid payload size")
             payload = receive_exact(connection, payload_size, stop_file, companion)
+            payload_received_at = time.perf_counter()
             pc_monotonic_ns = time.monotonic_ns()
             stream_gap_stats.add(timestamp_ns, pc_monotonic_ns)
             frame_replay_stats.add(payload)
@@ -971,7 +1028,9 @@ def main() -> int:
                     if capture_started_ns is None:
                         capture_started_ns = pc_monotonic_ns
                     play_cue("advanced")
+            decode_started = time.perf_counter()
             strip = np.frombuffer(payload, dtype=np.uint8).reshape((height, stride))
+            decode_ms = (time.perf_counter() - decode_started) * 1000.0
             current_ids[:] = camera_ids
             pupil_values: tuple[float | None, float | None] = (None, None)
             pupil_result = None
@@ -979,6 +1038,7 @@ def main() -> int:
                 pupil_worker.submit(strip, camera_ids)
                 pupil_result = pupil_worker.latest()
                 if pupil_result is not None:
+                    pupil_seen = True
                     pupil_values = pupil_result.values
                     if pupil_result.backend != pupil_backend_reported:
                         print(
@@ -1037,6 +1097,7 @@ def main() -> int:
 
             model_image = None
             tongue_model_image = None
+            tongue_prediction = None
             open_source_image = None
             if live_model is not None:
                 teacher_sample = (
@@ -1090,6 +1151,23 @@ def main() -> int:
                         f"dropped_frames={tongue_prediction.dropped_frames}", flush=True,
                     )
                     last_cheek_status = now
+            if now - last_health_status >= 1.0:
+                health_now = time.perf_counter()
+                completed = (tongue_prediction.completed_frames if tongue_prediction is not None else
+                             pupil_result.completed_frames if tongue_inference_worker is None and pupil_result is not None else
+                             last_health_completed)
+                inference_fps = (completed - last_health_completed) / (health_now - last_health_status)
+                print(format_tracking_health(
+                    camera_fps=fps, inference_fps=inference_fps,
+                    frame_age_ms=(health_now - payload_received_at) * 1000.0,
+                    decode_ms=decode_ms, prediction=tongue_prediction,
+                    tongue_enabled=bool(tongue_broadcaster is not None and tongue_broadcaster.enabled),
+                    cheek_enabled=bool(cheek_broadcaster is not None and cheek_broadcaster.enabled),
+                    pupil_result=pupil_result, pupil_enabled=pupil_worker is not None,
+                    pupil_seen=pupil_seen, now=health_now,
+                ), flush=True)
+                last_health_status = health_now
+                last_health_completed = completed
             # Queue tongue inference before optional MJPEG encoding. A browser
             # preview subscriber must not delay the current avatar prediction.
             shared.update(strip, camera_ids)

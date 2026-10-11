@@ -25,6 +25,7 @@ PUPIL_PACKET = struct.Struct("<4sBBHff")
 PUPIL_MAGIC = b"QPDI"
 _CLOSE_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 _OPEN_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+_PUPIL_QUANTILES = np.asarray((5, 10, 15, 20, 25, 30), dtype=np.float64) / 100.0
 
 
 def _error_summary(exc: Exception) -> str:
@@ -55,10 +56,26 @@ def detect_pupil(
 
 
 def _thresholds(clean: np.ndarray) -> list[int]:
-    low = int(np.min(clean))
+    # Median images contain exact uint8 levels. A 256-bin histogram provides
+    # the same linearly interpolated percentiles without copying/partitioning
+    # every ROI. Per-bin counts stay exact in float32 for the 280x335 ROI.
+    counts = cv2.calcHist([clean], [0], None, [256], [0, 256]).ravel()
+    cumulative = counts.cumsum(dtype=np.float64)
+    ranks = _PUPIL_QUANTILES * (clean.size - 1)
+    lower_ranks = np.floor(ranks)
+    lower = np.searchsorted(cumulative, lower_ranks, side="right").astype(np.float64)
+    upper = np.searchsorted(cumulative, np.ceil(ranks), side="right").astype(np.float64)
+    fraction = ranks - lower_ranks
+    difference = upper - lower
+    # Match NumPy's stable linear interpolation on both halves of each bin.
+    percentiles = np.where(
+        fraction >= 0.5, upper - difference * (1.0 - fraction),
+        lower + difference * fraction,
+    )
+    low = int(np.searchsorted(cumulative, 0, side="right"))
     return sorted(set(
         [low + 10, low + 20]
-        + [int(v) for v in np.percentile(clean, (5, 10, 15, 20, 25, 30))]
+        + [int(value) for value in percentiles]
     ))
 
 

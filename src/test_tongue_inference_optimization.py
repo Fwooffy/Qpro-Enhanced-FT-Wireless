@@ -2,6 +2,7 @@
 
 import copy
 import unittest
+from unittest import mock
 
 import torch
 
@@ -67,6 +68,39 @@ class TongueInferenceOptimizationTests(unittest.TestCase):
         inputs = torch.rand(2, 2, 16, 16)
         with torch.inference_mode():
             torch.testing.assert_close(optimized(inputs), original(inputs))
+
+    def test_shared_encoder_runs_once_with_both_views_and_retains_order(self):
+        for architecture in ("legacy-late-fusion-v1", "spatial-stereo-resnet-v2",
+                             "cheek-augmented-spatial-stereo-resnet-v2"):
+            names = list(TONGUE_TARGET_NAMES)
+            if architecture.startswith("cheek-augmented"):
+                names += ["cheekPuffLeft", "cheekPuffRight"]
+            optimized = _prepare_inference_model(create_model(architecture, names).eval(), torch.device("cpu"))
+            parent = optimized.model.parent if architecture.startswith("cheek-augmented") else optimized.model
+            calls = []
+            handle = parent.encoder.register_forward_pre_hook(lambda _module, args: calls.append(args[0].clone()))
+            try:
+                inputs = torch.cat((torch.zeros(2, 1, 32, 32), torch.ones(2, 1, 32, 32)), dim=1)
+                with torch.inference_mode():
+                    optimized(inputs)
+            finally:
+                handle.remove()
+            self.assertEqual(len(calls), 1)
+            torch.testing.assert_close(calls[0], torch.cat((inputs[:, 0:1], inputs[:, 1:2])))
+
+    def test_gpu_models_retain_original_two_pass_encoder(self):
+        model = create_model("legacy-late-fusion-v1", list(TONGUE_TARGET_NAMES)).eval()
+        with mock.patch.object(model, "to", return_value=model):
+            optimized = _prepare_inference_model(model, torch.device("cuda:1"))
+        self.assertIs(optimized, model)
+        calls = []
+        handle = optimized.encoder.register_forward_pre_hook(lambda _module, args: calls.append(args[0].shape))
+        try:
+            with torch.inference_mode():
+                optimized(torch.rand(1, 2, 32, 32))
+        finally:
+            handle.remove()
+        self.assertEqual(calls, [torch.Size((1, 1, 32, 32)), torch.Size((1, 1, 32, 32))])
 
 
 if __name__ == "__main__":
