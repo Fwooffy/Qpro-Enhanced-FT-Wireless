@@ -218,6 +218,24 @@ To remove a recording you no longer need, stay on **Personalize**. Under its mat
 
 Closing the Hub stops tracking cleanly, then stops the configured PC ADB server. Other Android tools using the same ADB server will disconnect and may restart it. Finish setup, capture, training, or eye-model recovery before closing.
 
+### Processing profiles
+
+The Live tracking health card also shows a **Module output** observation. Its heartbeat must match the selected source, installed module and running process. It expires when the module stops publishing. **Module receiving** means the module recently observed and applied a timed source or Qpro override. **Module loaded: native source available · age unknown** means Virtual Desktop shared memory is accessible but has no producer timestamp; freshness cannot be inferred from it. Steam Link packets and Qpro overrides have their own expiry checks. Confirm live expressions in VRCFaceTracking's preview and your avatar.
+
+Under **Your session > Show connection and camera settings**, **Processing profile** controls pupil processing work separately from the shared **Camera FPS cap**. Its selection is saved and applies the next time tracking starts.
+
+| Profile | Tongue and camera cheeks | Pupils |
+| --- | --- | --- |
+| Responsive (default) | Follow the camera FPS cap; newest frame scheduling | Follow the camera FPS cap; newest frame scheduling |
+| Balanced | Same as Responsive | Up to 12 eye pairs per second |
+| Low CPU | Same as Responsive | Up to 8 eye pairs per second |
+
+The presets keep model weights, image sizes, preprocessing and tongue smoothing unchanged. Balanced and Low CPU reduce pupil processing frequency, so pupil response and warm-up can take longer. Responsive remains the default for both new and existing installations. Lower rates are explicit choices, not an automatic change based on CPU usage. Rates cannot exceed the available camera feed.
+
+### Repair or restore the PC runtime
+
+In **First-time setup**, **Repair runtime** rebuilds the normal private CPU/NVIDIA tracking packages. **Restore saved runtime** lists retained backups, validates a selected backup before replacing the active runtime, and keeps the displaced runtime as another recovery copy. Stop tracking, capture and training before using either action. Models, recordings, enabled options and connection choices are kept. AMD ROCm uses a separate environment and its own install/update actions.
+
 **Stopping is different from uninstalling.** Tongue, camera cheek and pupil output stop when Qpro tracking stops. The PC tongue model is not installed on the headset. **Individual cheek puff** and **Individual cheek suck** apply only while Qpro tracking runs; **Stop tracking** or closing the Hub restores the streaming app's original cheek values. Your selected styles and personal calibration stay saved for the next session. You can start a session with just these cheek adjustments selected; no camera or Python process is needed. **Adjust eyebrow movement** and the module's built-in smirk adjustment remain active through the installed module. Turn the eyebrow switch off for native eyebrows, or uninstall the Qpro module for the official module's complete mapping. Magisk gaze modules remain active until you disable them in Magisk and reboot.
 
 ### Returning to ordinary tracking

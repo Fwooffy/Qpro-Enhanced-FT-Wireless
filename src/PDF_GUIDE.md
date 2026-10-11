@@ -130,6 +130,8 @@ Press **Install runtime** and keep the Hub open. **Activity** reports PowerShell
 
 Qpro uses private Python and works with or without an existing Python installation. You do not need to uninstall another app's Python. NVIDIA CUDA or CPU uses the normal runtime; AMD acceleration is a separate optional step.
 
+Use **Repair runtime** to rebuild damaged tracking packages. **Restore saved runtime** checks saved backups before replacing the current runtime, and keeps a recovery copy. Both actions require tracking, capture and training to be stopped. They preserve models, recordings and Live tracking choices; AMD ROCm has its own separate environment.
+
 ### Install your VRCFaceTracking module
 
 1. **Close VRCFaceTracking** and wait for its module process to exit.
@@ -138,7 +140,7 @@ Qpro uses private Python and works with or without an existing Python installati
 4. Reopen VRCFaceTracking with the source connected. Check that ordinary expressions move in its preview.
 
 > [!NOTE] What a module check proves
-> **Installed · input unchecked** means the installed folder, module card and DLL match the app. **VRCFaceTracking: Running** only means the app is open. Neither replaces a live expression check.
+> **Installed · input unchecked** checks files. Tracking details also show a module heartbeat and recent applied output. Virtual Desktop's native shared memory has no timestamp, so its input age is unknown. Confirm expressions in VRCFaceTracking's preview; heartbeat does not prove avatar movement.
 
 Junctions, symlinks and Windows Cloud Files are supported. For OneDrive, keep the whole app available offline. Recovery copies go under `%LOCALAPPDATA%\QproFaceTracking\module-recovery`; **Activity** gives the exact path.
 
@@ -162,6 +164,8 @@ Start the streaming app, SteamVR and VRCFaceTracking. Confirm live face input, t
 ### Camera windows are optional
 
 **Preview tracking cameras** defaults off on a fresh setup. Find it beside **Camera FPS cap** under **Your session > Show connection and camera settings**. Saved choices persist. Hiding a preview does not stop tracking; guided capture still opens its pose window.
+
+**Processing profile** defaults to **Responsive (default)**, keeping the current tracking cadence. **Balanced** limits pupil work to 12 eye pairs per second; **Low CPU** limits it to 8. Tongue keeps the camera cadence in every preset. Lower pupil rates mean slower response and warm-up. Choices are saved for the next start.
 
 > [!NOTE] Stop restores native cheeks
 > Tongue, camera cheek and pupil outputs stop. Individual cheek puff/suck also stop, restoring native cheeks. Eyebrow and built-in smirk adjustments can remain through the installed module; Magisk modules stay active.
