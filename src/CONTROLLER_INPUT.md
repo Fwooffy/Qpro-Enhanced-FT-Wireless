@@ -81,10 +81,35 @@ does not uninstall the hands runtime components.
 3. Connect the headset to its PC Streamer inside **Virtual Desktop**. Run
    **SteamVR through Virtual Desktop** and use the SteamVR version of VRChat.
    ADB provides Qpro's setup/control connection; it does not replace Virtual
-   Desktop's VR stream.
+   Desktop's VR stream. Set the headset app's Streaming options as listed below.
 4. In VRChat, enable **Main Menu > Controls > Avatars Use Finger Tracking**.
    This lets SteamVR skeletal input animate the avatar's fingers. See
    [VRChat's Input 2.0 FAQ](https://docs.vrchat.com/docs/input-20-faq).
+
+### Virtual Desktop settings for the initial finger check
+
+Open **Virtual Desktop on the Quest > Streaming**; expand **Advanced Options**
+if needed. These are headset-app options, not options in the Windows Streamer
+window.
+
+| Setting | Initial setting |
+| --- | --- |
+| **Forward tracking data to PC** | **On**; accept **Yes** at the tracking-data permission prompt. |
+| **Track controllers** | **On** so the held Touch Pro controllers remain present in SteamVR. |
+| **Emulate Index controllers** | **Off** for the initial VRChat optical-finger check. |
+
+Virtual Desktop's [own VRChat hand-tracking instructions](https://github.com/guygodin/VirtualDesktop/releases/tag/v1.32.13)
+specify forwarding on and Index emulation unchecked. Qpro routes optical fingers
+to the held physical controller's existing skeletal input; it does not require
+Index emulation. The [VRCFaceTracking Virtual Desktop guide](https://docs.vrcft.io/docs/hardware/vr/meta/quest-pro/virtual-desktop)
+also documents forwarding and its consent prompt, and explains that disabling
+**Track controllers** removes Quest controllers from SteamVR.
+
+Keep Quest hand tracking and Singularity's simultaneous switch enabled too.
+Emulated Vive trackers are optional body tracking, not a requirement for Qpro
+fingers. Start the PC Streamer and connect through Virtual Desktop, then launch
+SteamVR through Virtual Desktop. These settings do not bypass Qpro's exact
+version and driver checks; newer headset builds still need their own profile.
 
 ### Install once, then start a session
 

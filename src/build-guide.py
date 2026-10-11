@@ -219,7 +219,17 @@ def story_from_guide(markdown: str):
                 if not all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
                     rows.append(cells)
                 index += 1
-            story.append(issue_table(rows))
+            table = issue_table(rows)
+            # Keep the short Virtual Desktop checklist together so readers can
+            # compare its on/off choices without turning the page.
+            if rows and rows[0] == ["Setting", "Use for the initial Qpro / VRChat setup"]:
+                checklist = [table]
+                if len(story) >= 2 and isinstance(story[-2], Paragraph) and story[-2].getPlainText() == "Virtual Desktop settings":
+                    checklist = story[-2:] + checklist
+                    del story[-2:]
+                story.append(KeepTogether(checklist))
+            else:
+                story.append(table)
             story.append(Spacer(1, 8))
             continue
         elif match := re.match(r"^(\d+)\.\s+(.*)", line):
