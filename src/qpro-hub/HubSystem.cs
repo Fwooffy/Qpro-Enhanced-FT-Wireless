@@ -17,13 +17,30 @@ internal sealed partial class HubForm
 {
     private string? _lastModuleInspectionDetail;
     private string? _lastUsbFailureDetail;
+    private string? _lastUsbStatusReason;
+    private string? _lastWirelessStatusReason;
     private readonly Dictionary<DarkButton, (bool Complete, bool Attention)> _setupButtonStyles = [];
     private sealed record GazeStatusObservation(HubCompatibilityReport? Compatibility, HubGazeInspection? Inspection,
         string? Target, bool Wireless);
     private GazeStatusObservation? _lastGazeStatusObservation;
-    private sealed record HubStatusSnapshot(bool SteamRunning, bool VrcftRunning, HubModuleInspection Module,
+    internal sealed record HubStatusSnapshot(bool SteamRunning, bool VrcftRunning, HubModuleInspection Module,
         bool ModuleNeedsRestart, bool RuntimeReady, bool BridgeUninstallAvailable,
         string? RocmInstalledVersion, bool LegacyRocmReady, bool RocmEnvironmentExists);
+    private sealed record PreviewStatusRefreshDependencies(Func<Task<HubStatusSnapshot>> ReadSnapshot,
+        Func<bool, HubModuleInspection, Task> RefreshHeartbeat);
+    private PreviewStatusRefreshDependencies? _previewStatusRefreshDependencies;
+
+    // Exercise the production refresh order in an isolated preview fixture.
+    // The transport/USB probe itself remains the production implementation.
+    internal void ConfigurePreviewStatusRefresh(Func<Task<HubStatusSnapshot>> readSnapshot,
+        Func<bool, HubModuleInspection, Task> refreshHeartbeat)
+    {
+        if (!_previewOnly || _statusRefreshBusy)
+            throw new InvalidOperationException("Status fixture dependencies require an idle preview Hub.");
+        ArgumentNullException.ThrowIfNull(readSnapshot);
+        ArgumentNullException.ThrowIfNull(refreshHeartbeat);
+        _previewStatusRefreshDependencies = new(readSnapshot, refreshHeartbeat);
+    }
 
     private HubStatusSnapshot ReadStatusSnapshot()
     {
@@ -46,7 +63,8 @@ internal sealed partial class HubForm
 
     private async Task RefreshStatusAsync()
     {
-        if (_previewOnly || _closingInProgress || _statusRefreshBusy || IsDisposed || Disposing) return;
+        if (_previewOnly && _previewStatusRefreshDependencies is null || _closingInProgress ||
+            _statusRefreshBusy || IsDisposed || Disposing) return;
         _statusRefreshBusy = true;
         try
         {
@@ -59,24 +77,16 @@ internal sealed partial class HubForm
                 wireless && target != GetConfiguredAdbTarget();
             var quest = await HasQuestAsync();
             if (_closingInProgress || IsDisposed || Disposing || ContextChanged()) return;
-            var snapshot = await Task.Run(ReadStatusSnapshot);
+            // Publish the fresh transport result before unrelated module,
+            // runtime or heartbeat work can delay or fail this refresh.
+            PublishConnectionStatus(quest, wireless, target);
+            var dependencies = _previewStatusRefreshDependencies;
+            var snapshot = await (dependencies?.ReadSnapshot() ?? Task.Run(ReadStatusSnapshot));
             if (_closingInProgress || IsDisposed || Disposing || ContextChanged()) return;
-            await RefreshModuleHeartbeatAsync(snapshot.VrcftRunning, snapshot.Module);
+            await (dependencies?.RefreshHeartbeat(snapshot.VrcftRunning, snapshot.Module) ??
+                RefreshModuleHeartbeatAsync(snapshot.VrcftRunning, snapshot.Module));
             if (_closingInProgress || IsDisposed || Disposing || ContextChanged()) return;
             using var readiness = BeginReadinessUpdate();
-            SetStatus(_usbStatus, quest ? StatusKind.Good : StatusKind.Bad,
-                quest ? (_environment.WirelessSelected ? "Wi-Fi ADB connected" : "USB ADB connected")
-                    : (_environment.WirelessSelected ? "Wi-Fi not connected" : "USB not connected"));
-            if (!_environment.WirelessSelected)
-            {
-                _connectionModeNote.Text = _environment.UsbConnectionMessage;
-                _connectionModeNote.ForeColor = quest ? Muted : Warning;
-                _usbStatus.AccessibleDescription = _environment.UsbConnectionMessage;
-                var usbFailure = _environment.UsbFailureDetail;
-                if (usbFailure is not null && usbFailure != _lastUsbFailureDetail)
-                    AppendLog("[USB connection check] " + usbFailure);
-                _lastUsbFailureDetail = usbFailure;
-            }
             SetStatus(_steamStatus, snapshot.SteamRunning ? StatusKind.Good : StatusKind.Bad, snapshot.SteamRunning ? "Running" : "Not running");
             SetStatus(_vrcftStatus, snapshot.VrcftRunning ? StatusKind.Good : StatusKind.Bad, snapshot.VrcftRunning ? "Running" : "Not running");
             var module = snapshot.Module;
@@ -100,6 +110,41 @@ internal sealed partial class HubForm
         }
         catch (Exception error) { AppendLog("Status refresh could not complete: " + error.Message); }
         finally { _statusRefreshBusy = false; }
+    }
+
+    private void PublishConnectionStatus(bool connected, bool wireless, string? target)
+    {
+        using var readiness = BeginReadinessUpdate();
+        var missingWirelessTarget = wireless && string.IsNullOrWhiteSpace(target);
+        var reason = wireless
+            ? connected ? $"Wi-Fi ADB connected to the Quest at {target}."
+                : missingWirelessTarget
+                    ? "Wireless ADB is selected and no Quest Wi-Fi address is saved. In First-time setup, enter the Quest's current Wi-Fi IP and press Connect to Quest. Select USB cable to use the cable connection."
+                    : $"Wi-Fi ADB has not confirmed the Quest at {target}. Keep the headset awake on the same trusted network, check its current Wi-Fi IP, then press Connect to Quest in First-time setup."
+            : _environment.UsbConnectionMessage;
+        SetStatus(_usbStatus, connected ? StatusKind.Good : StatusKind.Bad,
+            connected ? wireless ? "Wi-Fi ADB connected" : "USB ADB connected"
+                : wireless ? missingWirelessTarget ? "Wi-Fi address needed" : "Wi-Fi not connected" : "USB not connected");
+        _connectionModeNote.Text = reason;
+        _connectionModeNote.ForeColor = connected ? Muted : Warning;
+        _usbStatus.AccessibleDescription = reason;
+        if (wireless)
+        {
+            if (reason != _lastWirelessStatusReason)
+                AppendLog("[Wi-Fi connection check] " + (connected ? "" : "WARNING: ") + reason);
+            _lastWirelessStatusReason = reason;
+        }
+        else
+        {
+            // A successful `adb devices` command can still report unauthorized,
+            // offline or no devices. Preserve those state reasons in Activity.
+            if (reason != _lastUsbStatusReason)
+                AppendLog("[USB connection check] " + (connected ? "" : "WARNING: ") + reason);
+            _lastUsbStatusReason = reason;
+            var failure = _environment.UsbFailureDetail;
+            if (failure is not null && failure != _lastUsbFailureDetail) AppendLog("[USB connection check] " + failure);
+            _lastUsbFailureDetail = failure;
+        }
     }
 
     private void UpdateSetupStepStyles() => UpdateSetupStepStylesFromSnapshot(null);
