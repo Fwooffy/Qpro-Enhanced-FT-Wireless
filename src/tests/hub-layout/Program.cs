@@ -34,6 +34,31 @@ internal static class LayoutTests
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
         Application.SetColorMode(SystemColorMode.Dark);
+        if (args.Length == 2 && args[0] == "--paint-presentation")
+        {
+            PresentationPaintTests.Run(args[1]);
+            return;
+        }
+        if (args.Length == 2 && args[0] == "--paint-active")
+        {
+            ActivePaintTests.Run(args[1]);
+            return;
+        }
+        if (args.Length == 2 && args[0] == "--paint-active-live")
+        {
+            ActivePaintTests.Run(args[1], liveOnly: true);
+            return;
+        }
+        if (args.Length == 2 && args[0] == "--paint-check")
+        {
+            DisplayedPaintTests.Run(args[1]);
+            return;
+        }
+        if (args.Length == 2 && args[0] == "--paint-fixture")
+        {
+            RunPaintFixture(args[1]);
+            return;
+        }
         var root = Path.Combine(Path.GetTempPath(), "qpro-layout-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         // A cancelled launch can dispose a form without ever closing a window.
@@ -54,6 +79,24 @@ internal static class LayoutTests
             Console.WriteLine("PASS direct disposal releases all native timers without FormClosed");
         }
         Console.WriteLine("Constructing offline layout fixture");
+        using (var initiallyMinimized = new HubForm(root, rememberLaunch: false, previewOnly: true)
+            { WindowState = FormWindowState.Minimized })
+        {
+            initiallyMinimized.Show(); Pump(100);
+            var minimizedHandles = Descendants(initiallyMinimized).Where(control => control.IsHandleCreated)
+                .ToDictionary(control => control, control => control.Handle);
+            initiallyMinimized.WindowState = FormWindowState.Normal; Pump(150);
+            if (initiallyMinimized.Controls.Cast<Control>().Any(control => control.Width <= 0)
+                || minimizedHandles.Any(pair => pair.Key.Handle != pair.Value))
+                throw new Exception("Initial minimize/restore did not restore usable root layout and native identity.");
+            initiallyMinimized.WindowState = FormWindowState.Minimized; Pump(100);
+            var minimizedComponents = (IContainer)typeof(HubForm).GetField("_uiComponents", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(initiallyMinimized)!;
+            var minimizedTimers = minimizedComponents.Components.OfType<System.Windows.Forms.Timer>().ToArray();
+            initiallyMinimized.Dispose();
+            if (minimizedTimers.Any(timer => timer.Enabled))
+                throw new Exception("Minimized disposal retained an enabled native timer.");
+            Console.WriteLine("PASS initial minimized show/restore preserves native identity; minimized disposal releases timers");
+        }
         using var form = new HubForm(root, rememberLaunch: false, previewOnly: true);
         Console.WriteLine("Showing offline layout fixture");
         form.Show();
@@ -99,7 +142,7 @@ internal static class LayoutTests
             Console.WriteLine("PASS restore settles without rebuilding controls: " + tab.Text);
 
             // Exercise the native enter/exit sizing notifications. This remains
-            // a programmatic corner-drag simulation, not a physical mouse test.
+            // a programmatic native size loop, not a physical mouse test.
             SendMessage(form.Handle, 0x0231, 0, 0); // WM_ENTERSIZEMOVE
             foreach (var width in new[] { 1000, 900, 820, 780, 900, 1040, 1140 })
             {
@@ -111,9 +154,9 @@ internal static class LayoutTests
             SendMessage(form.Handle, 0x0232, 0, 0); // WM_EXITSIZEMOVE
             Pump(300);
             layouts = 0; Pump(300);
-            if (layouts != 0) throw new Exception("Corner-resize layout did not settle: " + layouts);
+            if (layouts != 0) throw new Exception("Simulated resize layout did not settle: " + layouts);
             if (page.HorizontalScroll.Visible) throw new Exception("Window resize introduced a horizontal page scrollbar.");
-            Console.WriteLine("PASS corner-drag round trip settles without a horizontal scrollbar: " + tab.Text);
+            Console.WriteLine("PASS native size loop round trip settles without a horizontal scrollbar: " + tab.Text);
             if (args.Length == 1)
             {
                 Directory.CreateDirectory(args[0]);
@@ -129,6 +172,46 @@ internal static class LayoutTests
                 }
             }
         }
+        // Place one real page just on either side of its scrollbar threshold.
+        // A fixed outer width must keep the same wrapping budget in both states,
+        // and delayed fitting must settle instead of alternating label widths.
+        tabs.Single(tab => tab.Text == "Model manager").PerformClick();
+        // At the shortest supported window, this page's list is at its useful
+        // minimum height rather than filling any extra viewport space.
+        form.Size = new Size(1140, 580); Pump(200);
+        var thresholdPage = all.OfType<Panel>().Single(panel => Equals(panel.Tag, "hub-page") && panel.Visible);
+        thresholdPage.AutoScrollPosition = Point.Empty;
+        // Keep the existing list at that height for this threshold test; its
+        // normal viewport-filling behavior would move the threshold with us.
+        var thresholdContent = thresholdPage.Controls.Cast<Control>().Single(control => control.Visible);
+        var originalMaximum = thresholdContent.MaximumSize;
+        thresholdContent.MaximumSize = new Size(0, thresholdContent.Height);
+        var contentHeight = thresholdContent.Bottom + thresholdContent.Margin.Bottom
+            + thresholdPage.Padding.Bottom;
+        var originalExtent = thresholdPage.AutoScrollMinSize;
+        thresholdPage.AutoScrollMinSize = new Size(0, contentHeight);
+        var thresholdLabels = all.OfType<Label>().Where(label => label.Visible && Equals(label.Tag, "responsive-info")).ToArray();
+        if (thresholdLabels.Length == 0) throw new Exception("Scrollbar threshold fixture has no responsive text.");
+        var thresholdWraps = new Dictionary<Label, Size>();
+        var scrollbarStates = new HashSet<bool>();
+        foreach (var allowance in new[] { 32, -32, 32, -32, 32 })
+        {
+            form.Height += contentHeight + allowance - thresholdPage.ClientSize.Height;
+            Pump(200);
+            scrollbarStates.Add(thresholdPage.VerticalScroll.Visible);
+            Console.WriteLine($"THRESHOLD client={thresholdPage.ClientSize}; content={thresholdContent.Bounds}; bar={thresholdPage.VerticalScroll.Visible}");
+            if (thresholdWraps.Count == 0)
+                foreach (var label in thresholdLabels) thresholdWraps.Add(label, label.MaximumSize);
+            else if (thresholdWraps.Any(pair => pair.Key.MaximumSize != pair.Value))
+                throw new Exception("A vertical scrollbar changed the fixed-width text budget.");
+            layouts = 0; Pump(200);
+            if (layouts != 0) throw new Exception("Scrollbar threshold reflow did not settle.");
+        }
+        if (scrollbarStates.Count != 2) throw new Exception("Scrollbar threshold fixture did not cross both scrollbar states.");
+        Console.WriteLine("PASS scrollbar threshold converges without alternating text widths");
+        thresholdContent.MaximumSize = originalMaximum;
+        thresholdPage.AutoScrollMinSize = originalExtent;
+        form.Size = new Size(1140, 850);
         tabs.Single(tab => tab.Text == "Live tracking").PerformClick();
         Pump(150);
         foreach (var name in new[] { "connection and camera settings", "eye settings and guidance", "camera settings",
@@ -147,7 +230,7 @@ internal static class LayoutTests
         Pump(300); layouts = 0; Pump(300);
         if (layouts != 0 || expandedPage.HorizontalScroll.Visible)
             throw new Exception("Expanded live settings failed to settle within the page.");
-        Console.WriteLine("PASS expanded live settings settle during corner resizing");
+        Console.WriteLine("PASS expanded live settings settle during simulated resizing");
 
         tabs.Single(tab => tab.Text == "Activity").PerformClick();
         Pump(150);
@@ -180,7 +263,7 @@ internal static class LayoutTests
         if (SendMessage(log.Handle, 0x00CE, 0, 0) != firstLine
             || (log.SelectionStart, log.SelectionLength) != selection)
             throw new Exception("Activity window resizing changed the log reader position or selection.");
-        Console.WriteLine("PASS Activity inner log reading position survives appending during corner resizing");
+        Console.WriteLine("PASS Activity inner log reading position survives appending during simulated resizing");
 
         var owned = (IContainer)typeof(HubForm).GetField("_uiComponents", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(form)!;
         var pulseTimer = owned.Components.OfType<System.Windows.Forms.Timer>().Single(timer => timer.Interval == 550);
@@ -198,5 +281,95 @@ internal static class LayoutTests
         if (!(bool)pulseFlag.GetValue(form)!) throw new Exception("Setup decoration did not resume after restoring.");
         Console.WriteLine("PASS setup attention skips minimized windows and resumes on restore");
         form.Close();
+    }
+
+    // This fixture stays on screen so manual titlebar and mouse resize
+    // actions can exercise Windows' size/move loop. Its captures read the
+    // displayed pixels; DrawToBitmap cannot detect a stale compositor frame.
+    static void RunPaintFixture(string output)
+    {
+        Directory.CreateDirectory(output);
+        var root = Path.Combine(output, "fixture-root");
+        Directory.CreateDirectory(root);
+        using var form = new HubForm(root, rememberLaunch: false, previewOnly: true);
+        form.Text = "Qpro V3 paint fixture - sample data only";
+        form.KeyPreview = true;
+        var controls = Descendants(form).ToArray();
+        var live = controls.OfType<Button>().Single(button => Equals(button.Tag, "workflow-tab") && button.Text == "Live tracking");
+        var activity = controls.OfType<Button>().Single(button => Equals(button.Tag, "workflow-tab") && button.Text == "Activity");
+        var append = typeof(HubForm).GetMethod("AppendLog", BindingFlags.Instance | BindingFlags.NonPublic,
+            null, [typeof(string)], null)!;
+        var frame = 0;
+        using var traffic = new System.Windows.Forms.Timer { Interval = 120 };
+        traffic.Tick += (_, _) => append.Invoke(form, ["Offline paint fixture output " + frame++]);
+        void Capture(string name)
+        {
+            if (form.WindowState == FormWindowState.Minimized) return;
+            var bounds = form.RectangleToScreen(form.ClientRectangle);
+            using var image = new Bitmap(bounds.Width, bounds.Height);
+            using (var graphics = Graphics.FromImage(image))
+                graphics.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
+            image.Save(Path.Combine(output, name + ".png"), ImageFormat.Png);
+            File.AppendAllText(Path.Combine(output, "displayed-state.txt"),
+                $"{name}: state={form.WindowState}; client={form.ClientSize}; dpi={form.DeviceDpi}; live={live.Parent?.Visible}; logs={frame}; handles={controls.Count(control => control.IsHandleCreated)}\n");
+            Console.WriteLine("Displayed capture: " + name);
+        }
+        var captureNumber = 0;
+        form.Shown += (_, _) =>
+        {
+            form.ApplyPreviewScenario("magisk", "VirtualDesktop");
+            live.PerformClick();
+            traffic.Start();
+        };
+        form.KeyDown += async (_, eventArgs) =>
+        {
+            if (eventArgs.KeyCode == Keys.F6) Capture("displayed-" + ++captureNumber);
+            else if (eventArgs.KeyCode == Keys.F7)
+            {
+                foreach (var name in new[] { "connection and camera settings", "eye settings and guidance", "camera settings", "cheek adjustment details", "hand and controller details" })
+                    controls.OfType<Button>().SingleOrDefault(button => button.Text == "Show " + name)?.PerformClick();
+            }
+            else if (eventArgs.KeyCode == Keys.F8)
+            {
+                form.WindowState = FormWindowState.Normal;
+                form.Size = new Size(780, 620);
+            }
+            else if (eventArgs.KeyCode == Keys.F9)
+            {
+                form.WindowState = FormWindowState.Normal;
+                form.Size = new Size(1140, 850);
+            }
+            else if (eventArgs.KeyCode == Keys.F10) activity.PerformClick();
+            else if (eventArgs.KeyCode == Keys.F11) live.PerformClick();
+            else if (eventArgs.KeyCode == Keys.F12)
+            {
+                // Freeze sample output, not drawing, for an unchanged-state
+                // comparison. Save the untouched displayed surface first.
+                traffic.Stop();
+                var name = "redraw-check-" + ++captureNumber;
+                await Task.Delay(350);
+                if (form.IsDisposed || form.WindowState == FormWindowState.Minimized) return;
+                Capture(name + "-before");
+                form.Invalidate(true);
+                form.Update();
+                await Task.Delay(200);
+                if (form.IsDisposed) return;
+                Capture(name + "-reference");
+                using var before = new Bitmap(Path.Combine(output, name + "-before.png"));
+                using var reference = new Bitmap(Path.Combine(output, name + "-reference.png"));
+                var different = 0;
+                for (var y = 0; y < before.Height; y++)
+                    for (var x = 0; x < before.Width; x++)
+                        if (before.GetPixel(x, y) != reference.GetPixel(x, y)) different++;
+                File.AppendAllText(Path.Combine(output, "displayed-state.txt"),
+                    $"{name}: changed pixels after reference redraw={different}/{before.Width * before.Height}\n");
+                Console.WriteLine($"Redraw comparison: {different} changed pixels");
+                traffic.Start();
+            }
+            else return;
+            eventArgs.Handled = eventArgs.SuppressKeyPress = true;
+        };
+        Console.WriteLine("Paint fixture: F6 capture; F7 expand; F8 compact; F9 normal; F10 Activity; F11 Live; F12 retained-pixel comparison.");
+        Application.Run(form);
     }
 }
