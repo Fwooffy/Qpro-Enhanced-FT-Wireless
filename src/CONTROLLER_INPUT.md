@@ -37,10 +37,11 @@ bindings are not included in this first prototype.
 | Steam Link | Not admitted | Controller identity and optical transport need separate validation |
 
 Enable headset hand tracking and Singularity's **Simultaneous Hands &
-Controllers** switch. Turn off Singularity's separate Frida Server before
-starting Qpro hands. Keep controller firmware current. Body-tracking
-interaction is unverified. A compatible version/fingerprint is an admission
-check, not proof that the feature works on every headset.
+Controllers** switch before starting Qpro hands. Installing Qpro's components
+does not enable either setting. Turn off Singularity's separate Frida Server
+before use. Keep controller firmware current. Body-tracking interaction is
+unverified. A compatible version/fingerprint is an admission check, not proof
+that the feature works on every headset.
 
 The first checked headset version remains **Virtual Desktop Android 1.34.22.0**.
 The signed **Streamer 1.34.23** PC driver is admitted separately because its
@@ -64,22 +65,83 @@ does not uninstall the hands runtime components.
 
 ## Setup and use
 
-1. Install the normal **PC runtime** through the Hub. Close **SteamVR**.
-2. Open **First-time setup > Optional hands and controllers** and press
-   **Install hand/controller components**. The optional download uses a dedicated
-   Qpro Python environment and checks official artifact hashes. It registers
-   only Qpro's own add-on path. It does not edit global Python or
-   `steamvr.vrsettings`.
-3. Reopen SteamVR through Virtual Desktop. On **Live tracking > Hands and
-   controllers**, press **Check hand/controller compatibility**. This reads
-   versions, settings and the driver fingerprint; it does not attach or start
-   a Frida helper. Thumb-rest sensor admission is checked separately on start.
-4. Enable the feature(s) you want, select a **Thumb-rest mode** if relevant, and
-   press **Start tracking**. Other Qpro features can remain off. Hand/controller
-   input by itself does not require VRCFaceTracking's face module.
-5. Confirm that optical fingers, controller poses, buttons and haptics all work.
-   For thumb-rest input, check SteamVR's controller bindings for your app.
-   Forwarded packets alone do not prove that SteamVR adopted the input profile.
+### Headset and VRChat settings
+
+1. On the Quest, enable **Hand Tracking** in its hand-tracking settings. On the
+   checked firmware these are under **Settings > Hands & Eyes**. Set the
+   controllers down and check that the headset sees your empty hands. Keep the
+   headset awake, connect USB or wireless ADB, and allow **Shell / ADB Shell**
+   root access if Magisk asks.
+2. Open **Singularity > AIO Tweaks** and enable **Simultaneous Hands &
+   Controllers**. Some versions label it **Simultaneous Hands Controllers**;
+   its location can vary. Leave it enabled while using Qpro hands. Turn off
+   Singularity's separate **Frida Server** before starting Qpro's helper.
+   Singularity introduced these options in its
+   [v1.0.4.3 release](https://github.com/Lumince/singularity/releases/tag/v1.0.4.3).
+3. Connect the headset to its PC Streamer inside **Virtual Desktop**. Run
+   **SteamVR through Virtual Desktop** and use the SteamVR version of VRChat.
+   ADB provides Qpro's setup/control connection; it does not replace Virtual
+   Desktop's VR stream.
+4. In VRChat, enable **Main Menu > Controls > Avatars Use Finger Tracking**.
+   This lets SteamVR skeletal input animate the avatar's fingers. See
+   [VRChat's Input 2.0 FAQ](https://docs.vrchat.com/docs/input-20-faq).
+
+### Install once, then start a session
+
+1. Install the normal **PC runtime** through the Hub. Close **SteamVR** and
+   wait for it to exit before installing optional components.
+2. Open **First-time setup > Optional hands and controllers > Show hands setup
+   and uninstall**, then press **Install hand/controller components**. The
+   optional download uses a dedicated Qpro Python environment and checks
+   official artifact hashes. It registers only Qpro's own add-on path and does
+   not edit global Python or `steamvr.vrsettings`. Repeat installation when the
+   Hub asks for a repair or update; it is not a step for every session.
+3. Reopen SteamVR through Virtual Desktop. Select **Virtual Desktop** as the
+   Hub's **Streaming app**. On **Live tracking > Hands and controllers**, press
+   **Check hand/controller compatibility**. This reads versions, current-user
+   settings and the driver fingerprint; it does not attach or start a Frida
+   helper. An unsupported headset version or driver needs a checked profile,
+   not another components installation. Thumb-rest sensor admission is checked
+   separately on start.
+4. Turn on **Experimental hands + controllers** and press **Start tracking**.
+   Leave **Experimental Touch Pro thumb-rest input** off for the first finger
+   check. Other Qpro features can remain off. Hands + controllers alone does
+   not require VRCFaceTracking's face module.
+5. Wear the headset, hold the controllers and move individual fingers where the
+   headset cameras can see them. Activity should report `HANDS_READY`: fresh
+   optical data reached at least one held controller's SteamVR skeletal input.
+   Check both hands in VRChat, along with controller position, buttons and
+   haptics. Fist/point/open gestures from touching buttons are ordinary
+   controller gestures; they do not prove optical fingers are working.
+6. Press **Stop tracking** when finished and wait for confirmed cleanup. If FPS
+   falls or SteamVR becomes unstable, stop and leave the experimental option
+   off. Do not assume a successful compatibility check guarantees acceptable
+   performance.
+
+### Troubleshooting
+
+- **Only controller gestures:** recheck Quest hand tracking, Singularity's
+  simultaneous switch and VRChat's **Avatars Use Finger Tracking** setting.
+  Keep fingers visible and inspect Activity for `HANDS_READY` or routing errors.
+- **A preliminary setting is false while the switches are on:** the current
+  code warns on known inactive hand/multimodal boolean preferences and proceeds
+  to verify live optical input. Simultaneous mode must still be `1`. Missing,
+  unreadable, duplicate or unsupported values refuse startup. Recheck ADB/root
+  access and reconnect Virtual Desktop; do not edit the preferences by hand.
+- **Unsupported headset version, driver or controller ABI:** keep hands off and
+  copy the full diagnostics. Components installation cannot supply a missing
+  adapter profile. Ordinary face tracking can still run separately.
+- **No live routing or a disconnect:** keep the headset on, hold a controller
+  and put your hand in camera view. Reconnect Virtual Desktop if its stream
+  stopped, then stop Qpro before retrying. Helper startup is not optical
+  readiness, and `HANDS_READY` for one side does not verify both hands.
+
+**Thumb-rest input is separate.** Enable **Experimental Touch Pro thumb-rest
+input** only after checking its firmware compatibility, then choose a
+**Thumb-rest mode**. Set the app's trackpad bindings in SteamVR yourself;
+installing the add-on does not create VRChat actions. Forwarded packets alone
+do not prove SteamVR adopted the input profile. Desktop mouse mode can move the
+Windows pointer.
 
 ## Stop and recovery
 

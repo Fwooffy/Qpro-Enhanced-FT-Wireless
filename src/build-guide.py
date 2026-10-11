@@ -166,7 +166,7 @@ def story_from_guide(markdown: str):
     story = [
         Spacer(1, 5),
         Paragraph("Quest Pro enhanced face tracking", TITLE),
-        Paragraph("V3.0.0 release candidate  |  USB or wireless ADB  |  10 October 2026", SUBTITLE),
+        Paragraph("V3.0.0 release candidate  |  USB or wireless ADB  |  11 October 2026", SUBTITLE),
         callout("**A rooted Meta Quest Pro and the latest VRCFaceTracking from Steam are required.** "
                 "If you used a version before V2.0, record and train a new tongue model. "
                 "Working V2.0 or newer models can be exported and imported into V3.0.0. "
@@ -231,6 +231,8 @@ def story_from_guide(markdown: str):
             story.append(row)
         elif line.startswith("- "):
             story.append(Paragraph("<font color='#177F83'><b>-</b></font>  " + inline(line[2:]), BODY))
+        elif line.startswith("**Before enabling hands + controllers:**"):
+            story.append(callout(line, ORANGE))
         elif line.startswith(("The Hub's gaze method can fail", "**Preview tracking cameras**",
                               "Eyebrows use the selected source's live face values",
                               "The window saves your profile after all three poses pass",
