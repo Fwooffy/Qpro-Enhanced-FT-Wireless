@@ -186,7 +186,8 @@ function pcFixture(options = {}) {
     write(28000, layout.opticalFlags, 1); write(29000, layout.frameFlags, 1);
     const stats = new Array(45).fill(0); stats[43] = stats[44] = 0xffffffff;
     const observed = {attachments: [], detached: 0, flushed: 0, compiled: 0, disposed: 0, enabled: false,
-        sideStates: [], tick: null, immediate: [], timers: [], modulePresent: true, now: 1000};
+        sideStates: [], tick: null, interval: null, immediate: [], timers: [], modulePresent: true, now: 1000,
+        sidePublications: 0, summarySnapshots: 0, diagnosticSnapshots: 0};
     let allocation = 4000000;
     const functions = new Map(), driver = {base: address(base), size: options.driverSize ?? 1000000};
     function exportFunction(fn) {const pointer = address(allocation++); functions.set(pointer.value, fn); return pointer;}
@@ -217,10 +218,14 @@ function pcFixture(options = {}) {
                     stats.fill(0); stats[43] = stats[44] = 0xffffffff;
                 }),
                 qpro_set_side: exportFunction((side, controller, hand, handle, device, physical, active) =>
-                    {observed.sideStates[side] = {controller, hand, handle, device, physical, active};}),
+                    {observed.sidePublications++; observed.sideStates[side] = {controller, hand, handle, device, physical, active};}),
                 qpro_enable: exportFunction(value => {observed.enabled = !!value;}),
                 qpro_module_alive: exportFunction(value => {if (!value) observed.enabled = false;}),
-                qpro_snapshot: exportFunction(out => stats.forEach((v, i) => out.add(i * 4).writeU32(v))),
+                qpro_snapshot: exportFunction(out => {observed.diagnosticSnapshots++;
+                    stats.forEach((v, i) => out.add(i * 4).writeU32(v));}),
+                qpro_route_snapshot: exportFunction(out => {observed.summarySnapshots++;
+                    [stats[8], stats[9], stats[6], stats[7], stats[43], stats[44]]
+                        .forEach((v, i) => out.add(i * 4).writeU32(v));}),
                 dispose() {observed.disposed++;}
             };
             for (const name of ['qpro_skeleton_enter', 'qpro_skeleton_leave', 'qpro_pose_enter', 'qpro_pose_leave'])
@@ -241,7 +246,7 @@ function pcFixture(options = {}) {
         }, flush() {observed.flushed++;}},
         setImmediate: fn => {observed.immediate.push(fn); return observed.immediate.length;},
         setTimeout: fn => {observed.timers.push(fn); return observed.timers.length;}, clearTimeout() {},
-        setInterval: fn => {observed.tick = fn; return 1;}, clearInterval() {}
+        setInterval: (fn, milliseconds) => {observed.tick = fn; observed.interval = milliseconds; return 1;}, clearInterval() {}
     });
     vm.runInContext(fs.readFileSync(path.join(directory, 'steamvr_skeleton_adapter.js'), 'utf8'), sandbox);
     return {api: sandbox.rpc.exports, sandbox, observed, bytes, stats, write, layout, driver};
@@ -251,6 +256,7 @@ assert.equal(pc.api.validate().callbackBackend, 'native');
 assert.equal(pc.observed.attachments.length, 0, 'Compilation and layout checks happen before hooks');
 pc.api.activate(20);
 assert.equal(pc.observed.enabled, true);
+assert.equal(pc.observed.interval, 16, 'Routing cadence must remain unchanged');
 assert.deepEqual(pc.observed.attachments.map(item => item.pointer.value), [36000, 33000],
     'Only saved optical skeleton and pose implementations are observed');
 assert.equal(pc.bytes.get(27000 + pc.layout.skeleton), 100n);
@@ -343,4 +349,44 @@ initialRouteFailure.api.validate();
 initialRouteFailure.write(28000, initialRouteFailure.layout.opticalFlags, 2);
 assert.throws(() => initialRouteFailure.api.activate(20), /optical validity/);
 assert.equal(initialRouteFailure.observed.enabled, false, 'Initial route failure cannot re-enable native callbacks');
+
+// Steady routing avoids repeat publications and writes, but the driver can
+// still change any routing field. External changes must be repaired next poll.
+const steady = pcFixture(); steady.api.activate(20);
+const publications = steady.observed.sidePublications;
+const diagnosticSnapshots = steady.observed.diagnosticSnapshots;
+const steadyInitial = steady.api.status().performance;
+for (let index = 0; index < 1000; index++) steady.observed.tick();
+assert.equal(steady.observed.sidePublications, publications);
+assert.equal(steady.observed.diagnosticSnapshots, diagnosticSnapshots + 1,
+    'Polling uses only the compact native summary; RPC status reads full diagnostics');
+const steadyStats = steady.api.status().performance;
+assert.equal(steadyStats.routeWrites, steadyInitial.routeWrites);
+assert.equal(steadyStats.sidePublicationsSkipped - steadyInitial.sidePublicationsSkipped, 2000);
+assert.equal(steadyStats.routeWritesSkipped - steadyInitial.routeWritesSkipped, 3000);
+assert.equal(steadyStats.routePolls - steadyInitial.routePolls, 1000);
+steady.write(27000, steady.layout.skeleton, 800n);
+steady.write(27000, steady.layout.multiModal, 0);
+steady.write(26000, steady.layout.multiModal, 0);
+steady.observed.tick();
+assert.equal(steady.bytes.get(27000 + steady.layout.skeleton), 100n);
+assert.equal(steady.bytes.get(27000 + steady.layout.multiModal), 1);
+assert.equal(steady.bytes.get(26000 + steady.layout.multiModal), 1);
+assert.equal(steady.api.status().performance.routeWrites - steadyStats.routeWrites, 3);
+assert.equal(steady.observed.sidePublications, publications,
+    'Repairing VD fields does not change the native route identity');
+// A new saved skeleton handle changes both the physical driver field and the
+// native route immediately; deduplication cannot retain the old route.
+steady.write(steady.driver.base.value, steady.layout.skeletonTable, 300n);
+steady.observed.tick();
+assert.equal(steady.bytes.get(27000 + steady.layout.skeleton), 300n);
+assert.equal(steady.observed.sideStates[0].handle.value, 300n);
+assert.equal(steady.observed.sidePublications, publications + 1);
+steady.write(28000, steady.layout.opticalFlags, 0); steady.observed.tick();
+assert.equal(steady.observed.sideStates[0].active, 0);
+assert.equal(steady.bytes.get(27000 + steady.layout.skeleton), 200n);
+steady.api.deactivate();
+assert.equal(steady.api.status().state, 'stopped');
+assert.equal(steady.bytes.get(27000 + steady.layout.multiModal), 0);
+assert.equal(steady.bytes.get(26000 + steady.layout.multiModal), 0);
 console.log('Hybrid adapters: native preflight, monotonic freshness, route loss, deferred draining, retention and restoration passed.');

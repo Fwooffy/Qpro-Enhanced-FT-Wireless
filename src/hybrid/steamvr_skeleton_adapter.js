@@ -10,6 +10,11 @@ let native = null, cleanupPromise = null;
 const sides = [null, null], submissions = [0, 0];
 const submissionAge = [0xffffffff, 0xffffffff];
 const activeSides = [false, false];
+const publishedSides = [null, null];
+const routePollMilliseconds = 16;
+const performance = {routePolls: 0, routeElapsedMilliseconds: 0, routeMaxMilliseconds: 0,
+    routeWrites: 0, routeWritesSkipped: 0, sidePublications: 0, sidePublicationsSkipped: 0,
+    summarySnapshots: 0, diagnosticSnapshots: 0};
 let restored = 0;
 const calls = {seen: 0, inputOwner: 0, matched: 0, successful: 0, invalidBones: 0, poseCopies: 0,
     sources: {'vd-original': 0}};
@@ -135,6 +140,20 @@ void qpro_snapshot(guint * output) {
   }
   gum_spinlock_release(&qpro_state.lock);
 }
+/* The frame-rate route poll needs only fault, pending poses and freshness.
+ * Keep the full diagnostic histogram out of this frequent JS boundary. */
+void qpro_route_snapshot(guint * output) {
+  guint i;
+  guint64 now = qpro_now(), age;
+  gum_spinlock_acquire(&qpro_state.lock);
+  output[0] = qpro_state.fault; output[1] = qpro_state.poses;
+  for (i = 0; i < 2; i++) {
+    output[2 + i] = qpro_state.submissions[i];
+    age = qpro_state.last_submission[i] == 0 ? 0xffffffffU : now - qpro_state.last_submission[i];
+    output[4 + i] = age > 0xffffffffU ? 0xffffffffU : (guint) age;
+  }
+  gum_spinlock_release(&qpro_state.lock);
+}
 void qpro_skeleton_enter(GumInvocationContext * ic) {
   SkeletonCall * call = GUM_IC_GET_INVOCATION_DATA(ic, SkeletonCall);
   guint i, count;
@@ -242,6 +261,7 @@ function prepareNative() {
     if (typeof CModule !== 'function' || Process.arch !== 'x64' || Process.pointerSize !== 8 || configuration.boneCount !== 31)
         throw new Error('Native SteamVR listeners require the admitted 64-bit Frida runtime and 31-bone ABI');
     const storage = Memory.alloc(4096), abi = Memory.alloc(24), snapshot = Memory.alloc(45 * 4);
+    const routeSnapshot = Memory.alloc(6 * 4);
     let module = null;
     try {
         const clock = Process.getModuleByName('kernel32.dll').getExportByName('GetTickCount64');
@@ -255,11 +275,12 @@ function prepareNative() {
         if (size > 4096 || size === 0 || sizes[0] !== 280 || sizes[1] !== 276 || sizes[2] !== 279 ||
             sizes[3] === 0 || sizes[3] > 1024 || sizes[4] === 0 || sizes[4] > 1024 || sizes[5] !== 8)
             throw new Error('Native SteamVR listener ABI validation failed');
-        const prepared = {module, storage, snapshot, attached: false,
+        const prepared = {module, storage, snapshot, routeSnapshot, attached: false,
             initialize: fn('qpro_initialize', 'void', ['pointer', 'pointer', 'size_t']),
             setSide: fn('qpro_set_side', 'void', ['uint', 'pointer', 'pointer', 'uint64', 'uint', 'uint', 'uint']),
             enable: fn('qpro_enable', 'void', ['uint']), moduleAlive: fn('qpro_module_alive', 'void', ['uint']),
-            readSnapshot: fn('qpro_snapshot', 'void', ['pointer'])};
+            readSnapshot: fn('qpro_snapshot', 'void', ['pointer']),
+            readRouteSnapshot: fn('qpro_route_snapshot', 'void', ['pointer'])};
         prepared.initialize(driver.base.add(layout.controllerTable), input, layout.handPointer);
         native = prepared;
     } catch (failure) {
@@ -269,12 +290,32 @@ function prepareNative() {
 }
 function syncSide(side) {
     const record = sides[side];
-    native.setSide(side, record?.controller || ptr(0), record?.hand || ptr(0), record?.handle || uint64(0),
-        record?.handDevice || 0, record?.physical ? 1 : 0, record?.routeActive ? 1 : 0);
+    const value = {controller: record?.controller || ptr(0), hand: record?.hand || ptr(0),
+        handle: record?.handle || uint64(0), device: record?.handDevice || 0,
+        physical: record?.physical ? 1 : 0, active: record?.routeActive ? 1 : 0};
+    const previous = publishedSides[side];
+    if (previous !== null && previous.controller.equals(value.controller) && previous.hand.equals(value.hand) &&
+        previous.handle.equals(value.handle) && previous.device === value.device &&
+        previous.physical === value.physical && previous.active === value.active) {
+        performance.sidePublicationsSkipped++; return;
+    }
+    native.setSide(side, value.controller, value.hand, value.handle, value.device, value.physical, value.active);
+    publishedSides[side] = value;
+    performance.sidePublications++;
 }
-function refreshNative() {
+function refreshNative(diagnostics = true) {
     if (native === null) return {fault: 0, poses: 0};
+    if (!diagnostics) {
+        native.readRouteSnapshot(native.routeSnapshot);
+        performance.summarySnapshots++;
+        for (let side = 0; side < 2; side++) {
+            submissions[side] = native.routeSnapshot.add((2 + side) * 4).readU32();
+            submissionAge[side] = native.routeSnapshot.add((4 + side) * 4).readU32();
+        }
+        return {fault: native.routeSnapshot.readU32(), poses: native.routeSnapshot.add(4).readU32()};
+    }
     native.readSnapshot(native.snapshot);
+    performance.diagnosticSnapshots++;
     const values = Array.from({length: 45}, (_, index) => native.snapshot.add(index * 4).readU32());
     [calls.seen, calls.inputOwner, calls.matched, calls.successful, calls.invalidBones, calls.poseCopies] = values;
     calls.sources['vd-original'] = calls.seen;
@@ -304,8 +345,9 @@ function requireObject(address, bytes, description) {
     if (!readable(address, bytes)) throw new Error(description + ' is not readable');
     return address;
 }
-function sameObjects(record) {
-    if (driver === null || Process.findModuleByName('driver_VirtualDesktop.dll')?.base.toString() !== driver.base.toString()) return false;
+function sameObjects(record, moduleVerified = false) {
+    if (driver === null || (!moduleVerified &&
+        Process.findModuleByName('driver_VirtualDesktop.dll')?.base.toString() !== driver.base.toString())) return false;
     const controller = driver.base.add(layout.controllerTable + record.side * Process.pointerSize).readPointer();
     return controller.equals(record.controller) && readable(controller, layout.handPointer + Process.pointerSize) &&
         controller.add(layout.handPointer).readPointer().equals(record.hand);
@@ -338,9 +380,9 @@ function resolveSide(side) {
 }
 function restore(record) {
     if (record === null || !sameObjects(record)) return;
-    record.hand.add(layout.skeleton).writeU64(record.original.handle);
-    record.hand.add(layout.multiModal).writeU8(record.original.handMode);
-    record.controller.add(layout.multiModal).writeU8(record.original.controllerMode);
+    writeRoute(record.hand.add(layout.skeleton), record.original.handle, true);
+    writeRoute(record.hand.add(layout.multiModal), record.original.handMode);
+    writeRoute(record.controller.add(layout.multiModal), record.original.controllerMode);
     if (!record.hand.add(layout.skeleton).readU64().equals(record.original.handle) ||
         record.hand.add(layout.multiModal).readU8() !== record.original.handMode ||
         record.controller.add(layout.multiModal).readU8() !== record.original.controllerMode)
@@ -363,7 +405,7 @@ function deactivate() {
         try {
             // Leave listeners remain attached until redirected original calls
             // return and free their private poses. Detach can skip onLeave.
-            if (refreshNative().poses !== 0) {
+            if (refreshNative(false).poses !== 0) {
                 if (Date.now() < deadline) { setTimeout(drain, 10); return; }
                 error = 'Native pose calls did not finish; disabled listeners and native memory are retained.';
                 state = 'restore-failed'; complete(); return;
@@ -446,16 +488,18 @@ function resolveInterfaces() {
 }
 function updateRoutes() {
     if (state !== 'running') return;
+    const started = Date.now();
+    performance.routePolls++;
     try {
         if (Process.findModuleByName('driver_VirtualDesktop.dll')?.base.toString() !== driver.base.toString()) {
             native.moduleAlive(0); throw new Error('VD driver identity changed');
         }
-        const snapshot = refreshNative();
+        const snapshot = refreshNative(false);
         if (snapshot.fault) throw new Error(snapshot.fault === 2 ? 'DriverPose_t ABI mismatch or incomplete native read' :
             'Native listener invocation storage is unavailable');
         for (let side = 0; side < 2; side++) {
             let record = sides[side];
-            if (record === null || !sameObjects(record)) record = sides[side] = resolveSide(side);
+            if (record === null || !sameObjects(record, true)) record = sides[side] = resolveSide(side);
             if (record === null) {
                 routes[side] = {reason: 'controller-unavailable', physical: false, optical: false, handle: false};
                 activeSides[side] = false; syncSide(side); continue;
@@ -477,9 +521,9 @@ function updateRoutes() {
             if (optical > 1) throw new Error('VD optical validity field is unsupported');
             const handle = skeletonHandle(record.controller, side);
             const enabled = physical && optical === 1 && !handle.equals(0);
-            record.hand.add(layout.skeleton).writeU64(enabled ? handle : record.original.handle);
-            record.hand.add(layout.multiModal).writeU8(physical ? 1 : record.original.handMode);
-            record.controller.add(layout.multiModal).writeU8(enabled ? 1 : record.original.controllerMode);
+            writeRoute(record.hand.add(layout.skeleton), enabled ? handle : record.original.handle, true);
+            writeRoute(record.hand.add(layout.multiModal), physical ? 1 : record.original.handMode);
+            writeRoute(record.controller.add(layout.multiModal), enabled ? 1 : record.original.controllerMode);
             record.handle = handle; record.routeActive = enabled; record.physical = physical;
             syncSide(side);
             activeSides[side] = enabled && submissionAge[side] < 500;
@@ -488,6 +532,21 @@ function updateRoutes() {
                 physical, optical: optical === 1, handle: !handle.equals(0)};
         }
     } catch (failure) { fail(failure); }
+    finally {
+        // Wall-clock milliseconds are intentionally coarse. They describe
+        // aggregate route work and long stalls; they are not VR frame timings.
+        const elapsed = Math.max(0, Date.now() - started);
+        performance.routeElapsedMilliseconds += elapsed;
+        performance.routeMaxMilliseconds = Math.max(performance.routeMaxMilliseconds, elapsed);
+    }
+}
+function writeRoute(address, value, wide = false) {
+    // VD may overwrite a routing field between polls. Read the actual field;
+    // caching only our last write would miss that and leave routing incorrect.
+    const unchanged = wide ? address.readU64().equals(value) : address.readU8() === value;
+    if (unchanged) { performance.routeWritesSkipped++; return; }
+    if (wide) address.writeU64(value); else address.writeU8(value);
+    performance.routeWrites++;
 }
 rpc.exports = {
     validate() {
@@ -504,6 +563,7 @@ rpc.exports = {
         prepareNative(); state = 'running';
         try {
             native.initialize(driver.base.add(layout.controllerTable), input, layout.handPointer);
+            publishedSides.fill(null);
             // Observe the saved public API implementation without replacing it;
             // every driver's input arguments and result pass through unchanged.
             native.attached = true;
@@ -517,7 +577,7 @@ rpc.exports = {
             updateRoutes();
             if (state !== 'running') throw new Error(error || 'SteamVR routing could not start');
             native.enable(1);
-            poll = setInterval(updateRoutes, 16);
+            poll = setInterval(updateRoutes, routePollMilliseconds);
             heartbeat(seconds);
         } catch (failure) { error = String(failure); deactivate(); throw failure; }
     },
@@ -527,6 +587,7 @@ rpc.exports = {
             Boolean(sides[side]?.routeActive) && submissionAge[side] < 500;
         return {state, error, interfaceVersion, activeSides, skeletonSubmissions: submissions,
         callbackBackend: 'native', nativeFault: snapshot.fault, nativePoseCalls: snapshot.poses,
-        callbacks: calls, results: resultCounts, routes, restored}; },
+        callbacks: calls, results: resultCounts, routes, restored,
+        performance: {...performance, routePollMilliseconds, timingResolution: 'wall-clock-milliseconds'}}; },
     dispose: deactivate
 };

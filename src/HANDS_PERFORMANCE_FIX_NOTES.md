@@ -1,5 +1,45 @@
 # V2.1.2 hands performance fix test
 
+## V3.0 routing optimisation
+
+The PC route poll still runs every 16 milliseconds. Optical bone updates,
+finite-value validation and the per-call native identity checks keep their
+existing behaviour. The optimisation removes repeated work from that poll:
+
+- Check the loaded Virtual Desktop driver identity once per poll, then read
+  each side's current controller/hand identity.
+- Read a six-value native fault/freshness summary during routing. Full callback
+  counters and the result histogram are read only for RPC diagnostics.
+- Publish the native side state only when its identities, handle, physical
+  state or active state change.
+- Read actual routing fields before writing them. Unchanged fields avoid a
+  write, while fields overwritten by Virtual Desktop are repaired on the next
+  poll. Restoration still reads back and verifies all original fields.
+- Include route work, elapsed time and per-second callback/update rates in
+  `HANDS_STATUS`. These measurements distinguish route-poll work from process
+  CPU usage and VR frame time; unavailable counters are not reported as zero.
+
+An isolated Frida 17.18.0 child-process fixture measured four blocks of 5,000
+steady route polls. Mean process CPU time for that work fell from 472.66 to
+367.19 milliseconds (about 22%). Mean elapsed time fell from 569.50 to 455.25
+milliseconds. Driver-module queries fell from 15,000 to 5,000 per block;
+unchanged native side publications fell from 10,000 to zero; native values
+read into JavaScript fell from 225,000 to 30,000. These are measurements of a
+synthetic route-poll workload on one PC, not whole-app CPU or game FPS gains.
+
+Offline verification passed 41 controller lifecycle/counter tests, 22 Android
+adapter boundary tests and the PC route/ABI tests. A real CModule fixture also
+passed complete bone finite checks, unchanged original results, const-pose
+preservation, object identity refusal, nested calls, Stop during an original
+pose call, fresh and expired skeleton summaries, overwritten routing fields,
+optical loss/recovery and confirmed restoration/unload.
+
+The feature remains off by default and requires the admitted Virtual Desktop
+builds. No installed component or headset process was changed for these
+checks. Sustained VR frame time, actual finger accuracy and coexistence with
+camera tracking still need a live session before claiming the reported game
+lag or SteamVR crash has been resolved.
+
 This build follows a short run where both hands routed correctly and Stop
 restored the adapters, followed by a report of severe game lag with only
 **Experimental hands + controllers** enabled. The lag cleared after Stop.

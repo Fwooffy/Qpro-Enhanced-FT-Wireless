@@ -15,6 +15,43 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import controller
 
 
+class PerformanceTests(unittest.TestCase):
+    def statuses(self, value):
+        return [{"queries": value}, {"frames": value},
+                {"skeletonSubmissions": [value, value], "callbacks": {"poseCopies": value},
+                 "performance": {"routePolls": value, "routeElapsedMilliseconds": value,
+                                 "routeWrites": value, "sidePublications": value}}]
+
+    def test_first_observation_cannot_claim_a_rate(self):
+        report = controller.PerformanceWindow().sample(self.statuses(30), 10)
+        self.assertIsNone(report["windowSeconds"])
+        self.assertEqual(report["ratesPerSecond"], {})
+
+    def test_rates_follow_elapsed_time_and_reset_is_unavailable(self):
+        window = controller.PerformanceWindow()
+        window.sample(self.statuses(10), 10)
+        report = window.sample(self.statuses(40), 13)
+        self.assertEqual(report["windowSeconds"], 3)
+        self.assertTrue(all(value == 10 for value in report["ratesPerSecond"].values()))
+        reset = window.sample(self.statuses(0), 16)
+        self.assertTrue(all(value is None for value in reset["ratesPerSecond"].values()))
+
+    def test_uint32_skeleton_counter_wrap_does_not_appear_as_reset(self):
+        window = controller.PerformanceWindow()
+        window.sample(self.statuses(0xfffffffd), 10)
+        report = window.sample(self.statuses(3), 13)
+        for name in ("leftSkeletonUpdates", "rightSkeletonUpdates", "poseCopies"):
+            self.assertEqual(report["ratesPerSecond"][name], 2)
+        self.assertIsNone(report["ratesPerSecond"]["controllerQueries"])
+
+    def test_missing_or_invalid_counters_remain_unavailable(self):
+        window = controller.PerformanceWindow()
+        window.sample(self.statuses(10), 10)
+        rows = [{"queries": True}, {}, {"skeletonSubmissions": [1]}]
+        report = window.sample(rows, 13)
+        self.assertTrue(all(value is None for value in report["ratesPerSecond"].values()))
+
+
 class FakeAdb:
     def __init__(self, profile, rules=""):
         self.profile, self.rules, self.calls = profile, rules, []

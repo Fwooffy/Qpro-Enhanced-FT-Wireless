@@ -51,6 +51,50 @@ def input_is_ready(statuses):
         statuses[2].get("activeSides", [False, False]))) and statuses[0].get("queries", 0) > 0
 
 
+class PerformanceWindow:
+    """Summarise existing counters without adding callbacks on driver threads."""
+
+    def __init__(self):
+        self.previous = None
+
+    @staticmethod
+    def _counter(value):
+        return value if type(value) is int and value >= 0 else None
+
+    def sample(self, statuses, now):
+        controller, hands, routing = statuses
+        work = routing.get("performance", {})
+        callbacks = routing.get("callbacks", {})
+        submissions = routing.get("skeletonSubmissions", [None, None])
+        if not isinstance(submissions, (list, tuple)) or len(submissions) != 2:
+            submissions = [None, None]
+        counters = {
+            "controllerQueries": controller.get("queries"), "opticalFrames": hands.get("frames"),
+            "leftSkeletonUpdates": submissions[0], "rightSkeletonUpdates": submissions[1],
+            "poseCopies": callbacks.get("poseCopies"), "routePolls": work.get("routePolls"),
+            "routeWallMilliseconds": work.get("routeElapsedMilliseconds"),
+            "routeWrites": work.get("routeWrites"), "sidePublications": work.get("sidePublications"),
+        }
+        counters = {name: self._counter(value) for name, value in counters.items()}
+        previous, self.previous = self.previous, (now, counters)
+        if previous is None or now <= previous[0]:
+            return {"windowSeconds": None, "ratesPerSecond": {}}
+        elapsed = now - previous[0]
+        rates = {}
+        for name, value in counters.items():
+            old = previous[1].get(name)
+            if value is None or old is None:
+                rates[name] = None
+            elif value >= old:
+                rates[name] = round((value - old) / elapsed, 3)
+            elif name in ("leftSkeletonUpdates", "rightSkeletonUpdates", "poseCopies") and old > 0xf0000000:
+                rates[name] = round(((value - old) & 0xffffffff) / elapsed, 3)
+            else:
+                rates[name] = None  # A reset is not a negative update rate.
+        return {"windowSeconds": round(elapsed, 3), "ratesPerSecond": rates,
+                "timingNote": "Route wall time is coarse elapsed time, not process CPU or VR frame time."}
+
+
 def start_stop_watchers(stop, stop_file, parent_input=None):
     def watch_file():
         while not stop.wait(0.2):
@@ -218,6 +262,7 @@ class Supervisor:
         self.detached_sessions = []
         self.cleaning_up = False
         self.last_statuses = []
+        self.performance = PerformanceWindow()
         self.progress = time.monotonic()
         self.finished = threading.Event()
 
@@ -342,6 +387,7 @@ class Supervisor:
             now = time.monotonic()
             if now >= next_beat:
                 statuses = []
+                rpc_started = time.monotonic()
                 for index, (name, script) in enumerate(self.adapters):
                     status = script.exports_sync.status()
                     # Save each observation before heartbeat/state checks, so
@@ -358,7 +404,9 @@ class Supervisor:
                     ready = input_is_ready(statuses)
                     if ready:
                         emit("READY", activeSides=statuses[2]["activeSides"], experimental=True)
-                emit("STATUS", ready=ready, adapters=statuses)
+                performance = self.performance.sample(statuses, time.monotonic())
+                performance["statusAndHeartbeatMilliseconds"] = round((time.monotonic() - rpc_started) * 1000, 3)
+                emit("STATUS", ready=ready, adapters=statuses, performance=performance)
                 if not ready and now >= deadline:
                     if statuses[0].get("queries", 0) <= 0:
                         raise RuntimeError("Hand routing confirmation timed out. No headset controller-selection queries were observed. Check the latest HANDS_STATUS adapter counters.")
