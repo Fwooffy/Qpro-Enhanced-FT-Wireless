@@ -251,7 +251,7 @@ internal sealed partial class HubForm
         card.ColumnCount = 1;
         card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         card.Controls.Add(SectionTitle("Live tracking health", HubIcon.Activity));
-        foreach (var label in new[] { _healthRates, _healthFeatures, _healthNote })
+        foreach (var label in new[] { _healthRates, _healthFeatures, _healthModule, _healthNote })
         {
             label.Margin = new Padding(0, 0, 0, 6);
             label.AccessibleName = label.Text;
@@ -268,6 +268,7 @@ internal sealed partial class HubForm
         details.Controls.Add(_healthDrops);
         details.Controls.Add(_healthStages);
         details.Controls.Add(_healthPupil);
+        details.Controls.Add(_healthModuleDetail);
         details.Controls.Add(Info("Prediction includes preparation and GPU wait/readback. These timings overlap and cannot be added to estimate total latency."));
         var disclosure = ActionButton("Show tracking details", (_, _) => { });
         disclosure.Click += (_, _) =>
@@ -314,6 +315,7 @@ internal sealed partial class HubForm
     private void RefreshTrackingHealth()
     {
         if (IsDisposed || Disposing || WindowState == FormWindowState.Minimized) return;
+        RefreshModuleHeartbeatDecoration();
         var cameraFresh = _trackingHealth.CameraFresh;
         if (_cameraInputReady != cameraFresh)
         {

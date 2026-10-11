@@ -56,6 +56,8 @@ internal sealed partial class HubForm : Form
     private readonly Label _modelEmpty = new() { Text = "No paired tongue models found. Extract the complete release or import a .qptonguemodel package.", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Muted, Padding = new Padding(24) };
     private readonly Label _tongueModelNote = new() { AutoSize = true, MaximumSize = new Size(650, 0), ForeColor = Muted, Margin = new Padding(24, 2, 0, 4), Tag = "responsive-info" };
     private readonly ComboBox _fps = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 76 };
+    private readonly ComboBox _processingProfile = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill, Enabled = false };
+    private readonly Label _processingProfileNote = new() { AutoSize = true, ForeColor = Muted, Tag = "responsive-info" };
     private readonly ComboBox _pupilSensitivity = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
     private readonly DarkSlider _smoothing = new() { Minimum = 0, Maximum = 100, Value = 55, Width = 180, Height = 30 };
     private readonly ComboBox _visibilityMode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 265 };
@@ -302,6 +304,10 @@ internal sealed partial class HubForm : Form
         _cheekCameraBaseModels.SelectedIndexChanged += (_, _) => UpdateControlState();
         _fps.Items.AddRange(["12", "15", "18", "20", "24", "30", "36", "48", "60", "72"]);
         _fps.SelectedItem = "24";
+        _processingProfile.Items.AddRange(HubProcessingProfile.Choices);
+        _processingProfile.SelectedIndex = 0;
+        _processingProfile.SelectedIndexChanged += (_, _) => { UpdateProcessingProfileNote(); UpdateControlState(); };
+        UpdateProcessingProfileNote();
         _pupilSensitivity.Items.AddRange(Enumerable.Range(0, 11)
             .Select(index => $"{1.0 + index * 0.2:0.0}×" + (index == 2 ? " (Balanced)" : ""))
             .ToArray());
@@ -400,6 +406,7 @@ internal sealed partial class HubForm : Form
         ConfigureDropDown(_eyeProfiles);
         ConfigureDropDown(_tongueModels);
         ConfigureDropDown(_fps);
+        ConfigureDropDown(_processingProfile);
         ConfigureDropDown(_pupilSensitivity);
         ConfigureDropDown(_visibilityMode);
         ConfigureDropDown(_cheekPuffStyle);

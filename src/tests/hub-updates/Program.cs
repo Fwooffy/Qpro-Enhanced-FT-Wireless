@@ -147,11 +147,12 @@ try
             files["QproRuntime/" + path] = Encoding.UTF8.GetBytes("Fixture " + path);
         return files;
     }
-    string Archive(Dictionary<string, byte[]> files, string? extra = null, bool bom = false, Action<ZipArchive>? modify = null)
+    string Archive(Dictionary<string, byte[]> files, string? extra = null, bool bom = false, Action<ZipArchive>? modify = null,
+        string packageVersion = "2.1.3")
     {
         string path = Path.Combine(fixture, Guid.NewGuid().ToString("N") + ".zip");
         using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
-        const string folder = "QproFaceTracking V2.1.3/";
+        string folder = "QproFaceTracking V" + packageVersion + "/";
         foreach ((string name, byte[] bytes) in files)
         {
             using Stream output = archive.CreateEntry(folder + name).Open();
@@ -163,9 +164,18 @@ try
         modify?.Invoke(archive);
         return path;
     }
-    HubUpdateRelease Release(string archive) => new(version, "v2.1.3", "QproFaceTracking V2.1.3", new Uri("https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases/tag/v2.1.3"),
-        "Notes", assetName, new Uri(assetUrl), new FileInfo(archive).Length, Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(archive))).ToLowerInvariant());
-    HubStagedUpdate Stage(string archive, CancellationToken cancellation = default) => HubUpdatePackage.Stage(archive, Release(archive), oldRoot, storage, null, cancellation);
+    HubUpdateRelease Release(string archive, Version? packageVersion = null)
+    {
+        Version target = packageVersion ?? version;
+        string tag = "v" + target;
+        string name = "QproFaceTracking.V" + target + ".zip";
+        return new(target, tag, "QproFaceTracking V" + target,
+            new Uri("https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases/tag/" + tag), "Notes", name,
+            new Uri("https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases/download/" + tag + "/" + name),
+            new FileInfo(archive).Length, Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(archive))).ToLowerInvariant());
+    }
+    HubStagedUpdate Stage(string archive, CancellationToken cancellation = default, Version? packageVersion = null) =>
+        HubUpdatePackage.Stage(archive, Release(archive, packageVersion), oldRoot, storage, null, cancellation);
     string good = Archive(ValidFiles(), bom: true);
     HubStagedUpdate staged = Stage(good);
     Check(File.Exists(staged.ExecutablePath), "staged executable exists");
@@ -177,11 +187,41 @@ try
     Check(staged.ModelCount == 0 && staged.PreviousRoot == oldRoot, "staging performs no migration");
     HubUpdatePackage.ValidateStagedRelease(staged.RuntimeRoot, version);
     Check(true, "helper can revalidate a staged package");
+    Check(!File.Exists(Path.Combine(staged.RuntimeRoot, "runtime-recovery.ps1")) &&
+        !File.Exists(Path.Combine(staged.RuntimeRoot, "tracking_budget.py")), "V2 updater format remains supported without V3 helpers");
     File.AppendAllText(staged.ExecutablePath, "tampering");
     Reject(() => HubUpdatePackage.ValidateStagedRelease(staged.RuntimeRoot, version), "staged executable tampering");
     HubUpdatePackage.Discard(staged, storage);
     Check(!File.Exists(staged.ExecutablePath), "discard private stage");
     Reject(() => HubUpdatePackage.Discard(staged with { RuntimeRoot = oldRoot }, storage), "discard old app folder");
+    foreach (Version target in new[] { new Version(3, 0, 0), new Version(4, 0, 0) })
+    {
+        Dictionary<string, byte[]> complete = ValidFiles(manifestVersion: target.ToString());
+        string[] helpers = { "runtime-recovery.ps1", "tracking_budget.py" };
+        foreach (string helper in helpers) complete["QproRuntime/" + helper] = Encoding.UTF8.GetBytes("Fixture " + helper);
+        HubStagedUpdate modern = Stage(Archive(complete, packageVersion: target.ToString()), packageVersion: target);
+        Check(helpers.All(helper => File.Exists(Path.Combine(modern.RuntimeRoot, helper))), "V3+ complete runtime helpers staged");
+        HubUpdatePackage.ValidateStagedRelease(modern.RuntimeRoot, target);
+        Check(true, "V3+ complete package passes revalidation");
+        HubUpdatePackage.Discard(modern, storage);
+        foreach (string helper in helpers)
+        {
+            var incomplete = new Dictionary<string, byte[]>(complete, StringComparer.Ordinal);
+            incomplete.Remove("QproRuntime/" + helper);
+            // Archive regenerates correct checksums after removing the helper.
+            // Integrity alone must not admit an incomplete V3+ runtime.
+            try
+            {
+                Stage(Archive(incomplete, packageVersion: target.ToString()), packageVersion: target);
+                throw new Exception("Accepted V" + target + " package missing " + helper);
+            }
+            catch (InvalidDataException error)
+            {
+                Check(error.Message == "The update runtime is missing " + helper + ".",
+                    "V3+ missing helper rejected for completeness with valid checksums: " + helper);
+            }
+        }
+    }
     foreach (string bad in new[] { "../escape.txt", "QproFaceTracking V2.1.3/../../escape.txt", "QproFaceTracking V2.1.3/C:/escape.txt",
         "QproFaceTracking V2.1.3/CON.txt", "QproFaceTracking V2.1.3/file.txt:stream", "QproFaceTracking V2.1.3/name. ",
         "QproFaceTracking V2.1.3/QproRuntime\\escape.txt", "OtherApp/file.txt", "QproFaceTracking V2.1.3/QPROFACETRACKING.EXE" })

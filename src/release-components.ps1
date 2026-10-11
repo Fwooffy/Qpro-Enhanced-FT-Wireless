@@ -17,7 +17,7 @@ function Get-QproComponentRecipe([string]$RuntimeRoot, [string]$Component, [stri
 }
 
 function Get-QproReleaseComponents([string]$RuntimeRoot) {
-    $runtime = @('setup-runtime.ps1', 'runtime-python.ps1', 'requirements-runtime.txt',
+    $runtime = @('setup-runtime.ps1', 'runtime-python.ps1', 'runtime-recovery.ps1', 'requirements-runtime.txt',
         'python-runtime\python.3.12.10.nupkg')
     $rocm = @('Install-QproRocm.ps1', 'runtime-python.ps1', 'requirements-runtime.txt', 'qpro_gpu.py')
     return [ordered]@{

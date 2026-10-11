@@ -61,6 +61,14 @@ internal static class LayoutTests
         }
         var root = Path.Combine(Path.GetTempPath(), "qpro-layout-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
+        var offscreen = args.Contains("--offscreen");
+        void ConfigureWindow(Form window)
+        {
+            if (!offscreen) return;
+            window.ShowInTaskbar = false;
+            window.StartPosition = FormStartPosition.Manual;
+            window.Location = new Point(-32000, -32000);
+        }
         // A cancelled launch can dispose a form without ever closing a window.
         // Verify native timer ownership in that path, not just normal Close.
         using (var abandoned = new HubForm(root, rememberLaunch: false, previewOnly: true))
@@ -82,6 +90,7 @@ internal static class LayoutTests
         using (var initiallyMinimized = new HubForm(root, rememberLaunch: false, previewOnly: true)
             { WindowState = FormWindowState.Minimized })
         {
+            ConfigureWindow(initiallyMinimized);
             initiallyMinimized.Show(); Pump(100);
             var minimizedHandles = Descendants(initiallyMinimized).Where(control => control.IsHandleCreated)
                 .ToDictionary(control => control, control => control.Handle);
@@ -98,6 +107,7 @@ internal static class LayoutTests
             Console.WriteLine("PASS initial minimized show/restore preserves native identity; minimized disposal releases timers");
         }
         using var form = new HubForm(root, rememberLaunch: false, previewOnly: true);
+        ConfigureWindow(form);
         Console.WriteLine("Showing offline layout fixture");
         form.Show();
         Console.WriteLine("Applying sample data");
@@ -107,6 +117,7 @@ internal static class LayoutTests
         var layouts = 0;
         foreach (var control in all) control.Layout += (_, _) => layouts++;
         var tabs = all.OfType<Button>().Where(button => Equals(button.Tag, "workflow-tab")).ToArray();
+        CheckReadinessBatch(form, tabs);
         foreach (var tab in tabs)
         {
             form.Size = new Size(780, 620);
@@ -157,7 +168,7 @@ internal static class LayoutTests
             if (layouts != 0) throw new Exception("Simulated resize layout did not settle: " + layouts);
             if (page.HorizontalScroll.Visible) throw new Exception("Window resize introduced a horizontal page scrollbar.");
             Console.WriteLine("PASS native size loop round trip settles without a horizontal scrollbar: " + tab.Text);
-            if (args.Length == 1)
+            if (args.Length == 1 && !offscreen)
             {
                 Directory.CreateDirectory(args[0]);
                 foreach (var width in new[] { 780, 1140 })
@@ -281,6 +292,56 @@ internal static class LayoutTests
         if (!(bool)pulseFlag.GetValue(form)!) throw new Exception("Setup decoration did not resume after restoring.");
         Console.WriteLine("PASS setup attention skips minimized windows and resumes on restore");
         form.Close();
+    }
+
+    static void CheckReadinessBatch(HubForm form, Button[] tabs)
+    {
+        const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Instance;
+        var names = new[] { "_usbStatus", "_steamStatus", "_vrcftStatus", "_bridgeStatus", "_runtimeStatus" };
+        var labels = names.Select(name => (Label)typeof(HubForm).GetField(name, flags)!.GetValue(form)!).ToArray();
+        var texts = labels.Select(label => label.Text).ToArray();
+        var statuses = (TableLayoutPanel)labels[0].Parent!.Parent!;
+        var beginBatch = typeof(HubForm).GetMethod("BeginReadinessUpdate", flags)!;
+        IDisposable Batch() => (IDisposable)beginBatch.Invoke(form, null)!;
+        var live = tabs.Single(button => button.AccessibleName == "Live tracking");
+        var activity = tabs.Single(button => button.AccessibleName == "Activity");
+        form.Size = new Size(1140, 850);
+        live.PerformClick(); Pump(150);
+        using (Batch()) foreach (var label in labels) label.Text = "OK";
+        var shortColumns = statuses.ColumnCount;
+        activity.PerformClick(); Pump(150);
+        var hiddenWidths = labels.Select(label => label.MaximumSize).ToArray();
+        using (Batch())
+            foreach (var label in labels) label.Text = "Connected; a deliberately longer readiness description requires one full column";
+        if (statuses.ColumnCount != shortColumns || labels.Where((label, index) => label.MaximumSize != hiddenWidths[index]).Any())
+            throw new Exception("A hidden readiness refresh performed text fitting before its page was shown.");
+        live.PerformClick();
+        if (statuses.ColumnCount >= shortColumns)
+            throw new Exception("Showing a dirty readiness page did not synchronously fit its longer status values.");
+        var longColumns = statuses.ColumnCount;
+        var batchLayouts = 0;
+        void CountLayout(object? sender, LayoutEventArgs args) => batchLayouts++;
+        statuses.Layout += CountLayout;
+        try
+        {
+            using (Batch())
+            {
+                foreach (var label in labels) label.Text = "OK";
+                if (batchLayouts != 0 || statuses.ColumnCount != longColumns)
+                    throw new Exception("Visible readiness labels reflowed independently inside a status batch.");
+            }
+            if (statuses.ColumnCount != shortColumns)
+                throw new Exception("A visible readiness batch did not fit before its scope returned.");
+        }
+        finally { statuses.Layout -= CountLayout; }
+        SendMessage(form.Handle, 0x0231, 0, 0);
+        form.Size = new Size(780, 620);
+        if (labels.Any(label => label.MaximumSize.Width != Math.Max(100,
+                statuses.ClientSize.Width / statuses.ColumnCount - label.Parent!.Margin.Horizontal)))
+            throw new Exception("Visible readiness stopped fitting synchronously during native sizing.");
+        SendMessage(form.Handle, 0x0232, 0, 0);
+        using (Batch()) for (var index = 0; index < labels.Length; index++) labels[index].Text = texts[index];
+        Console.WriteLine("PASS hidden readiness waits for show; visible status batches fit once before return; native sizing remains synchronous");
     }
 
     // This fixture stays on screen so manual titlebar and mouse resize

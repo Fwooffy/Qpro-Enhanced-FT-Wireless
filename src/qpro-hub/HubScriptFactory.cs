@@ -30,7 +30,8 @@ internal sealed class HubScriptFactory
         // PC setup has no headset dependency. Avoid probing the existing
         // runtime and ADB configuration before the setup process can report
         // its own progress (especially when the existing runtime is damaged).
-        if (!script.Equals("setup-runtime.ps1", StringComparison.OrdinalIgnoreCase))
+        if (!script.Equals("setup-runtime.ps1", StringComparison.OrdinalIgnoreCase) &&
+            !script.Equals("runtime-recovery.ps1", StringComparison.OrdinalIgnoreCase))
         {
             var python = _environment.FindPythonRuntime();
             if (python is not null) info.Environment["QPRO_PYTHON"] = python;

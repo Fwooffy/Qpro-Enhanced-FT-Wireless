@@ -23,6 +23,7 @@ try
         if (!plan.Required) continue;
         var arguments = plan.Arguments;
         Check(Value(arguments, "-TrackingSource") == source, "streaming source stays isolated");
+        Check(Value(arguments, "-TrackingProfile") == "responsive", "existing options preserve full processing cadence");
         Check(arguments.Contains("-EnableTongueOutput") == tongue, "tongue output follows explicit selection");
         Check(arguments.Contains("-EnableCheekOutput") == camera, "camera cheeks follow explicit selection");
         Check(arguments.Contains("-TonguePreview") == (tongue || camera), "camera cheeks work without enabling tongue output");
@@ -46,6 +47,16 @@ try
     }
 
     var combinedOff = HubCameraTrackingLaunch.Create(Selection("VirtualDesktop", true, false, false, true));
+    foreach (var profile in new[] { "responsive", "balanced", "low-cpu" })
+    {
+        var plan = HubCameraTrackingLaunch.Create(Selection("VirtualDesktop", true, false, true, false) with
+            { TrackingProfile = profile });
+        Check(Value(plan.Arguments, "-TrackingProfile") == profile, "processing profile reaches the launcher");
+        Check(Value(plan.Arguments, "-MaxFps") == "24", "profile preserves the camera FPS cap");
+        Check(!plan.Arguments.Contains("-TongueProcessingFps"), "profiles do not reduce tongue cadence");
+    }
+    Throws(() => HubCameraTrackingLaunch.Create(Selection("VirtualDesktop", true, false, true, false) with
+        { TrackingProfile = "unknown" }), "unknown processing profile gets actionable validation");
     Check(!combinedOff.Arguments.Contains("-EnableCheekOutput"), "a combined model alone does not opt into camera output");
     Check(combinedOff.OutputDescription.Contains("native-source adjustments"), "off explicitly describes the native cheek source");
     Throws(() => HubCameraTrackingLaunch.Create(Selection("VirtualDesktop", true, true, false, true) with

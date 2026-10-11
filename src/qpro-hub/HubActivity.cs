@@ -8,6 +8,7 @@ internal sealed partial class HubForm
     private const int ActivityCharacterLimit = 180_000;
     private const int ActivityCharactersToKeep = 120_000;
     private readonly HubActivityClassifier _activityClassifier = new();
+    private sealed record ActivityEntry(string Text, string Timestamp, ActivitySeverity? Severity = null);
     private readonly Label _actionSeverity = new()
     {
         Text = "NORMAL", AutoSize = true, ForeColor = Good,
@@ -31,7 +32,11 @@ internal sealed partial class HubForm
     // All calls arrive on the UI thread. Keep the original diagnostic wording
     // after a plain severity label, so Copy diagnostics and Save log retain it.
     private void AppendActivityText(string text, string timestamp, ActivitySeverity? severity = null)
+        => AppendActivityEntries([new(text, timestamp, severity)]);
+
+    private void AppendActivityEntries(IReadOnlyList<ActivityEntry> entries)
     {
+        if (entries.Count == 0) return;
         var selectionStart = _log.SelectionStart;
         var selectionLength = _log.SelectionLength;
         var caretAtTail = selectionStart >= _log.TextLength;
@@ -59,14 +64,17 @@ internal sealed partial class HubForm
                 _log.AppendText(run.ToString());
                 run.Clear();
             }
-            foreach (var line in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+            foreach (var entry in entries)
             {
-                var level = severity ?? _activityClassifier.Classify(line);
-                if (runLevel != level) AppendRun();
-                runLevel = level;
-                if (!string.IsNullOrWhiteSpace(line))
-                    run.Append(timestamp).Append("  [").Append(ActivityName(level)).Append("] ").Append(line);
-                run.AppendLine();
+                foreach (var line in entry.Text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+                {
+                    var level = entry.Severity ?? _activityClassifier.Classify(line);
+                    if (runLevel != level) AppendRun();
+                    runLevel = level;
+                    if (!string.IsNullOrWhiteSpace(line))
+                        run.Append(entry.Timestamp).Append("  [").Append(ActivityName(level)).Append("] ").Append(line);
+                    run.AppendLine();
+                }
             }
             AppendRun();
 

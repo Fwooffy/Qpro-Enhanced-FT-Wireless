@@ -70,7 +70,9 @@ internal sealed partial class HubForm
         1 => "joystick", 2 => "swipe", 3 => "mouse", _ => "trackpad",
     };
 
-    private void UpdateControllerInputAvailability()
+    private void UpdateControllerInputAvailability() => UpdateControllerInputAvailabilityFromSnapshot(null);
+
+    private void UpdateControllerInputAvailabilityFromSnapshot(bool? runtimeReady)
     {
         bool idle = !_closingInProgress && !_trackingCleanupPending && !_gazeRecoveryRunning &&
             !_starting && !_stopping && !_utilityActionRunning && !_setupActionRunning &&
@@ -80,7 +82,7 @@ internal sealed partial class HubForm
         _touchpadMode.Enabled = idle && supportedSource && _controllerTouchpad.Checked;
         _installHandsButton.Enabled = idle && supportedSource;
         _removeHandsButton.Enabled = idle && Directory.Exists(ControllerAddonRoot);
-        _checkHandsButton.Enabled = idle && supportedSource && BackendReady();
+        _checkHandsButton.Enabled = idle && supportedSource && (runtimeReady ?? BackendReady());
         if (idle)
         {
             if (!supportedSource) _hybridHands.Checked = _controllerTouchpad.Checked = false;

@@ -32,6 +32,7 @@ internal sealed partial class HubForm
         _controllerTouchpad.Checked = options.Touchpad;
         _smoothing.Value = Math.Clamp(options.Smoothing, _smoothing.Minimum, _smoothing.Maximum);
         RestoreChoice(_fps, options.Fps);
+        _processingProfile.SelectedItem = HubProcessingProfile.FromSavedId(options.ProcessingProfile);
         RestoreChoice(_pupilSensitivity, options.PupilSensitivity);
         RestoreChoice(_visibilityMode, options.Visibility);
         RestoreChoice(_touchpadMode, options.TouchpadMode);
@@ -57,7 +58,7 @@ internal sealed partial class HubForm
             _fps.SelectedItem?.ToString(), _pupilSensitivity.SelectedItem?.ToString(),
             _visibilityMode.SelectedItem?.ToString(), _touchpadMode.SelectedItem?.ToString(),
             Path.GetFileName((_tongueModels.SelectedItem as FileChoice)?.Primary),
-            Path.GetFileName((_eyeProfiles.SelectedItem as FileChoice)?.Primary));
+            Path.GetFileName((_eyeProfiles.SelectedItem as FileChoice)?.Primary), ProcessingProfileValue());
 
     private static void RestoreChoice(ComboBox box, string? text)
     {
@@ -79,4 +80,5 @@ internal sealed partial class HubForm
 
 internal sealed record HubLiveOptions(int Schema, bool Tongue, bool Pupil, bool CameraCheeks,
     bool Hands, bool Touchpad, int Smoothing, string? Fps, string? PupilSensitivity,
-    string? Visibility, string? TouchpadMode, string? Model, string? EyeProfile);
+    string? Visibility, string? TouchpadMode, string? Model, string? EyeProfile,
+    string? ProcessingProfile = null);

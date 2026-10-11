@@ -132,7 +132,8 @@ internal sealed partial class HubForm
     {
         var text = $"QproFaceTracking V{AppVersion}\nWindows build: {Environment.OSVersion.Version.Build}\n" +
             $"Face source: {_trackingSourceLive.Text}\n\n{_actionSeverity.Text}: {_actionTitle.Text}\n{_actionDetail.Text}\n{_actionNext.Text}\n\n" +
-            _compatibilityDiagnostic + "\n\nLIVE TRACKING HEALTH\n" + _trackingHealth.DiagnosticText() + "\n\nACTIVITY\n" + _log.Text;
+            _compatibilityDiagnostic + "\n\nLIVE TRACKING HEALTH\n" + _trackingHealth.DiagnosticText() +
+            "\n\nMODULE OUTPUT\n" + ModuleHeartbeatView().Summary + "\n" + ModuleHeartbeatView().Detail + "\n\nACTIVITY\n" + _log.Text;
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         if (!string.IsNullOrEmpty(home)) text = text.Replace(home, "%USERPROFILE%", StringComparison.OrdinalIgnoreCase);
         // The firmware report already excludes serials. Mask common serial log

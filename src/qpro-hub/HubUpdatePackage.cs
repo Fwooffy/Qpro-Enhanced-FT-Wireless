@@ -166,6 +166,11 @@ internal static class HubUpdatePackage
         foreach (string required in new[] { "setup-runtime.ps1", "runtime-python.ps1", "receiver.py", "tongue_model_preview.py",
                      "platform-tools/adb.exe", "vrcft-gaze-bridge/bin/Release/net10.0/Qpro.GazeBridge.dll" })
             if (!File.Exists(Within(runtime, required))) throw new InvalidDataException("The update runtime is missing " + required + ".");
+        // V3 uses these helpers for checked runtime recovery and inference limits.
+        // Older updater packages remain valid without files they never shipped.
+        if (expected.Major >= 3)
+            foreach (string required in new[] { "runtime-recovery.ps1", "tracking_budget.py" })
+                if (!File.Exists(Within(runtime, required))) throw new InvalidDataException("The update runtime is missing " + required + ".");
         if (!Directory.Exists(Path.Combine(runtime, "models")) ||
             !Directory.GetFiles(Path.Combine(runtime, "models"), "qpro-stereo-tongue-v*-gate.pt").Any(path =>
                 File.Exists(path.Replace("-gate.pt", "-direction.pt", StringComparison.Ordinal))))

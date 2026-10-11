@@ -14,6 +14,9 @@ internal sealed class LiveOverlayState(long timeoutMs)
     private bool _enabled;
     private bool _applied;
 
+    internal long PacketAge(long now) => _hasPacket && _enabled && now >= _receivedAt ? now - _receivedAt : -1;
+    internal bool CustomApplied(long now) => _applied && PacketAge(now) is var age && age >= 0 && age <= timeoutMs;
+
     internal void Receive(long now, bool enabled)
     {
         _receivedAt = now;

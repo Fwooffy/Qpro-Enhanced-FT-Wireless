@@ -72,6 +72,11 @@ internal static class Program
                     requestedViewport = new Size(width, height);
                     form.Size = requestedViewport.Value;
                 }
+                if (args.Any(value => value.Equals("--preview-offscreen", StringComparison.OrdinalIgnoreCase)))
+                {
+                    form.StartPosition = FormStartPosition.Manual;
+                    form.Location = new Point(-32_000, -32_000);
+                }
                 form.Show();
                 Application.DoEvents();
                 var pageArgument = Array.FindIndex(args, value => value.Equals("--preview-page", StringComparison.OrdinalIgnoreCase));
@@ -209,7 +214,7 @@ internal static class Program
             : [];
         var requiredFiles = new[]
         {
-            "build-and-run.ps1", "native-eye-local-branch-test.ps1", "prepare-eye-model.ps1", "prepare_eye_model.py", "research\\patch_seacliff_independent_axes.py", "native_raw_eye_probe.py", "install-vrcft-eye-bridge.ps1", "uninstall-vrcft-eye-bridge.ps1", "vrcft-module-installation.ps1", "runtime-python.ps1",
+            "build-and-run.ps1", "native-eye-local-branch-test.ps1", "prepare-eye-model.ps1", "prepare_eye_model.py", "research\\patch_seacliff_independent_axes.py", "native_raw_eye_probe.py", "install-vrcft-eye-bridge.ps1", "uninstall-vrcft-eye-bridge.ps1", "vrcft-module-installation.ps1", "runtime-python.ps1", "runtime-recovery.ps1", "tracking_budget.py",
             "platform-tools\\adb.exe", "platform-tools\\AdbWinApi.dll", "platform-tools\\AdbWinUsbApi.dll",
             "python-runtime\\python.3.12.10.nupkg", "python-runtime\\LICENSE.txt", "python-runtime\\README.txt",
             "SFX\\succeed.wav", "SFX\\trainingComplete.wav", "SFX\\warning.wav",

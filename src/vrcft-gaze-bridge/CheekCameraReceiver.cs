@@ -11,6 +11,9 @@ internal sealed class CheekCameraReceiver
     private readonly LiveOverlayState _overlay = new(500);
     private CheekPuffWeights _values;
 
+    internal long PacketAge(long now) => _overlay.PacketAge(now);
+    internal bool CustomApplied(long now) => _overlay.CustomApplied(now);
+
     internal bool Receive(ReadOnlySpan<byte> packet, long now)
     {
         if (packet.Length != PacketBytes || packet[0] != (byte)'Q' ||

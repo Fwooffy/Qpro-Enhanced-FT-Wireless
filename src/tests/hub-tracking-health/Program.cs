@@ -121,10 +121,13 @@ internal static class TrackingHealthTests
         var fixtureRoot = Path.Combine(Path.GetTempPath(), "qpro-health-fixture-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(fixtureRoot);
         using var form = new HubForm(fixtureRoot, rememberLaunch: false, previewOnly: true);
+        var offscreen = args.Contains("--offscreen");
+        if (offscreen) { form.Opacity = 0; form.ShowInTaskbar = false; }
         form.Show();
         form.ApplyPreviewScenario("magisk", "VirtualDesktop");
         var all = Descendants(form).ToArray();
         all.OfType<Button>().Single(button => Equals(button.Tag, "workflow-tab") && button.Text == "Live tracking").PerformClick();
+        ModuleUiTests(form);
         form.ApplyTrackingHealthPreview();
         Pump(250);
         var card = Field<TableLayoutPanel>(form, "_trackingHealthCard");
@@ -153,7 +156,7 @@ internal static class TrackingHealthTests
                     new Size(Math.Max(1, label.Width), int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix).Height - 3,
                     $"Health text clipped ({label.Size}; max={label.MaximumSize}; preferred={label.PreferredSize}; measured={TextRenderer.MeasureText(label.Text, label.Font, new Size(Math.Max(1, label.Width), int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix)}): " + label.Text);
             }
-            if (args.Length == 1)
+            if (args.Length == 1 && !offscreen)
             {
                 Directory.CreateDirectory(args[0]);
                 using var image = new Bitmap(form.Width, form.Height);
@@ -167,7 +170,7 @@ internal static class TrackingHealthTests
         Check(Field<Label>(form, "_healthStages").Text.Contains("prediction total")
             && Field<Label>(form, "_healthStages").Text.Contains("GPU wait/readback"), "Expanded timings implied isolated or summable GPU stages.");
         Check(!page.HorizontalScroll.Visible, "Expanded health timings introduced horizontal scrolling.");
-        if (args.Length == 1)
+        if (args.Length == 1 && !offscreen)
         {
             using var image = new Bitmap(form.Width, form.Height);
             form.DrawToBitmap(image, new Rectangle(Point.Empty, form.Size));
@@ -233,5 +236,41 @@ internal static class TrackingHealthTests
         Check(layouts == 0, "Unchanged or unrelated output churned health layout.");
         Console.WriteLine("PASS minimized rendering, restore/scroll/handle stability, stale footer, late-output rejection and idle layout");
         form.Close();
+    }
+
+    private static void ModuleUiTests(HubForm form)
+    {
+        var environment = Field<HubEnvironment>(form, "_environment");
+        environment.SetPreviewTrackingSource(true);
+        SetField(form, "_heartbeatSource", "SteamLink");
+        SetField(form, "_heartbeatHostRunning", true);
+        SetField(form, "_heartbeatModuleCurrent", true);
+        var observation = new HubModuleHeartbeatSnapshot("SteamLink", 123, 456, Guid.NewGuid().ToString("D"), 1,
+            Environment.TickCount64, "active", "fresh", 0, true, true, []);
+        SetField(form, "_moduleHeartbeat", new HubModuleHeartbeatObservation(observation, ""));
+        Call(form, "RefreshModuleHeartbeatDecoration");
+        var label = Field<Label>(form, "_healthModule");
+        Check(label.Text == "Module receiving: Steam Link" && label.AccessibleDescription!.Contains("local VRCFT slots"),
+            "Module UI did not distinguish local received output from avatar delivery.");
+        var prior = label.Text;
+        SetField(form, "_interactiveResize", true);
+        SetField(form, "_moduleHeartbeat", new HubModuleHeartbeatObservation(observation with { CapturedTickMs = Environment.TickCount64 - 3501 }, ""));
+        Call(form, "RefreshModuleHeartbeatDecoration");
+        Check(label.Text == prior, "Heartbeat decoration changed during interactive resize.");
+        Call(form, "OnResizeEnd", EventArgs.Empty);
+        Check(label.Text.Contains("heartbeat stale"), "ResizeEnd failed to flush stale module heartbeat decoration.");
+        environment.SetPreviewTrackingSource(false);
+        Call(form, "RefreshModuleHeartbeatDecoration");
+        Check(label.Text.Contains("source changed"), "Changed streaming source retained a received-output claim.");
+        SetField(form, "_heartbeatSource", "VirtualDesktop");
+        SetField(form, "_moduleHeartbeat", new HubModuleHeartbeatObservation(observation with
+            { Source = "VirtualDesktop", CapturedTickMs = Environment.TickCount64, NativeState = "untimed", NativeAgeMs = -1 }, ""));
+        Call(form, "RefreshModuleHeartbeatDecoration");
+        Check(label.Text.Contains("age unknown") && label.AccessibleDescription!.Contains("no producer timestamp"),
+            "Native VD UI implied fresh timestamped source input.");
+        SetField(form, "_heartbeatHostRunning", false);
+        Call(form, "RefreshModuleHeartbeatDecoration");
+        Check(label.Text.Contains("VRCFaceTracking closed"), "Closed VRCFT retained a cached received-output claim.");
+        Console.WriteLine("PASS native module health display, source changes, closed host, untimed VD and deferred resize expiry");
     }
 }

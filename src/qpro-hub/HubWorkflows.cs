@@ -422,13 +422,14 @@ internal sealed partial class HubForm
         SetSetupButtonsEnabled(true);
     }
 
-    private void SetSetupButtonsEnabled(bool enabled)
+    private void SetSetupButtonsEnabled(bool enabled, bool? runtimeReady = null, bool? bridgeUninstallAvailable = null)
     {
         enabled &= !_closingInProgress && !_starting && !_stopping && !_trackingCleanupPending && !_gazeRecoveryRunning &&
             !_setupActionRunning && !_utilityActionRunning && !_datasetOperationBusy && !LiveTrackingRunning;
         _setupRuntimeButton.Enabled = enabled;
+        UpdateRuntimeRecoveryButtons(enabled);
         UpdateModuleInstallButtonState(enabled);
-        _uninstallBridgeButton.Enabled = enabled && BridgeUninstallAvailable();
+        _uninstallBridgeButton.Enabled = enabled && (bridgeUninstallAvailable ?? BridgeUninstallAvailable());
         _setupGazeButton.Enabled = enabled;
         _recoverGazeButton.Enabled = enabled && !_gazeRecoveryRunning;
         _inspectGazeButton.Enabled = _recoverGazeButton.Enabled;
@@ -439,7 +440,7 @@ internal sealed partial class HubForm
         _disableWirelessButton.Enabled = enabled;
         _reconnectUsbButton.Enabled = enabled && !_compatibilityChecking;
         _forgetUsbButton.Enabled = _reconnectUsbButton.Enabled && _environment.UsbHeadsetRemembered;
-        _setupAmdButton.Enabled = enabled && AmdInstallEligible && BackendReady();
+        _setupAmdButton.Enabled = enabled && AmdInstallEligible && (runtimeReady ?? BackendReady());
     }
 
     private async Task TrainTongueAsync(TongueDatasetKind kind)
@@ -678,7 +679,7 @@ internal sealed partial class HubForm
                 _environment.TrackingSourceArgument, _tongue.Checked, _cameraCheekPuff.Checked,
                 SelectedModelHasCameraCheeks(), lowerFaceModel?.Primary, lowerFaceModel?.Secondary,
                 _fps.SelectedItem?.ToString() ?? "24", _smoothing.Value, VisibilityModeValue(),
-                _pupil.Checked, PupilSensitivityValue(), _cameraPreview.Checked, _stopFile));
+                _pupil.Checked, PupilSensitivityValue(), _cameraPreview.Checked, _stopFile, ProcessingProfileValue()));
             Task<HubTrackingExitFeedback?>? cameraExitResult = null;
             if (cameraPlan.Required)
             {
@@ -859,8 +860,7 @@ internal sealed partial class HubForm
                 recentOutput.Enqueue(line.Length <= 4096 ? line : line[..4096] + " …");
                 while (recentOutput.Count > 60) recentOutput.TryDequeue(out _);
                 controllerResult?.Observe(line);
-                AppendLog($"[{label}] {line}");
-                PostProcessUpdate(label, () =>
+                PostProcessOutput(label, $"[{label}] {line}", () =>
                 {
                     if (!_trackingProcesses.Contains(process)) return;
                     if (!process.HasExited) HandleInferenceStatusAtTime(label, line, receivedAt);
@@ -1108,7 +1108,7 @@ internal sealed partial class HubForm
         if (IsDisposed || Disposing || _stopping) return;
         if (InvokeRequired) { PostProcessUpdate(label, () => HandleInferenceStatusAtTime(label, line, receivedAt)); return; }
 
-        if (_trackingHealth.Observe(line, receivedAt)) RefreshTrackingHealth();
+        if (_trackingHealth.Observe(line, receivedAt)) RequestTrackingHealthRefresh();
     }
 
     private async Task<bool> RunUtilityAsync(string label, string script, params string[] args)
@@ -1172,11 +1172,10 @@ internal sealed partial class HubForm
                 Interlocked.Increment(ref outputLineCount);
                 recentOutput.Enqueue(line);
                 while (recentOutput.Count > 60) recentOutput.TryDequeue(out _);
-                AppendLog($"[{label}] {line}");
-                if (Volatile.Read(ref acceptingProgress) == 0) return;
+                if (Volatile.Read(ref acceptingProgress) == 0) { AppendLog($"[{label}] {line}"); return; }
                 controllerResult?.Observe(line);
                 setupResult?.Observe(line);
-                PostProcessUpdate(label, () =>
+                PostProcessOutput(label, $"[{label}] {line}", () =>
                 {
                     // Posted progress may arrive after the final result. It must
                     // not turn a completed or failed action back into "running".

@@ -116,7 +116,12 @@ try {
     $script:fixtureExit = 1
     $script:fixtureOutput = "ERROR: OSError [Errno 2] missing hipblaslt library`nHINT: This system does not have Windows Long Path support enabled."
     function Invoke-FixturePip {
-        param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+        param([switch]$I, [Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+        Assert-Equal $true $I.IsPresent 'Pip uses isolated Python mode'
+        Assert-Equal '-m' $Arguments[0] 'Pip module option'
+        Assert-Equal 'pip' $Arguments[1] 'Pip module'
+        Assert-Equal '--isolated' $Arguments[2] 'Pip ignores external configuration'
+        Assert-Equal '--no-user' $Arguments[-1] 'Pip cannot install into the user environment'
         Write-Output $script:fixtureOutput
         $global:LASTEXITCODE = $script:fixtureExit
     }
@@ -143,8 +148,9 @@ try {
     Invoke-QproRocmPip 'Invoke-FixturePip' @('install', 'fixture') 'AMD install failed.' $latest
     Assert-Equal 'Stop' $ErrorActionPreference 'Pip wrapper restores error handling'
     if (-not [string]::IsNullOrWhiteSpace($Python)) {
-        # Exercise the native PowerShell 5.1 stderr path, using a local fake pip
-        # module that exits immediately. It cannot install or download anything.
+        # Exercise native PowerShell 5.1 stderr handling with a private shim.
+        # Isolated Python intentionally ignores PYTHONPATH, so do not replace
+        # the real pip module through that environment variable.
         $pipFixture = Join-Path $fixtureRoot 'pipfixture'
         New-Item -ItemType Directory -Path $pipFixture | Out-Null
         @'
@@ -154,9 +160,11 @@ print('ERROR: OSError [Errno 2] missing hipblaslt library', file=sys.stderr, flu
 print('HINT: This system does not have Windows Long Path support enabled.', file=sys.stderr, flush=True)
 sys.exit(1)
 '@ | Set-Content -LiteralPath (Join-Path $pipFixture 'pip.py') -Encoding UTF8
-        $env:PYTHONPATH = $pipFixture
+        $shim = Join-Path $pipFixture 'native-pip-fixture.cmd'
+        $stub = Join-Path $pipFixture 'pip.py'
+        [IO.File]::WriteAllText($shim, "@echo off`r`n`"$Python`" -I `"$stub`" %*`r`nexit /b %errorlevel%`r`n")
         try {
-            Invoke-QproRocmPip $Python @('--qpro-long-path-fixture') 'AMD install failed.' $reportedEnv
+            Invoke-QproRocmPip $shim @('--qpro-long-path-fixture') 'AMD install failed.' $reportedEnv
             throw 'Native stderr long-path failure was incorrectly accepted.'
         } catch { Assert-Contains $_.Exception.Message 'path-length failure' 'Native stderr long-path classification' }
     }

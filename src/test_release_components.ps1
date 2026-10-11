@@ -4,7 +4,7 @@ $parent = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'artifacts\release-com
 $fixture = Join-Path $parent ([Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path (Join-Path $fixture 'python-runtime') | Out-Null
 try {
-    foreach ($relative in @('setup-runtime.ps1', 'runtime-python.ps1', 'requirements-runtime.txt',
+    foreach ($relative in @('setup-runtime.ps1', 'runtime-python.ps1', 'runtime-recovery.ps1', 'requirements-runtime.txt',
         'python-runtime\python.3.12.10.nupkg', 'Install-QproRocm.ps1', 'qpro_gpu.py')) {
         [IO.File]::WriteAllText((Join-Path $fixture $relative), 'fixture: ' + $relative)
     }

@@ -13,7 +13,8 @@ internal sealed record HubCameraTrackingSelection(
     bool PupilEnabled,
     string PupilSensitivity,
     bool ShowPreview,
-    string StopFile);
+    string StopFile,
+    string TrackingProfile = "responsive");
 
 internal sealed record HubCameraTrackingPlan(string[] Arguments, string OutputDescription)
 {
@@ -39,8 +40,11 @@ internal static class HubCameraTrackingLaunch
             throw new ArgumentException("The selected lower-face model needs both its visibility gate and direction checkpoint.");
         if (string.IsNullOrWhiteSpace(selection.StopFile))
             throw new ArgumentException("Camera tracking needs a local stop file.");
+        if (selection.TrackingProfile is not ("responsive" or "balanced" or "low-cpu"))
+            throw new ArgumentException("Choose Responsive, Balanced or Low CPU before starting camera tracking.");
 
-        var arguments = new List<string> { "-TrackingSource", selection.TrackingSource };
+        var arguments = new List<string> { "-TrackingSource", selection.TrackingSource,
+            "-TrackingProfile", selection.TrackingProfile };
         if (lowerFace)
         {
             arguments.AddRange(["-TonguePreview", "-MaxFps", selection.MaxFps,

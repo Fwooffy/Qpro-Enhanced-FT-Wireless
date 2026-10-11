@@ -111,6 +111,11 @@ public sealed class TrackingModule : ExtTrackingModule
     private readonly Func<long> _tickClock;
     private readonly string _mapName;
     private bool _wasActive;
+    private bool _heartbeatEnabled;
+    private ModuleHeartbeatPublisher? _heartbeat;
+    private long _nextHeartbeatTick;
+    private string _heartbeatNativeState = "unavailable";
+    private long _heartbeatNativeAge = -1;
     private readonly LiveOverlayState _leftGazeOverlay = new(GazeTimeoutMs);
     private readonly LiveOverlayState _rightGazeOverlay = new(GazeTimeoutMs);
     private readonly LiveOverlayState _tongueOverlay = new(TongueTimeoutMs);
@@ -129,7 +134,7 @@ public sealed class TrackingModule : ExtTrackingModule
     // source and overlays fresh Qpro gaze, tongue, and pupil packets.
     public override (bool SupportsEye, bool SupportsExpression) Supported => (true, true);
 
-    public TrackingModule() : this(() => Environment.TickCount64) { }
+    public TrackingModule() : this(() => Environment.TickCount64) { _heartbeatEnabled = true; }
 
     internal TrackingModule(Func<long> tickClock, string mapName = MapName)
     {
@@ -146,6 +151,15 @@ public sealed class TrackingModule : ExtTrackingModule
         ResetOverlayState();
         _wasActive = false;
         _useSteamLink = ReadSteamLinkSelection();
+        if (_heartbeatEnabled)
+        {
+            try { _heartbeat = ModuleHeartbeatPublisher.Create(_useSteamLink); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+            { Logger.LogWarning(error, "Local module heartbeat is unavailable; tracking will continue."); }
+        }
+        _heartbeatNativeState = "unavailable";
+        _heartbeatNativeAge = -1;
+        PublishHeartbeat("initializing", force: true);
         _cheekPuffTracker.Reset();
         _cheekSessionActive = false;
         _nextCheekSessionCheckTick = 0;
@@ -175,6 +189,7 @@ public sealed class TrackingModule : ExtTrackingModule
                 _steamSource = null;
                 _steamLabelSocket?.Dispose();
                 _steamLabelSocket = null;
+                PublishHeartbeat("failed", force: true);
                 return (false, false);
             }
         }
@@ -243,6 +258,7 @@ public sealed class TrackingModule : ExtTrackingModule
         {
             DiscardInactivePackets();
             _wasActive = false;
+            PublishHeartbeat("inactive");
             Thread.Sleep(10);
             return;
         }
@@ -254,6 +270,7 @@ public sealed class TrackingModule : ExtTrackingModule
             if (!_wasActive)
             {
                 Thread.Sleep(5);
+                PublishHeartbeat("inactive");
                 return;
             }
         }
@@ -265,12 +282,16 @@ public sealed class TrackingModule : ExtTrackingModule
         if (_useSteamLink)
         {
             UpdateSteamLink();
+            PublishHeartbeat("active");
             Thread.Sleep(5);
             return;
         }
         if (!TryReadState())
         {
             UpdateUnavailableSource();
+            _heartbeatNativeState = "unavailable";
+            _heartbeatNativeAge = -1;
+            PublishHeartbeat("active");
             Thread.Sleep(10);
             return;
         }
@@ -281,6 +302,10 @@ public sealed class TrackingModule : ExtTrackingModule
 
         byte faceFlags = _second[0];
         bool lowerFaceAvailable = (faceFlags & 1) != 0;
+        // This MMF supplies availability bits but no producer timestamp.
+        _heartbeatNativeState = ((_needsExpression && lowerFaceAvailable) ||
+            (_needsEye && (_second[292] != 0 || _second[293] != 0))) ? "untimed" : "unavailable";
+        _heartbeatNativeAge = -1;
         if (lowerFaceAvailable)
             PublishCheekCalibrationSample(expressions, NativeFaceSource.VirtualDesktop, _tickClock());
 
@@ -299,11 +324,13 @@ public sealed class TrackingModule : ExtTrackingModule
                 UpdateCheekSuckOutput(default, nativeAvailable: false);
             }
         }
+        PublishHeartbeat("active");
         Thread.Sleep(5);
     }
 
     public override void Teardown()
     {
+        PublishHeartbeat("closed", force: true);
         ResetOverlayState();
         _wasActive = false;
         _smirkTracker.Reset();
@@ -343,6 +370,25 @@ public sealed class TrackingModule : ExtTrackingModule
             _map?.Dispose();
             _map = null;
         }
+    }
+
+    private void PublishHeartbeat(string state, bool force = false)
+    {
+        if (_heartbeat is null) return;
+        long now = _tickClock();
+        if (!force && now < _nextHeartbeatTick) return;
+        _nextHeartbeatTick = now + 1000;
+        HeartbeatChannel Channel(string name, LiveOverlayState overlay, long timeout, bool owns)
+            => new(name, overlay.PacketAge(now), timeout, owns && state == "active" && overlay.CustomApplied(now));
+        _heartbeat.Publish(now, state, state == "active" ? _heartbeatNativeState : "unavailable",
+            state == "active" ? _heartbeatNativeAge : -1, _needsEye, _needsExpression,
+            [Channel("gaze-left", _leftGazeOverlay, GazeTimeoutMs, _needsEye),
+             Channel("gaze-right", _rightGazeOverlay, GazeTimeoutMs, _needsEye),
+             Channel("tongue", _tongueOverlay, TongueTimeoutMs, _needsExpression),
+             Channel("pupil-left", _leftPupilOverlay, PupilTimeoutMs, _needsEye),
+             Channel("pupil-right", _rightPupilOverlay, PupilTimeoutMs, _needsEye),
+             new("camera-cheeks", _cheekCamera.PacketAge(now), 500,
+                 _needsExpression && state == "active" && _cheekCamera.CustomApplied(now))]);
     }
 
     private bool TryReadState()
@@ -389,6 +435,14 @@ public sealed class TrackingModule : ExtTrackingModule
         ReadOnlySpan<float> expressions = _steamSource.Expressions;
         bool upperFaceAvailable = faceFresh && _steamSource.HasAvailableUpperFace(now, SteamFaceTimeoutMs);
         bool lowerFaceAvailable = faceFresh && _steamSource.HasAvailableLowerFace(now, SteamFaceTimeoutMs);
+        var nativeFace = (_needsEye && upperFaceAvailable) || (_needsExpression && lowerFaceAvailable);
+        var nativeGaze = _needsEye && _steamSource.HasFreshGaze(now, SteamFaceTimeoutMs) &&
+            _steamSource.TryGetGaze(now, out _, out _, out _, out _);
+        var lastNative = Math.Max((_needsEye || _needsExpression) ? _steamSource.LastFaceTick : 0,
+            _needsEye ? _steamSource.LastGazeTick : 0);
+        _heartbeatNativeAge = lastNative > 0 && now >= lastNative ? now - lastNative : -1;
+        _heartbeatNativeState = nativeFace || nativeGaze ? "fresh"
+            : _heartbeatNativeAge > SteamFaceTimeoutMs ? "stale" : "unavailable";
         if (faceFresh)
             ReportSteamFaceAvailability(now, expressions, upperFaceAvailable, lowerFaceAvailable);
         Span<float> neutral = stackalloc float[ExpressionCount];

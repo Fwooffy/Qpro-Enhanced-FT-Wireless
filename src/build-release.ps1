@@ -138,6 +138,7 @@ $runtimeFiles = @(
     "uninstall-vrcft-eye-bridge.ps1",
     "vrcft-module-installation.ps1",
     "setup-runtime.ps1",
+    "runtime-recovery.ps1",
     "runtime-python.ps1",
     "prepare-eye-model.ps1",
     "prepare_eye_model.py",

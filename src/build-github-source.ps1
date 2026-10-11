@@ -79,6 +79,7 @@ $sourceFiles = @(
     "uninstall-vrcft-eye-bridge.ps1",
     "vrcft-module-installation.ps1",
     "setup-runtime.ps1",
+    "runtime-recovery.ps1",
     "runtime-python.ps1",
     "test_runtime_python_discovery.ps1",
     "test_vrcft_module_installation.ps1",

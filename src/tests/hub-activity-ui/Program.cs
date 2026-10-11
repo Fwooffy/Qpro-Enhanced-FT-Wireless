@@ -4,9 +4,9 @@ using System.Runtime.InteropServices;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
-        try { Run(); }
+        try { Run(args.Contains("--offscreen")); }
         catch (Exception error)
         {
             Console.Error.WriteLine("FAIL: " + error);
@@ -14,7 +14,7 @@ internal static class Program
         }
     }
 
-    private static void Run()
+    private static void Run(bool offscreen)
     {
         ApplicationConfiguration.Initialize();
         var type = Assembly.Load("QproFaceTracking.Hub").GetType("QproFaceTracking.Hub.HubForm")!;
@@ -22,6 +22,12 @@ internal static class Program
         // and update recovery. No real runtime or clipboard is used by this test.
         var root = Path.Combine(Path.GetTempPath(), "qpro-activity-ui-" + Guid.NewGuid().ToString("N"));
         using var form = (Form)Activator.CreateInstance(type, root, false, true)!;
+        if (offscreen)
+        {
+            form.ShowInTaskbar = false;
+            form.StartPosition = FormStartPosition.Manual;
+            form.Location = new Point(-32000, -32000);
+        }
         var flags = BindingFlags.NonPublic | BindingFlags.Instance;
         var log = (RichTextBox)type.GetField("_log", flags)!.GetValue(form)!;
         var reset = type.GetMethod("ResetActivityLog", flags)!;
@@ -145,6 +151,94 @@ internal static class Program
         Check(!log.Text.Contains("First ", StringComparison.Ordinal), "History did not discard its oldest lines.");
         CheckColor("selected survivor", "Good");
         CheckColor("[ERROR] ERROR: newest diagnostic", "Bad");
+
+        // Exercise the actual background pipe dispatch, rather than only the
+        // synchronous UI helper used by the scroll fixtures above.
+        reset.Invoke(form, null);
+        Add(string.Join('\n', Enumerable.Range(0, 150).Select(index => $"Queued reader line {index:D3}")));
+        log.Select(log.Text.IndexOf("Queued reader line 010", StringComparison.Ordinal), 12);
+        log.ScrollToCaret();
+        ScrollLines(log, 15);
+        var queueSelection = log.SelectedText;
+        var queueFirstLine = FirstVisibleLine(log);
+        var queueScrollPixels = ReadScroll(log).Position;
+        var postOutput = type.GetMethod("PostProcessOutput", flags)!;
+        var setFeedback = type.GetMethod("SetActionFeedback", flags)!;
+        var feedbackTitle = (Label)type.GetField("_actionTitle", flags)!.GetValue(form)!;
+        var feedbackLayouts = 0;
+        void OnFeedbackLayout(object? sender, LayoutEventArgs e) => feedbackLayouts++;
+        feedbackTitle.Parent!.Layout += OnFeedbackLayout;
+        var updateOutput = type.GetField("_componentUpdateOutput", flags)!;
+        var arrivalTimes = new List<(string Before, string After)>();
+        var applied = new List<int>();
+        var textChanges = 0;
+        void OnTextChanged(object? sender, EventArgs e) => textChanges++;
+        log.TextChanged += OnTextChanged;
+        updateOutput.SetValue(form, (Action<string>)(text =>
+        {
+            if (text.Contains("Queued output 043", StringComparison.Ordinal)) throw new InvalidOperationException("expected helper failure");
+        }));
+        try
+        {
+            Task.Run(() =>
+            {
+                for (var index = 0; index < 97; index++)
+                {
+                    var entry = index;
+                    var before = DateTime.Now.ToString("HH:mm:ss");
+                    postOutput.Invoke(form, ["Batch", $"[Batch] Queued output {entry:D3}", (Action)(() =>
+                    {
+                        applied.Add(entry);
+                        setFeedback.Invoke(form, [$"Queued progress {entry:D3}", "The queued process is running.", "Wait for completion.", false, null]);
+                        if (entry == 42) throw new InvalidOperationException("expected UI failure");
+                    })]);
+                    arrivalTimes.Add((before, DateTime.Now.ToString("HH:mm:ss")));
+                }
+            }).GetAwaiter().GetResult();
+            Check(applied.Count == 0 && !log.Text.Contains("Queued output 000", StringComparison.Ordinal),
+                "A background process update ran before the UI pump.");
+            // Delay display into a later clock second. The timestamps must
+            // describe arrival, while the UI completion remains last in order.
+            while (DateTime.Now.ToString("HH:mm:ss") == arrivalTimes[^1].After) Thread.Sleep(20);
+            Add("[Batch] Completed after all queued output.");
+            var appliedAtInputTick = -1;
+            using var inputTimer = new System.Windows.Forms.Timer { Interval = 1 };
+            inputTimer.Tick += (_, _) => { appliedAtInputTick = applied.Count; inputTimer.Stop(); };
+            inputTimer.Start();
+            var timeout = System.Diagnostics.Stopwatch.StartNew();
+            while (!log.Text.Contains("Completed after all queued output", StringComparison.Ordinal) && timeout.ElapsedMilliseconds < 5000)
+            {
+                Application.DoEvents();
+                Thread.Sleep(5);
+            }
+            Check(applied.SequenceEqual(Enumerable.Range(0, 97)), "Batched UI actions were lost, duplicated or reordered.");
+            Check(appliedAtInputTick >= 0 && appliedAtInputTick < 97,
+                "The bounded output drain starved a native UI timer until all queued output completed.");
+            var lines = log.Lines.Where(line => line.Contains("[Batch] Queued output ", StringComparison.Ordinal)).ToArray();
+            Check(lines.Length == 97, "Batched Activity dropped process output.");
+            for (var index = 0; index < lines.Length; index++)
+            {
+                Check(lines[index].EndsWith($"Queued output {index:D3}", StringComparison.Ordinal), "Batched Activity changed output order or wording.");
+                Check(lines[index].StartsWith(arrivalTimes[index].Before, StringComparison.Ordinal) ||
+                    lines[index].StartsWith(arrivalTimes[index].After, StringComparison.Ordinal), "A queued log timestamp changed from arrival to display time.");
+            }
+            Check(log.Text.IndexOf("Completed after all queued output", StringComparison.Ordinal) >
+                log.Text.IndexOf("Queued output 096", StringComparison.Ordinal), "A completion log overtook queued pipe output.");
+            Check(log.Text.Contains("expected UI failure", StringComparison.Ordinal) &&
+                log.Text.Contains("Component update progress could not refresh", StringComparison.Ordinal), "A failed UI helper hid its diagnostic or stopped the remaining batch.");
+            Check(log.SelectedText == queueSelection && FirstVisibleLine(log) == queueFirstLine &&
+                ReadScroll(log).Position == queueScrollPixels, "Batched background output moved the reader's selection or viewport.");
+            Check(textChanges < 49, $"Output still edited RichEdit per message ({textChanges} edits for 97 messages).");
+            Check(feedbackTitle.Text == "Queued progress 096" && feedbackLayouts < 97,
+                $"Batched progress lost its final status or still reflowed per message ({feedbackLayouts} layouts).");
+            Console.WriteLine($"PASS: background batching preserves 97 ordered messages, arrival times, failures and reader state ({textChanges} RichEdit edits; {feedbackLayouts} progress layouts).");
+        }
+        finally
+        {
+            updateOutput.SetValue(form, null);
+            log.TextChanged -= OnTextChanged;
+            feedbackTitle.Parent!.Layout -= OnFeedbackLayout;
+        }
         form.Close();
         Check(!Directory.Exists(root), "Preview wrote to its isolated source folder.");
         Console.WriteLine("PASS: RichTextBox severity colors, original diagnostics, bounded history and surviving selection.");

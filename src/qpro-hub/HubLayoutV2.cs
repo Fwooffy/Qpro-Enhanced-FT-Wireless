@@ -6,6 +6,27 @@ namespace QproFaceTracking.Hub;
 internal sealed partial class HubForm
 {
     private Action? _flushResponsiveLayout;
+    private int _readinessUpdateDepth;
+    private Action<bool>? _readinessBatchState;
+
+    private IDisposable BeginReadinessUpdate()
+    {
+        if (_readinessUpdateDepth++ == 0) _readinessBatchState?.Invoke(true);
+        return new ReadinessUpdateScope(this);
+    }
+
+    private sealed class ReadinessUpdateScope(HubForm form) : IDisposable
+    {
+        private HubForm? _form = form;
+        public void Dispose()
+        {
+            var owner = _form;
+            if (owner is null) return;
+            _form = null;
+            if (--owner._readinessUpdateDepth == 0 && !owner.IsDisposed && !owner.Disposing)
+                owner._readinessBatchState?.Invoke(false);
+        }
+    }
 
     internal void FlushPreviewLayout()
     {
@@ -224,9 +245,14 @@ internal sealed partial class HubForm
             readinessItems.Add(item);
         }
         bool fittingReadiness = false;
+        bool readinessDirty = true;
         void FitLiveReadiness()
         {
-            if (fittingReadiness) return;
+            // Hidden pages accumulate changes until shown. The visible page
+            // still fits synchronously during a completed native size change.
+            if (fittingReadiness || _readinessUpdateDepth > 0 || !livePage.Visible ||
+                WindowState == FormWindowState.Minimized) return;
+            readinessDirty = false;
             fittingReadiness = true;
             statuses.SuspendLayout();
             try
@@ -295,8 +321,27 @@ internal sealed partial class HubForm
                 finally { fittingReadiness = false; }
             }
         }
-        statuses.SizeChanged += (_, _) => FitLiveReadiness();
-        foreach (var (_, label) in statusItems) label.TextChanged += (_, _) => FitLiveReadiness();
+        void RequestReadinessFit()
+        {
+            if (fittingReadiness) return;
+            readinessDirty = true;
+            FitLiveReadiness();
+        }
+        _readinessBatchState = suspended =>
+        {
+            if (suspended)
+            {
+                statuses.SuspendLayout();
+                foreach (var item in readinessItems) item.SuspendLayout();
+                return;
+            }
+            foreach (var item in readinessItems) item.ResumeLayout(false);
+            statuses.ResumeLayout(false);
+            if (readinessDirty) FitLiveReadiness();
+        };
+        statuses.SizeChanged += (_, _) => RequestReadinessFit();
+        foreach (var (_, label) in statusItems) label.TextChanged += (_, _) => RequestReadinessFit();
+        livePage.VisibleChanged += (_, _) => { if (livePage.Visible) RequestReadinessFit(); };
         Span(liveSource, statuses, 2);
         var connectionDetails = new BufferedTableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1, Margin = Padding.Empty };
@@ -318,8 +363,10 @@ internal sealed partial class HubForm
         sessionCameraSettings.Padding = new Padding(12);
         sessionCameraSettings.Margin = new Padding(0, 4, 0, 8);
         LiveField(sessionCameraSettings, 0, "Camera FPS cap", _fps);
-        Span(sessionCameraSettings, _cameraPreview, 1);
-        Span(sessionCameraSettings, Info("Camera preview is off by default. Shared by tongue, camera cheeks and pupils. A higher FPS cap uses more PC resources. Hiding the preview keeps tracking active. These options apply the next time tracking starts."), 2);
+        LiveField(sessionCameraSettings, 1, "Processing profile", _processingProfile);
+        Span(sessionCameraSettings, _processingProfileNote, 2);
+        Span(sessionCameraSettings, _cameraPreview, 3);
+        Span(sessionCameraSettings, Info("Camera preview is off by default. Shared by tongue, camera cheeks and pupils. A higher FPS cap uses more PC resources. Processing profiles only limit pupil work; model weights, image resolution and tongue cadence stay the same. Hiding the preview keeps tracking active. These options apply the next time tracking starts."), 4);
         connectionDetails.Controls.Add(sessionCameraSettings);
         _trackingSourceLiveNote.Margin = new Padding(0, 2, 0, 8);
         connectionDetails.Controls.Add(_trackingSourceLiveNote);
@@ -551,7 +598,9 @@ internal sealed partial class HubForm
         var setupCards = new BufferedTableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
         setupCards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (var row = 0; row < 2; row++) setupCards.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        setupCards.Controls.Add(SetupStepCard("2", "Install the PC runtime", "Installs Qpro's private Python and tracking libraries. Keep the Hub open until the downloads finish.", _setupRuntimeStatus, _setupRuntimeButton), 0, 0);
+        var runtimeCard = (TableLayoutPanel)SetupStepCard("2", "Install the PC runtime", "Installs Qpro's private Python and tracking libraries. Keep the Hub open until the downloads finish.", _setupRuntimeStatus, _setupRuntimeButton);
+        Details(runtimeCard, BuildRuntimeRecoveryControls(), "runtime repair and recovery", 5);
+        setupCards.Controls.Add(runtimeCard, 0, 0);
         var moduleCard = (TableLayoutPanel)SetupStepCard("3", "Install your VRCFaceTracking module", "Choose the app you stream with. Close VRCFaceTracking, install its matching module below, then reopen it. This replaces the other Qpro source module.",
             _setupBridgeStatus, _setupBridgeButton, _setupSteamLinkModuleButton);
         var moduleDescription = moduleCard.GetControlFromPosition(0, 3)!;

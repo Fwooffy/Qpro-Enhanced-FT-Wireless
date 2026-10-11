@@ -78,6 +78,7 @@ function New-Scenario([string]$Name, [string]$Backend = 'cpu', [string]$ReceiptR
     $venv = Join-Path $shared '.venv'
     New-Item -ItemType Directory -Path $source, (Join-Path $venv 'Scripts'), (Join-Path $case 'bin'), (Join-Path $case 'foreign-python') -Force | Out-Null
     [IO.File]::WriteAllText((Join-Path $source 'setup-runtime.ps1'), $setupSource)
+    [IO.File]::Copy((Join-Path $PSScriptRoot 'runtime-recovery.ps1'), (Join-Path $source 'runtime-recovery.ps1'))
     [IO.File]::WriteAllText((Join-Path $source 'requirements-runtime.txt'), 'synthetic-dependency==1.0')
     [IO.File]::WriteAllText((Join-Path $source 'runtime-python.ps1'), 'function Test-QproPython312([string]$Python) { return (Test-Path -LiteralPath $Python -PathType Leaf) }')
     [IO.File]::WriteAllText((Join-Path $source 'release-manifest.json'), ('{"componentUpdates":{"schema":1,"runtimeRecipe":"' + $recipe + '"}}'))
@@ -91,7 +92,7 @@ function New-Scenario([string]$Name, [string]$Backend = 'cpu', [string]$ReceiptR
     return [pscustomobject]@{ Root = $case; Source = $source; Local = $local; Shared = $shared; Venv = $venv; OriginalReceipt = $record }
 }
 
-function Run-Scenario($Scenario, [switch]$Update, [switch]$Custom, [switch]$Polluted, [switch]$ObserveRestoration) {
+function Run-Scenario($Scenario, [switch]$Update, [switch]$Repair, [switch]$Custom, [switch]$Polluted, [switch]$ObserveRestoration) {
     $env:LOCALAPPDATA = $Scenario.Local
     $env:PATH = (Join-Path $Scenario.Root 'bin') + ';' + $savedEnvironment.PATH
     $env:QPRO_RUNTIME_TEST_FIXTURE = $Scenario.Root
@@ -120,6 +121,7 @@ exit $code
         $arguments = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $runner, '-SetupPath', (Join-Path $Scenario.Source 'setup-runtime.ps1'))
     }
     if ($Update) { $arguments += '-Update' }
+    if ($Repair) { $arguments += '-Repair' }
     $previous = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
@@ -170,6 +172,16 @@ try {
     $result = Run-Scenario $case -Update
     Assert-Equal 0 $result.ExitCode 'Explicit update bypasses healthy recipe'
     Assert-True ($result.Calls.Contains('-m pip')) 'Explicit update installs requirements'
+
+    $case = New-Scenario 'repair-current-runtime' 'cpu' $recipe
+    $interrupted = Join-Path $case.Shared ('runtime-restore-' + [Guid]::NewGuid().ToString('N') + '.json')
+    [IO.File]::WriteAllText($interrupted, '{"format":"qpro-runtime-restore-v1","phase":"previous-saved"}')
+    $result = Run-Scenario $case -Repair -Custom
+    Assert-Equal 0 $result.ExitCode 'Repair succeeds for the current healthy recipe'
+    Assert-True ($result.Calls -match '--upgrade --force-reinstall -r') 'Repair reinstalls runtime libraries'
+    Assert-True ($result.Calls -match '--upgrade --force-reinstall torch>=2.7,<3') 'Repair reinstalls PyTorch'
+    Assert-Equal $false ($result.Calls.Contains('foreign-python')) 'Repair never mutates explicit external Python'
+    Assert-Equal 'recovered' (([IO.File]::ReadAllText($interrupted) | ConvertFrom-Json).phase) 'Checked repair resolves interrupted recovery records'
 
     $case = New-Scenario 'cuda-preserved-without-driver-detection' 'cuda'
     $result = Run-Scenario $case -Update

@@ -8,15 +8,23 @@ internal sealed class HubSetupResult
 {
     private readonly object _sync = new();
     private readonly string _action;
+    private readonly string? _expectedBackup;
     private int _completed;
     private string? _failure;
 
-    private HubSetupResult(string action) => _action = action;
+    private HubSetupResult(string action, string? expectedBackup = null) { _action = action; _expectedBackup = expectedBackup; }
 
     internal static HubSetupResult? Create(string script, string[] args)
     {
         if (script.Equals("uninstall-vrcft-eye-bridge.ps1", StringComparison.OrdinalIgnoreCase))
             return new("module-uninstall");
+        if (script.Equals("runtime-recovery.ps1", StringComparison.OrdinalIgnoreCase))
+        {
+            var recoveryIndex = Array.FindIndex(args, arg => arg.Equals("-Action", StringComparison.OrdinalIgnoreCase));
+            if (recoveryIndex < 0 || recoveryIndex + 1 >= args.Length || !args[recoveryIndex + 1].Equals("Restore", StringComparison.OrdinalIgnoreCase)) return null;
+            var backupIndex = Array.FindIndex(args, arg => arg.Equals("-BackupName", StringComparison.OrdinalIgnoreCase));
+            return new("runtime-restore", backupIndex >= 0 && backupIndex + 1 < args.Length ? args[backupIndex + 1] : null);
+        }
         if (!script.Equals("controller-input.ps1", StringComparison.OrdinalIgnoreCase)) return null;
         var index = Array.FindIndex(args, arg => arg.Equals("-Action", StringComparison.OrdinalIgnoreCase));
         var action = index < 0 ? "install" : index + 1 < args.Length ? args[index + 1].ToLowerInvariant() : "";
@@ -25,7 +33,7 @@ internal sealed class HubSetupResult
 
     internal void Observe(string line)
     {
-        var prefix = _action == "module-uninstall" ? "QPRO_MODULE_UNINSTALL " : "CONTROLLER_SETUP ";
+        var prefix = _action == "module-uninstall" ? "QPRO_MODULE_UNINSTALL " : _action == "runtime-restore" ? "QPRO_RUNTIME_RECOVERY " : "CONTROLLER_SETUP ";
         if (!line.StartsWith(prefix, StringComparison.Ordinal)) return;
         lock (_sync)
         {
@@ -38,7 +46,16 @@ internal sealed class HubSetupResult
                 var names = new HashSet<string>(StringComparer.Ordinal);
                 if (result.EnumerateObject().Any(property => !names.Add(property.Name)) || names.Count > 16)
                     throw new FormatException();
-                if (_action == "module-uninstall")
+                if (_action == "runtime-restore")
+                {
+                    _completed++;
+                    if (result.GetProperty("format").GetString() != "qpro-runtime-recovery-result-v1" ||
+                        result.GetProperty("verified").ValueKind != JsonValueKind.True ||
+                        result.GetProperty("restored").GetString() is not { } backup ||
+                        !System.Text.RegularExpressions.Regex.IsMatch(backup, "^runtime-backup-[0-9a-f]{32}$") ||
+                        backup != _expectedBackup) throw new FormatException();
+                }
+                else if (_action == "module-uninstall")
                 {
                     _completed++;
                     if (result.GetProperty("removed").GetInt32() < 0 || result.GetProperty("restored").GetInt32() < 0 ||
