@@ -107,6 +107,15 @@ internal sealed partial class HubForm
         main.Controls.Add(pages, 0, 1);
         shell.Controls.Add(main, 1, 0);
 
+        int PageColumnWidth(Panel page)
+        {
+            var scale = DeviceDpi / 96F;
+            int Px(int logical) => Math.Max(1, (int)Math.Ceiling(logical * scale));
+            // Reserve the scrollbar once, whether or not it is currently visible.
+            // Wrapping must not change merely because the viewport gains a bar.
+            return Math.Min(Px(1160), Math.Max(1,
+                page.Width - Px(44) - SystemInformation.VerticalScrollBarWidth));
+        }
         void FitPageWidth(Panel page)
         {
             if (WindowState == FormWindowState.Minimized) return;
@@ -114,10 +123,10 @@ internal sealed partial class HubForm
             // free to shrink without creating a horizontal scrollbar.
             var scale = DeviceDpi / 96F;
             int Px(int logical) => Math.Max(1, (int)Math.Ceiling(logical * scale));
-            var columnWidth = Math.Min(Px(1160), Math.Max(1,
-                page.Width - Px(44) - SystemInformation.VerticalScrollBarWidth));
+            var columnWidth = PageColumnWidth(page);
             var extra = Math.Max(0, page.ClientSize.Width - Px(44) - columnWidth);
-            page.Padding = new Padding(Px(22), Px(8), Px(22) + extra, Px(20));
+            var padding = new Padding(Px(22), Px(8), Px(22) + extra, Px(20));
+            if (page.Padding != padding) page.Padding = padding;
         }
         Panel NewPage()
         {
@@ -219,6 +228,7 @@ internal sealed partial class HubForm
         {
             if (fittingReadiness) return;
             fittingReadiness = true;
+            statuses.SuspendLayout();
             try
             {
                 var scale = DeviceDpi / 96F;
@@ -239,23 +249,18 @@ internal sealed partial class HubForm
                 var rows = (int)Math.Ceiling(statusItems.Length / (double)columns);
                 if (statuses.ColumnCount != columns)
                 {
-                    statuses.SuspendLayout();
-                    try
-                    {
-                        // Change the shared grid once at each width breakpoint.
-                        // Each status then stays aligned with the row beside it.
-                        statuses.ColumnCount = columns;
-                        statuses.RowCount = rows;
-                        statuses.ColumnStyles.Clear();
-                        statuses.RowStyles.Clear();
-                        for (var column = 0; column < columns; column++)
-                            statuses.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F / columns));
-                        for (var row = 0; row < rows; row++)
-                            statuses.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-                        for (var index = 0; index < readinessItems.Count; index++)
-                            statuses.SetCellPosition(readinessItems[index], new TableLayoutPanelCellPosition(index % columns, index / columns));
-                    }
-                    finally { statuses.ResumeLayout(true); }
+                    // Change the shared grid once at each width breakpoint.
+                    // Each status then stays aligned with the row beside it.
+                    statuses.ColumnCount = columns;
+                    statuses.RowCount = rows;
+                    statuses.ColumnStyles.Clear();
+                    statuses.RowStyles.Clear();
+                    for (var column = 0; column < columns; column++)
+                        statuses.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F / columns));
+                    for (var row = 0; row < rows; row++)
+                        statuses.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                    for (var index = 0; index < readinessItems.Count; index++)
+                        statuses.SetCellPosition(readinessItems[index], new TableLayoutPanelCellPosition(index % columns, index / columns));
                 }
                 var rowHeights = new int[rows];
                 for (var index = 0; index < statusItems.Length; index++)
@@ -264,18 +269,31 @@ internal sealed partial class HubForm
                     var name = (Label)item.Controls[0];
                     var value = statusItems[index].Item2;
                     var width = Math.Max(100, statuses.ClientSize.Width / columns - item.Margin.Horizontal);
-                    name.MaximumSize = value.MaximumSize = new Size(width, 0);
-                    var nameSize = name.PreferredSize;
-                    var valueSize = value.PreferredSize;
-                    item.Height = nameSize.Width + name.Margin.Horizontal + valueSize.Width <= width
-                        ? Math.Max(nameSize.Height, valueSize.Height) : nameSize.Height + valueSize.Height;
+                    item.SuspendLayout();
+                    try
+                    {
+                        var maximum = new Size(width, 0);
+                        if (name.MaximumSize != maximum) name.MaximumSize = maximum;
+                        if (value.MaximumSize != maximum) value.MaximumSize = maximum;
+                        var nameSize = name.PreferredSize;
+                        var valueSize = value.PreferredSize;
+                        var height = nameSize.Width + name.Margin.Horizontal + valueSize.Width <= width
+                            ? Math.Max(nameSize.Height, valueSize.Height) : nameSize.Height + valueSize.Height;
+                        if (item.Height != height) item.Height = height;
+                    }
+                    finally { item.ResumeLayout(true); }
                     rowHeights[index / columns] = Math.Max(rowHeights[index / columns], item.Height + item.Margin.Vertical);
                 }
                 // Fix the total to the measured rows. Otherwise WinForms can
                 // stretch the last flow row into blank space while autosizing.
-                statuses.Height = rowHeights.Sum();
+                var totalHeight = rowHeights.Sum();
+                if (statuses.Height != totalHeight) statuses.Height = totalHeight;
             }
-            finally { fittingReadiness = false; }
+            finally
+            {
+                try { statuses.ResumeLayout(true); }
+                finally { fittingReadiness = false; }
+            }
         }
         statuses.SizeChanged += (_, _) => FitLiveReadiness();
         foreach (var (_, label) in statusItems) label.TextChanged += (_, _) => FitLiveReadiness();
@@ -313,6 +331,7 @@ internal sealed partial class HubForm
         Span(liveSource, Info("Cheek adjustments apply while Qpro tracking runs. Stop tracking or close the Hub to restore native cheek values. Eyebrow adjustments apply immediately; turn them off for native eyebrows."), 3);
         Details(liveSource, connectionDetails, "connection and camera settings", 4);
         liveLayout.Controls.Add(liveSource);
+        liveLayout.Controls.Add(BuildTrackingHealthCard());
 
         var eyesCard = LiveFields();
         Span(eyesCard, SectionTitle("Eyes", HubIcon.Eyes), 0);
@@ -801,7 +820,7 @@ internal sealed partial class HubForm
         var textLayoutTimer = new System.Windows.Forms.Timer(_uiComponents) { Interval = 50 };
         void FitPageText(Panel page)
         {
-            if (!page.Visible || WindowState == FormWindowState.Minimized) return;
+            if (!page.Visible || WindowState == FormWindowState.Minimized || _interactiveResize) return;
             if (!fittingTextPages.Add(page)) return;
             try
             {
@@ -812,9 +831,9 @@ internal sealed partial class HubForm
                 // Use the outer width so the appearance of a vertical scrollbar does not
                 // make the wrapped labels and the scrollbar repeatedly resize each other.
                 // Cap long setup notes on large displays so they remain easy to read.
-                var availableTextWidth = page.Width - page.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth - 40;
+                var availableTextWidth = PageColumnWidth(page) - (int)Math.Ceiling(40 * DeviceDpi / 96F);
                 var textWidth = Math.Min((int)Math.Ceiling(900 * DeviceDpi / 96F), Math.Max(240, availableTextWidth));
-                void Fit(Control parent)
+                void Collect(Control parent, List<(Label Label, int Width)> changes)
                 {
                     foreach (Control child in parent.Controls)
                     {
@@ -835,29 +854,62 @@ internal sealed partial class HubForm
                             }
                             var target = Math.Min(textWidth, parentWidth > 0 ? parentWidth : textWidth);
                             target = Math.Max(120, target);
-                            if (label.MaximumSize.Width != target)
-                                label.MaximumSize = new Size(target, 0);
+                            if (label.MaximumSize.Width != target) changes.Add((label, target));
                         }
-                        if (child.HasChildren) Fit(child);
+                        if (child.HasChildren) Collect(child, changes);
                     }
                 }
-                Fit(page);
+                // Measure before mutating, then release each affected container
+                // once. A second bounded pass accommodates nested columns that
+                // obtained their final width during the first layout.
+                for (var pass = 0; pass < 2; pass++)
+                {
+                    var changes = new List<(Label Label, int Width)>();
+                    Collect(page, changes);
+                    if (changes.Count == 0) break;
+                    var ancestors = new HashSet<Control>();
+                    foreach (var change in changes)
+                    {
+                        for (var ancestor = change.Label.Parent; ancestor is not null; ancestor = ancestor.Parent)
+                        {
+                            ancestors.Add(ancestor);
+                            if (ancestor == page) break;
+                        }
+                    }
+                    int Depth(Control control)
+                    {
+                        var depth = 0;
+                        for (var parent = control.Parent; parent is not null; parent = parent.Parent) depth++;
+                        return depth;
+                    }
+                    var containers = ancestors.OrderByDescending(Depth).ToArray();
+                    foreach (var container in containers.Reverse()) container.SuspendLayout();
+                    try
+                    {
+                        foreach (var change in changes) change.Label.MaximumSize = new Size(change.Width, 0);
+                    }
+                    finally
+                    {
+                        foreach (var container in containers) container.ResumeLayout(true);
+                    }
+                }
             }
             finally { fittingTextPages.Remove(page); }
         }
         void SchedulePageText(Panel page)
         {
             if (!IsHandleCreated || IsDisposed || Disposing || !page.Visible
-                || WindowState == FormWindowState.Minimized) return;
+                || WindowState == FormWindowState.Minimized || fittingTextPages.Contains(page)) return;
             pendingTextPages.Add(page);
             // Layout can trigger another layout as scrollbars and wrapped text
             // settle. A timer yields to painting and input instead of posting
             // an unbroken chain of BeginInvoke callbacks during a corner drag.
-            textLayoutTimer.Start();
+            if (!_interactiveResize) textLayoutTimer.Start();
         }
         textLayoutTimer.Tick += (_, _) =>
         {
             textLayoutTimer.Stop();
+            if (_interactiveResize) return;
             var pending = pendingTextPages.ToArray();
             pendingTextPages.Clear();
             if (IsDisposed || Disposing) return;
@@ -905,8 +957,10 @@ internal sealed partial class HubForm
         {
             var page = pageList.FirstOrDefault(page => page.Visible);
             if (page is null) return;
+            pendingTextPages.Remove(page);
             page.PerformLayout();
             FitPageText(page);
+            if (pendingTextPages.Count == 0) textLayoutTimer.Stop();
         };
         Resize += (_, _) =>
         {
@@ -1030,10 +1084,18 @@ internal sealed partial class HubForm
                 left = Math.Min(left, right - Px(240));
                 var identityWidth = Math.Max(0, left - footer.Padding.Left);
                 var actionWidth = Math.Max(Px(120), (right - left) / 2);
-                if ((int)footer.ColumnStyles[0].Width != identityWidth) footer.ColumnStyles[0].Width = identityWidth;
-                if ((int)footer.ColumnStyles[1].Width != actionWidth) footer.ColumnStyles[1].Width = actionWidth;
-                if ((int)footer.ColumnStyles[2].Width != right - left - actionWidth)
-                    footer.ColumnStyles[2].Width = right - left - actionWidth;
+                var stopWidth = right - left - actionWidth;
+                if ((int)footer.ColumnStyles[0].Width == identityWidth
+                    && (int)footer.ColumnStyles[1].Width == actionWidth
+                    && (int)footer.ColumnStyles[2].Width == stopWidth) return;
+                footer.SuspendLayout();
+                try
+                {
+                    if ((int)footer.ColumnStyles[0].Width != identityWidth) footer.ColumnStyles[0].Width = identityWidth;
+                    if ((int)footer.ColumnStyles[1].Width != actionWidth) footer.ColumnStyles[1].Width = actionWidth;
+                    if ((int)footer.ColumnStyles[2].Width != stopWidth) footer.ColumnStyles[2].Width = stopWidth;
+                }
+                finally { footer.ResumeLayout(true); }
             }
             finally { fittingFooter = false; }
         }

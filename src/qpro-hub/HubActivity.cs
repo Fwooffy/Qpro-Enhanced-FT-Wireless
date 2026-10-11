@@ -111,7 +111,11 @@ internal sealed partial class HubForm
             if (suspendRedraw)
             {
                 ActivityMessage(_log.Handle, 0xB, 1, 0);
-                _log.Invalidate();
+                // RichEdit's scrollbar is non-client content. Re-enable both
+                // its text and frame painting after the batched edit, without
+                // forcing a synchronous redraw for every incoming log line.
+                RedrawWindow(_log.Handle, 0, 0, 0x0001 | 0x0004 | 0x0080 | 0x0400);
+                // RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME
             }
         }
     }

@@ -71,7 +71,6 @@ internal sealed partial class HubForm : Form
     private readonly Label _gazeStatus = StatusLabel();
     private readonly Label _inferenceStatus = StatusLabel();
     private readonly Label _pupilStatus = StatusLabel();
-    private string _pupilBackendLabel = "Starting";
     private readonly Label _setupRuntimeStatus = SetupStatusLabel();
     private readonly Label _setupBridgeStatus = SetupStatusLabel();
     private readonly Label _setupGazeStatus = SetupStatusLabel();
@@ -130,6 +129,112 @@ internal sealed partial class HubForm : Form
     private readonly bool _previewOnly;
     private readonly System.ComponentModel.Container _uiComponents = new();
 
+    private bool _interactiveResize;
+    private bool _paintingSizeTransition;
+    private int _sizeMessageDepth;
+    private int _windowPositionDepth;
+    private bool _pendingSizePaint;
+    [DllImport("user32.dll")]
+    private static extern bool RedrawWindow(nint window, nint updateRectangle, nint updateRegion, uint flags);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeWindowPosition
+    {
+        internal nint Window, InsertAfter;
+        internal int X, Y, Width, Height;
+        internal uint Flags;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeWindowRectangle { internal int Left, Top, Right, Bottom; }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(nint window, out NativeWindowRectangle rectangle);
+
+    private void PaintCompletedSize()
+    {
+        if (_paintingSizeTransition || !IsHandleCreated || !Visible || IsDisposed || Disposing
+            || WindowState == FormWindowState.Minimized) return;
+        _paintingSizeTransition = true;
+        try
+        {
+            // Finish managed backgrounds, native children and their non-client
+            // scrollbars at the completed size/layout boundary.
+            RedrawWindow(Handle, 0, 0, 0x0001 | 0x0004 | 0x0080 | 0x0100 | 0x0400);
+            // RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_FRAME
+        }
+        finally { _paintingSizeTransition = false; }
+    }
+
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var parameters = base.CreateParams;
+            // Present completed descendant painting together, including native
+            // ComboBox and RichEdit windows outside the local managed buffers.
+            parameters.ExStyle |= 0x02000000; // WS_EX_COMPOSITED
+            return parameters;
+        }
+    }
+
+    protected override void OnResizeBegin(EventArgs e)
+    {
+        _interactiveResize = true;
+        base.OnResizeBegin(e);
+    }
+
+    protected override void OnResizeEnd(EventArgs e)
+    {
+        _interactiveResize = false;
+        base.OnResizeEnd(e);
+        PaintCompletedSize();
+    }
+
+    protected override void WndProc(ref Message message)
+    {
+        var positionChange = message.Msg == 0x0047; // WM_WINDOWPOSCHANGED
+        var sizeChange = message.Msg == 0x0005; // WM_SIZE
+        if (positionChange) _windowPositionDepth++;
+        if (sizeChange) _sizeMessageDepth++;
+        try { base.WndProc(ref message); }
+        finally
+        {
+            if (sizeChange) _sizeMessageDepth--;
+            if (positionChange) _windowPositionDepth--;
+        }
+        if (message.Msg == 0x0046 && message.LParam != 0 && IsHandleCreated) // WM_WINDOWPOSCHANGING
+        {
+            var position = Marshal.PtrToStructure<NativeWindowPosition>(message.LParam);
+            if (position.Window == Handle && (position.Flags & 0x0001) == 0 // SWP_NOSIZE
+                && GetWindowRect(Handle, out var rectangle)
+                && (position.Width != rectangle.Right - rectangle.Left || position.Height != rectangle.Bottom - rectangle.Top))
+            {
+                // A resized client needs newly painted child geometry rather
+                // than pixels preserved from its previous width and height.
+                position.Flags |= 0x0100; // SWP_NOCOPYBITS
+                Marshal.StructureToPtr(position, message.LParam, false);
+            }
+        }
+        // DefWindowProc sends WM_SIZE inside WM_WINDOWPOSCHANGED before WinForms
+        // updates managed bounds and docks children. Paint at the completed
+        // outer position dispatch, after that layout, rather than its nested size.
+        if (sizeChange && message.WParam != 1)
+        {
+            if (_windowPositionDepth > 0) _pendingSizePaint = true;
+            else if (_sizeMessageDepth == 0)
+            {
+                PaintCompletedSize();
+            }
+        }
+        if (positionChange && _windowPositionDepth == 0 && WindowState != FormWindowState.Minimized
+            && _pendingSizePaint)
+        {
+            _pendingSizePaint = false;
+            PaintCompletedSize();
+        }
+    }
+
     public HubForm(string root, bool rememberLaunch = true, bool previewOnly = false)
     {
         _previewOnly = previewOnly;
@@ -160,6 +265,7 @@ internal sealed partial class HubForm : Form
         };
 
         Controls.Add(BuildLayout());
+        InitializeTrackingHealthUi();
         InitializeTrackingSourceUi();
         InitializeControllerInputUi();
         if (rememberLaunch && !previewOnly)
@@ -333,7 +439,11 @@ internal sealed partial class HubForm : Form
         var pulseTimer = new System.Windows.Forms.Timer(_uiComponents) { Interval = 550 };
         pulseTimer.Tick += (_, _) =>
         {
-            if (WindowState != FormWindowState.Minimized) PulseSetupAttention();
+            if (WindowState != FormWindowState.Minimized)
+            {
+                PulseSetupAttention();
+                RefreshTrackingHealth();
+            }
         };
         if (!previewOnly) pulseTimer.Start();
         var setupProgressTimer = new System.Windows.Forms.Timer(_uiComponents) { Interval = 45 };

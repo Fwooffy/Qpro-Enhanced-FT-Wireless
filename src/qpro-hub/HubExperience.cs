@@ -36,10 +36,12 @@ internal sealed partial class HubForm
 
     private void UpdateSessionReadiness()
     {
-        if (_stopping || _closingInProgress || _gazeFailureHandled) return;
+        if (_stopping || _closingInProgress || _gazeRecoveryRunning
+            || (_gazeFailureHandled && !_gazeRecoveryConfirmed)) return;
         var cameras = _tongue.Checked || _cameraCheekPuff.Checked || _pupil.Checked;
+        if (cameras && _trackingHealth.CameraState is TrackingSignalState.Error or TrackingSignalState.Stopped) return;
         var missing = new List<string>();
-        if (cameras && !_cameraInputReady) missing.Add("camera frames");
+        if (cameras && !_cameraInputReady) missing.Add(_trackingHealth.CameraState == TrackingSignalState.Stale ? "fresh camera frames" : "camera frames");
         if (!_controllerInputStopped && _hybridHands.Checked && !_handsReady) missing.Add("optical fingers");
         if (!_controllerInputStopped && _controllerTouchpad.Checked && !_touchpadReady) missing.Add("thumb-rest input");
         _runStatus.Text = missing.Count > 0 ? "● Waiting for " + string.Join(" and ", missing) + "…"
@@ -51,6 +53,7 @@ internal sealed partial class HubForm
             _runStatus.ForeColor = Warning;
         }
         else if (_controllerInputStopped) _runStatus.Text += " · controller input off";
+        if (_gazeFailureHandled && _gazeRecoveryConfirmed) _runStatus.Text += " · Hub gaze off";
     }
 
     private Control BuildFeedbackCard()
@@ -129,7 +132,7 @@ internal sealed partial class HubForm
     {
         var text = $"QproFaceTracking V{AppVersion}\nWindows build: {Environment.OSVersion.Version.Build}\n" +
             $"Face source: {_trackingSourceLive.Text}\n\n{_actionSeverity.Text}: {_actionTitle.Text}\n{_actionDetail.Text}\n{_actionNext.Text}\n\n" +
-            _compatibilityDiagnostic + "\n\nACTIVITY\n" + _log.Text;
+            _compatibilityDiagnostic + "\n\nLIVE TRACKING HEALTH\n" + _trackingHealth.DiagnosticText() + "\n\nACTIVITY\n" + _log.Text;
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         if (!string.IsNullOrEmpty(home)) text = text.Replace(home, "%USERPROFILE%", StringComparison.OrdinalIgnoreCase);
         // The firmware report already excludes serials. Mask common serial log

@@ -600,7 +600,7 @@ internal sealed partial class HubForm
         if (!_gaze.Checked && !_tongue.Checked && !_cameraCheekPuff.Checked && !_pupil.Checked && !_hybridHands.Checked && !_controllerTouchpad.Checked && !NativeCheekAdjustmentsSelected) { PlaySfx("warning.wav"); MessageBox.Show(this, "Select at least one tracking feature."); return; }
         bool workerTrackingRequested = WorkerTrackingSelected;
         _starting = true;
-        _cameraInputReady = false;
+        StopTrackingHealth();
         var startCancellation = new CancellationTokenSource();
         _startCancellation = startCancellation;
         UpdateControlState();
@@ -624,8 +624,8 @@ internal sealed partial class HubForm
             File.Delete(_stopFile);
             _start.Enabled = false; _stop.Enabled = true;
             _runStatus.Text = "● Starting…"; _runStatus.ForeColor = Warning;
+            BeginTrackingHealth();
             SetStatus(_inferenceStatus, StatusKind.Warning, (_tongue.Checked || _cameraCheekPuff.Checked) ? "Detecting…" : "Idle");
-            _pupilBackendLabel = "Starting";
             SetStatus(_pupilStatus, StatusKind.Warning, _pupil.Checked ? "Starting…" : "Idle");
             if (_gaze.Checked)
             {
@@ -743,6 +743,7 @@ internal sealed partial class HubForm
             if (startCancellation.IsCancellationRequested) EndCheekTrackingSession();
             _starting = false;
             if (!_nativeCheekOnlySession && !_trackingProcesses.Any(p => !p.HasExited)) EndCheekTrackingSession();
+            if (!_trackingProcesses.Any(p => !p.HasExited)) StopTrackingHealth();
             if (ReferenceEquals(_startCancellation, startCancellation)) _startCancellation = null;
             startCancellation.Dispose();
             UpdateControlState();
@@ -754,6 +755,7 @@ internal sealed partial class HubForm
         EndCheekTrackingSession();
         if (_stopping) return;
         _stopping = true;
+        StopTrackingHealth();
         bool gazeRestoreFailed = false;
         bool stopRequestFailed = false;
         _startCancellation?.Cancel();
@@ -851,6 +853,9 @@ internal sealed partial class HubForm
         {
             try
             {
+                // A queued UI callback must retain the actual pipe arrival
+                // time; a busy window cannot make an old frame look fresh.
+                var receivedAt = Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
                 recentOutput.Enqueue(line.Length <= 4096 ? line : line[..4096] + " …");
                 while (recentOutput.Count > 60) recentOutput.TryDequeue(out _);
                 controllerResult?.Observe(line);
@@ -858,7 +863,7 @@ internal sealed partial class HubForm
                 PostProcessUpdate(label, () =>
                 {
                     if (!_trackingProcesses.Contains(process)) return;
-                    if (!process.HasExited) HandleInferenceStatus(label, line);
+                    if (!process.HasExited) HandleInferenceStatusAtTime(label, line, receivedAt);
                     // Restoration reports remain relevant after process exit;
                     // readiness output must not reactivate a stopped session.
                     if (!process.HasExited || line.StartsWith(HubControllerFeedback.CleanupPrefix, StringComparison.Ordinal))
@@ -918,6 +923,12 @@ internal sealed partial class HubForm
                     // after Stop has removed it. Keep the log without replacing
                     // a new session's status or result.
                     if (!_trackingProcesses.Contains(process)) return;
+                    if ((label is "Camera tracking" or "Pupil tracking") && _trackingHealth.Running)
+                    {
+                        _trackingHealth.CameraExited(exitCode != 0 && !stopWasRequested);
+                        _cameraInputReady = false;
+                        RefreshTrackingHealth();
+                    }
                     if (!_starting && !_nativeCheekOnlySession && !_trackingProcesses.Any(p => !p.HasExited))
                         EndCheekTrackingSession();
                     if (controllerRestoration is not null)
@@ -957,6 +968,8 @@ internal sealed partial class HubForm
             // Track it before attaching readers: if a reader fails, the caller's
             // Stop path must still request this child's headset cleanup.
             _trackingProcesses.Add(process);
+            if ((label is "Camera tracking" or "Pupil tracking") && !_trackingHealth.Running)
+                BeginTrackingHealth();
             process.BeginOutputReadLine(); process.BeginErrorReadLine();
             AppendLog($"Starting {label}…");
             return process;
@@ -1081,68 +1094,21 @@ internal sealed partial class HubForm
 
     private void ResetInferenceStatus()
     {
-        _pupilBackendLabel = "Starting";
+        StopTrackingHealth();
         SetStatus(_inferenceStatus, StatusKind.Warning, "Idle");
         SetStatus(_pupilStatus, StatusKind.Warning, "Idle");
     }
 
     private void HandleInferenceStatus(string label, string line)
+        => HandleInferenceStatusAtTime(label, line, null);
+
+    private void HandleInferenceStatusAtTime(string label, string line, double? receivedAt)
     {
         if (label is not ("Camera tracking" or "Pupil tracking")) return;
         if (IsDisposed || Disposing || _stopping) return;
-        if (InvokeRequired) { PostProcessUpdate(label, () => HandleInferenceStatus(label, line)); return; }
+        if (InvokeRequired) { PostProcessUpdate(label, () => HandleInferenceStatusAtTime(label, line, receivedAt)); return; }
 
-        if (line.StartsWith("TRANSPORT_QUALITY ", StringComparison.Ordinal) &&
-            Regex.Match(line, @"\bfps=(?<fps>\d+(?:\.\d+)?)").Groups["fps"] is { Success: true } frameRate &&
-            double.TryParse(frameRate.Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var fps) && fps > 0)
-        {
-            _cameraInputReady = true;
-            UpdateSessionReadiness();
-        }
-
-        if (label == "Camera tracking")
-        {
-            var match = Regex.Match(line, @"INFERENCE_BACKEND feature=tongue backend=(?<backend>[\w-]+) device=(?<device>\S+) name=(?<name>.*)");
-            if (match.Success)
-            {
-                var backend = match.Groups["backend"].Value;
-                var name = match.Groups["name"].Value.Trim();
-                var description = backend switch
-                {
-                    "amd-rocm" => "AMD ROCm",
-                    "nvidia-cuda" => "NVIDIA CUDA",
-                    "cpu" => "CPU",
-                    _ => "Other (" + match.Groups["device"].Value + ")"
-                };
-                SetStatus(_inferenceStatus, StatusKind.Warning, description + " selected");
-                _inferenceStatus.AccessibleDescription = name;
-            }
-        }
-        if (_pupil.Checked)
-        {
-            var match = Regex.Match(line, @"INFERENCE_BACKEND feature=pupil backend=(?<backend>[\w-]+) device=(?<device>\S+) name=(?<name>.*)");
-            if (match.Success)
-            {
-                _pupilBackendLabel = match.Groups["backend"].Value switch
-                {
-                    "amd-rocm" => "AMD ROCm",
-                    "nvidia-cuda" => "NVIDIA CUDA",
-                    "cpu" => "CPU",
-                    _ => "Other"
-                };
-                SetStatus(_pupilStatus, StatusKind.Warning, _pupilBackendLabel + " (warming)");
-                _pupilStatus.AccessibleDescription = match.Groups["name"].Value;
-            }
-        }
-        if (_pupil.Checked && line.Contains("PUPIL_STATUS", StringComparison.Ordinal))
-        {
-            var leftValid = Regex.IsMatch(line, @"\bleft=\d");
-            var rightValid = Regex.IsMatch(line, @"\bright=\d");
-            var pupilLabel = _pupilBackendLabel + (leftValid && rightValid ? " (2 eyes)" :
-                leftValid || rightValid ? " (1 eye)" : " (warming)");
-            SetStatus(_pupilStatus, leftValid && rightValid ? StatusKind.Good : StatusKind.Warning, pupilLabel);
-            _pupilStatus.AccessibleDescription = line;
-        }
+        if (_trackingHealth.Observe(line, receivedAt)) RefreshTrackingHealth();
     }
 
     private async Task<bool> RunUtilityAsync(string label, string script, params string[] args)

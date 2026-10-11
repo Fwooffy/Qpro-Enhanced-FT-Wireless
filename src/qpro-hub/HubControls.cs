@@ -13,21 +13,66 @@ using System.Text.RegularExpressions;
 
 namespace QproFaceTracking.Hub;
 
-// Buffer each container's background independently. Whole-window compositing
-// also buffers native edit controls and can delay their scrolling and input.
+// Buffer backgrounds locally. A scrollable viewport must also dirty native
+// descendants: ScrollWindowEx copies pixels from a partially clipped child,
+// which can leave old control fragments after the tall page scrolls.
 internal sealed class BufferedPanel : Panel
 {
-    public BufferedPanel() => DoubleBuffered = true;
+    private Rectangle _lastDisplayRectangle;
+
+    public BufferedPanel()
+    {
+        DoubleBuffered = true;
+        SetStyle(ControlStyles.ResizeRedraw, true);
+    }
+
+    private void InvalidateViewport()
+    {
+        if (IsHandleCreated && Visible && !IsDisposed && !Disposing
+            && FindForm()?.WindowState != FormWindowState.Minimized)
+            Invalidate(true);
+    }
+
+    protected override void OnScroll(ScrollEventArgs e)
+    {
+        base.OnScroll(e);
+        InvalidateViewport();
+    }
+
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        // ScrollableControl moves its display rectangle directly for a wheel;
+        // it does not raise OnScroll for this path.
+        base.OnMouseWheel(e);
+        InvalidateViewport();
+    }
+
+    protected override void OnLayout(LayoutEventArgs e)
+    {
+        base.OnLayout(e);
+        var display = DisplayRectangle;
+        var moved = _lastDisplayRectangle.Location != display.Location;
+        _lastDisplayRectangle = display;
+        if (moved) InvalidateViewport();
+    }
 }
 
 internal sealed class BufferedTableLayoutPanel : TableLayoutPanel
 {
-    public BufferedTableLayoutPanel() => DoubleBuffered = true;
+    public BufferedTableLayoutPanel()
+    {
+        DoubleBuffered = true;
+        SetStyle(ControlStyles.ResizeRedraw, true);
+    }
 }
 
 internal sealed class BufferedFlowLayoutPanel : FlowLayoutPanel
 {
-    public BufferedFlowLayoutPanel() => DoubleBuffered = true;
+    public BufferedFlowLayoutPanel()
+    {
+        DoubleBuffered = true;
+        SetStyle(ControlStyles.ResizeRedraw, true);
+    }
 }
 
 // Keep standard CheckBox keyboard and accessibility behavior. Only the visual
@@ -105,7 +150,7 @@ internal sealed class DarkProgressBar : Control
 
     public DarkProgressBar()
     {
-        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
         MinimumSize = new Size(120, 16);
     }
 
@@ -169,7 +214,7 @@ internal sealed class DarkButton : Button
     {
         FlatStyle = FlatStyle.Flat;
         UseVisualStyleBackColor = false;
-        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
     }
 
     protected override void OnMouseEnter(EventArgs e) { _hovered = true; Invalidate(); base.OnMouseEnter(e); }

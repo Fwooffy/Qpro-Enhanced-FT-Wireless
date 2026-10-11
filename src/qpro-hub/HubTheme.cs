@@ -26,7 +26,7 @@ internal sealed partial class HubForm
     private static Label SectionCaption(string text) => new() { Text = text, AutoSize = true, Font = new Font(UiFontName, 9F, FontStyle.Bold), ForeColor = Accent, Margin = new Padding(0, 10, 0, 5) };
     private static Label Info(string text) => new() { Text = text, AutoSize = true, MaximumSize = new Size(395, 0), ForeColor = Muted, Margin = new Padding(0, 0, 0, 12), Tag = "responsive-info" };
     private static Label FieldLabel(string text) => new() { Text = text, AutoSize = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Muted, Margin = new Padding(0, 3, 12, 3) };
-    private static TableLayoutPanel Card() => new() { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Dock = DockStyle.Top, BackColor = Panel, Padding = new Padding(20, 16, 20, 16), Margin = new Padding(0, 0, 0, 14) };
+    private static TableLayoutPanel Card() => new BufferedTableLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Dock = DockStyle.Top, BackColor = Panel, Padding = new Padding(20, 16, 20, 16), Margin = new Padding(0, 0, 0, 14) };
     private static DarkButton PrimaryButton(string text) => SecondaryButton(text);
     private static DarkButton SecondaryButton(string text)
     {
