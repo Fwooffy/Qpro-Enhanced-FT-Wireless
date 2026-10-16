@@ -52,6 +52,74 @@ class PerformanceTests(unittest.TestCase):
         self.assertTrue(all(value is None for value in report["ratesPerSecond"].values()))
 
 
+class WatchdogTests(unittest.TestCase):
+    def supervisor(self):
+        return SimpleNamespace(
+            finished=SimpleNamespace(wait=lambda _timeout: False), progress=68,
+            phase="cleanup:restoration-status:optical-hands", phase_started=68,
+            last_status_at=60, last_statuses=[{"state": "running", "frames": 12557}],
+            detached_sessions=[{"session": "headset-virtual-desktop", "process": 100,
+                                "reason": "connection-terminated", "crashSummary": None}])
+
+    def test_stall_reports_phase_elapsed_time_and_last_useful_status_then_exits_five(self):
+        supervisor = self.supervisor()
+        records = []
+        with patch.object(controller.time, "monotonic", return_value=100.125), \
+             patch.object(controller, "emit", lambda event, **values: records.append((event, values))), \
+             patch.object(controller.os, "_exit") as hard_exit:
+            controller.watch_supervisor(supervisor)
+        hard_exit.assert_called_once_with(5)
+        self.assertEqual(len(records), 1)
+        event, details = records[0]
+        self.assertEqual(event, "CLEANUP_FAILED")
+        self.assertEqual(details["phase"], supervisor.phase)
+        self.assertEqual(details["phaseElapsedSeconds"], 32.125)
+        self.assertEqual(details["progressStaleSeconds"], 32.125)
+        self.assertEqual(details["lastStatusAgeSeconds"], 40.125)
+        self.assertEqual(details["adapters"], supervisor.last_statuses)
+        self.assertEqual(details["detached"], supervisor.detached_sessions)
+        self.assertNotIn("confirmed", details)
+
+    def test_stall_before_any_status_reports_unknown_age(self):
+        supervisor = self.supervisor()
+        supervisor.last_status_at = None
+        supervisor.last_statuses = []
+        with patch.object(controller.time, "monotonic", return_value=100), \
+             patch.object(controller, "emit") as emit, patch.object(controller.os, "_exit"):
+            controller.watch_supervisor(supervisor)
+        self.assertIsNone(emit.call_args.kwargs["lastStatusAgeSeconds"])
+        self.assertEqual(emit.call_args.kwargs["adapters"], [])
+
+    def test_watchdog_hard_exit_does_not_wait_for_a_blocked_diagnostic_writer(self):
+        supervisor = self.supervisor()
+        entered, release, returned = threading.Event(), threading.Event(), threading.Event()
+        def blocked_writer(*_args, **_values):
+            entered.set()
+            release.wait(2)
+            returned.set()
+        try:
+            with patch.object(controller.time, "monotonic", return_value=100), \
+                 patch.object(controller, "emit", blocked_writer), \
+                 patch.object(controller.os, "_exit") as hard_exit:
+                controller.watch_supervisor(supervisor, diagnostic_timeout=0.02)
+                self.assertTrue(entered.wait(0.2))
+                hard_exit.assert_called_once_with(5)
+                self.assertFalse(returned.is_set(), "The hard exit waited for blocked stdout.")
+        finally:
+            release.set()
+            self.assertTrue(returned.wait(1))
+
+    def test_completed_or_fresh_supervisor_does_not_exit(self):
+        supervisor = self.supervisor()
+        waits = iter((False, True))
+        supervisor.finished = SimpleNamespace(wait=lambda _timeout: next(waits))
+        with patch.object(controller.time, "monotonic", return_value=98), \
+             patch.object(controller, "emit") as emit, patch.object(controller.os, "_exit") as hard_exit:
+            controller.watch_supervisor(supervisor)
+        emit.assert_not_called()
+        hard_exit.assert_not_called()
+
+
 class FakeAdb:
     def __init__(self, profile, rules=""):
         self.profile, self.rules, self.calls = profile, rules, []
@@ -627,6 +695,39 @@ class HybridTests(unittest.TestCase):
         self.assertFalse(controller.input_is_ready([native, {"validFrames": [5, 5]}, {"activeSides": [True, False]}]))
         self.assertFalse(controller.input_is_ready([native, {"freshSides": [False, True]}, {"activeSides": [True, False]}]))
         self.assertTrue(controller.input_is_ready([native, {"freshSides": [True, False]}, {"activeSides": [True, False]}]))
+
+    def test_current_readiness_loses_and_recovers_without_reapplying_startup_timeout(self):
+        supervisor, events, _, _ = self.make_supervisor()
+        supervisor.profile = dict(supervisor.profile, readinessSeconds=.01, heartbeatSeconds=0)
+        timeline = [([True, False], [True, False]), ([False, False], [True, False]),
+                    ([False, True], [True, False]), ([False, True], [False, True])]
+        observation, records = [0], []
+        original_adapter = supervisor._adapter
+        def adapter(*args):
+            script = original_adapter(*args)
+            original_status = script.status
+            def status():
+                result = original_status()
+                result["freshSides"], result["activeSides"] = timeline[min(observation[0], len(timeline) - 1)]
+                return result
+            script.status = status
+            return script
+        def record(event, **values):
+            records.append((event, values))
+            if event == "STATUS":
+                observation[0] += 1
+                if observation[0] == len(timeline): supervisor.stop_requested.set()
+        with patch.object(supervisor, "_adapter", adapter), \
+             patch.object(controller.time, "monotonic", side_effect=lambda: observation[0] * 10), \
+             patch.object(controller, "emit", record):
+            with self.assertRaisesRegex(InterruptedError, "Stop requested"):
+                controller.run_supervised(supervisor)
+        self.assertEqual([details["ready"] for event, details in records if event == "STATUS"],
+                         [True, False, False, True])
+        self.assertEqual([details["activeSides"] for event, details in records if event == "READY"],
+                         [[True, False], [False, True]])
+        self.assertEqual([kind for action, *rest in events if action == "stop" for kind in rest],
+                         ["pc", "optical", "native"])
 
     def test_intervening_foreign_rebind_is_not_removed(self):
         supervisor, _, adb, root = self.make_supervisor()

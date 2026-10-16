@@ -262,11 +262,20 @@ class Supervisor:
         self.detached_sessions = []
         self.cleaning_up = False
         self.last_statuses = []
+        self.last_status_at = None
         self.performance = PerformanceWindow()
         self.progress = time.monotonic()
+        self.phase = "not-started"
+        self.phase_started = self.progress
         self.finished = threading.Event()
 
+    def checkpoint(self, phase, allowance=0):
+        self.phase = phase
+        self.phase_started = time.monotonic()
+        self.progress = self.phase_started + allowance
+
     def _attach(self, device, process, label=None):
+        self.checkpoint("attach:" + (label or str(process)))
         session = device.attach(process)
         self.sessions.append(session)
         def on_detached(reason="unknown", crash=None, *_):
@@ -289,13 +298,16 @@ class Supervisor:
         return session
 
     def _adapter(self, session, filename, name):
+        self.checkpoint("adapter-create:" + name)
         source = "globalThis.QPRO_PROFILE = " + json.dumps(self.profile) + ";\n"
         source += (HERE / filename).read_text(encoding="utf-8")
         script = session.create_script(source)
         script.on("message", lambda message, _: emit("ADAPTER", name=name, message=message))
         self.adapters.append((name, script))
         try:
+            self.checkpoint("adapter-load:" + name)
             script.load()
+            self.checkpoint("adapter-validate:" + name)
             facts = script.exports_sync.validate()
         except Exception as error:
             raise CompatibilityError(name + " adapter validation failed: " + str(error)) from error
@@ -305,7 +317,7 @@ class Supervisor:
         return script
 
     def _ensure_running(self):
-        self.progress = time.monotonic()
+        self.checkpoint("check-running")
         if self.stop_requested.is_set():
             raise InterruptedError("Stop requested.")
         if self.detached:
@@ -313,36 +325,41 @@ class Supervisor:
 
     def start(self):
         self._ensure_running()
-        self.progress = time.monotonic() + 12
+        self.checkpoint("open-root-channel", allowance=12)
         self.root = self.root_factory(self.adb)
-        self.progress = time.monotonic()
+        self.checkpoint("detect-existing-helper")
         existing = self.root.command("pidof qpro-hands-frida quest-hybrid-frida frida-server || true").strip()
         if existing:
-            raise CompatibilityError("A Frida server is already running. Close the other Qpro Hub or turn off Singularity's Frida Server first.")
+            raise CompatibilityError("A Frida server is already running. Close the other Qpro Companion or turn off Singularity's Frida Server first.")
+        self.checkpoint("check-headset-helper-port")
         listening = self.root.command("awk 'NR > 1 && $2 ~ /:69B6$/ && $4 == \"0A\" {print}' /proc/net/tcp /proc/net/tcp6").strip()
         if listening:
             raise CompatibilityError("The headset hand-helper port is already used by another process.")
         self._ensure_running()
         # Own cleanup before copying, so a partial transfer is also removed.
         trap = "if [ -n \"$qpro_hands_pid\" ] && [ \"$(readlink /proc/$qpro_hands_pid/exe)\" = '" + HELPER + "' ]; then kill \"$qpro_hands_pid\"; fi; rm -f '" + HELPER + "'"
+        self.checkpoint("own-helper-recovery")
         self.root.command("qpro_hands_pid=''; trap '" + trap.replace("'", "'\\''") + "' EXIT")
         self.helper_owned = True
-        self.progress = time.monotonic() + 90
+        self.checkpoint("push-headset-helper", allowance=90)
         self.adb.run("push", str(self.server_path), HELPER, timeout=90)
-        self.progress = time.monotonic()
         self._ensure_running()
         local_hash = hashlib.sha256(self.server_path.read_bytes()).hexdigest()
+        self.checkpoint("hash-headset-helper")
         remote_hash = self.root.command("sha256sum " + HELPER).split()[0]
         if local_hash != remote_hash:
             raise RuntimeError("Headset hand helper hash check failed.")
+        self.checkpoint("launch-headset-helper")
         self.root.command("chmod 755 " + HELPER +
                           "; " + HELPER + " --listen 127.0.0.1:" + str(PORT) + " --disable-preload >/dev/null 2>&1 & qpro_hands_pid=$!; echo $qpro_hands_pid")
+        self.checkpoint("read-headset-helper-pid")
         self.helper_pid = self.root.command("echo $qpro_hands_pid").strip()
         if not self.helper_pid.isdigit():
             raise RuntimeError("The owned hand helper did not return a valid PID.")
         # Let ADB reserve a free PC port atomically. The headset helper keeps
         # its checked port; existing PC listeners and forwards are untouched.
         try:
+            self.checkpoint("allocate-hand-forward")
             allocated = self.adb.run("forward", "--no-rebind", "tcp:0", "tcp:" + str(PORT))
         except subprocess.TimeoutExpired:
             self.forward_uncertain = True
@@ -353,16 +370,19 @@ class Supervisor:
         self.forward_port = int(allocated)
         self.forward_owned = True
         emit("TRANSPORT", localPort=self.forward_port, headsetPort=PORT)
+        self.checkpoint("connect-frida-device")
         device = self.frida.get_device_manager().add_remote_device("127.0.0.1:" + str(self.forward_port))
         for attempt in range(24):
             self._ensure_running()
             try:
+                self.checkpoint("enumerate-frida-processes")
                 device.enumerate_processes()
                 break
             except Exception:
                 if attempt == 23:
                     raise
                 self.stop_requested.wait(0.25)
+        self.checkpoint("find-headset-virtual-desktop")
         pids = self.adb.run("shell", "pidof", self.profile["androidPackage"]).split()
         if len(pids) != 1 or not pids[0].isdigit():
             raise CompatibilityError("Open Virtual Desktop on the headset and connect to this PC.")
@@ -377,11 +397,14 @@ class Supervisor:
             # Include the adapter before calling activate: partial activation
             # must still be restored if its RPC fails midway through.
             self.active_scripts.add(id(script))
+            name = next(name for name, adapter in self.adapters if adapter is script)
+            self.checkpoint("adapter-activate:" + name)
             script.exports_sync.activate(lease)
         emit("STAGE", stage="waiting-for-optical-hands", seconds=self.profile["readinessSeconds"])
         deadline = time.monotonic() + self.profile["readinessSeconds"]
         next_beat = 0.0
         ready = False
+        startup_confirmed = False
         while True:
             self._ensure_running()
             now = time.monotonic()
@@ -389,6 +412,7 @@ class Supervisor:
                 statuses = []
                 rpc_started = time.monotonic()
                 for index, (name, script) in enumerate(self.adapters):
+                    self.checkpoint("status:" + name)
                     status = script.exports_sync.status()
                     # Save each observation before heartbeat/state checks, so
                     # a later RPC or cleanup error cannot hide the last facts.
@@ -396,18 +420,23 @@ class Supervisor:
                         self.last_statuses[index] = status
                     else:
                         self.last_statuses.append(status)
+                    self.last_status_at = time.monotonic()
                     if status.get("state") not in ("starting", "running"):
                         raise RuntimeError(name + " stopped: " + str(status.get("error")))
+                    self.checkpoint("heartbeat:" + name)
                     script.exports_sync.heartbeat(lease)
                     statuses.append(status)
-                if not ready:
-                    ready = input_is_ready(statuses)
-                    if ready:
-                        emit("READY", activeSides=statuses[2]["activeSides"], experimental=True)
+                was_ready, ready = ready, input_is_ready(statuses)
+                if ready and not was_ready:
+                    emit("READY", activeSides=statuses[2]["activeSides"], experimental=True)
+                startup_confirmed |= ready
                 performance = self.performance.sample(statuses, time.monotonic())
                 performance["statusAndHeartbeatMilliseconds"] = round((time.monotonic() - rpc_started) * 1000, 3)
+                self.checkpoint("status-output")
                 emit("STATUS", ready=ready, adapters=statuses, performance=performance)
-                if not ready and now >= deadline:
+                # Occlusion after a confirmed startup changes current status;
+                # it must not reapply the initial readiness timeout or stop.
+                if not startup_confirmed and now >= deadline:
                     if statuses[0].get("queries", 0) <= 0:
                         raise RuntimeError("Hand routing confirmation timed out. No headset controller-selection queries were observed. Check the latest HANDS_STATUS adapter counters.")
                     if any(statuses[1].get("freshSides", [False, False])):
@@ -426,7 +455,7 @@ class Supervisor:
             stage = "unload" if not active else "deactivate"
             acknowledged = False
             try:
-                self.progress = time.monotonic()
+                self.checkpoint("cleanup:" + stage + ":" + name)
                 emit("CLEANUP_STAGE", adapter=name, stage=stage, active=active)
                 if not active:
                     script.unload()
@@ -436,6 +465,7 @@ class Supervisor:
                 emit("CLEANUP_STAGE", adapter=name, stage=stage, active=active)
                 deadline = time.monotonic() + 6
                 while time.monotonic() < deadline:
+                    self.checkpoint("cleanup:restoration-status:" + name)
                     state = script.exports_sync.status()
                     if state.get("state") == "stopped":
                         acknowledged = True
@@ -446,6 +476,7 @@ class Supervisor:
                 else:
                     raise CleanupError("Restoration was not acknowledged.")
                 stage = "unload"
+                self.checkpoint("cleanup:unload:" + name)
                 emit("CLEANUP_STAGE", adapter=name, stage=stage, active=active)
                 script.unload()
             except Exception as error:
@@ -454,17 +485,18 @@ class Supervisor:
                      active=active, restorationAcknowledged=acknowledged, error=str(error))
         for session in reversed(self.sessions):
             try:
-                self.progress = time.monotonic()
+                self.checkpoint("cleanup:session-detach")
                 session.detach()
             except Exception as error:
                 failures.append("Detach: " + str(error))
         if self.root is not None:
             try:
-                self.progress = time.monotonic()
+                self.checkpoint("cleanup:headset-helper")
                 if self.helper_owned:
                     self.root.command("if [ -n \"$qpro_hands_pid\" ] && [ \"$(readlink /proc/$qpro_hands_pid/exe)\" = '" + HELPER + "' ]; then kill \"$qpro_hands_pid\"; "
                                       "for qpro_wait in 1 2 3 4 5; do kill -0 \"$qpro_hands_pid\" 2>/dev/null || break; sleep 0.1; done; "
                                       "kill -0 \"$qpro_hands_pid\" 2>/dev/null && exit 6; fi; rm -f '" + HELPER + "'; test ! -e '" + HELPER + "'")
+                self.checkpoint("cleanup:root-close")
                 self.root.close()
             except Exception as error:
                 failures.append("Headset helper cleanup: " + str(error))
@@ -474,24 +506,50 @@ class Supervisor:
                     pass
         if self.forward_owned:
             try:
+                self.checkpoint("cleanup:forward-list")
                 current = self.adb.run("forward", "--list")
                 expected = [self.adb.target, "tcp:" + str(self.forward_port), "tcp:" + str(PORT)]
                 if any(line.split() == expected for line in current.splitlines()):
+                    self.checkpoint("cleanup:forward-remove")
                     self.adb.run("forward", "--remove", "tcp:" + str(self.forward_port))
             except Exception as error:
                 failures.append("Forward cleanup: " + str(error))
+        self.checkpoint("cleanup:result-output")
         emit("CLEANUP", confirmed=not failures, problems=failures)
         if failures:
             raise CleanupError("Restart headset Virtual Desktop and SteamVR; hand cleanup was not confirmed. " + "; ".join(failures))
 
 
+def watch_supervisor(supervisor, diagnostic_timeout=0.25):
+    while not supervisor.finished.wait(1):
+        now = time.monotonic()
+        stale = now - supervisor.progress
+        if stale <= 30:
+            continue
+        details = {
+            "error": "The hand supervisor stopped responding. Adapter leases will expire; restart Virtual Desktop and SteamVR before retrying.",
+            "phase": supervisor.phase,
+            "phaseElapsedSeconds": round(max(0, now - supervisor.phase_started), 3),
+            "progressStaleSeconds": round(stale, 3),
+            "lastStatusAgeSeconds": (None if supervisor.last_status_at is None else
+                                     round(max(0, now - supervisor.last_status_at), 3)),
+            "adapters": list(supervisor.last_statuses),
+            "detached": list(supervisor.detached_sessions),
+        }
+        # A blocked stdout pipe can be the stalled operation. Its diagnostics
+        # must never prevent the watchdog's exit or imply confirmed cleanup.
+        reporter = threading.Thread(target=lambda: emit("CLEANUP_FAILED", **details), daemon=True)
+        try:
+            reporter.start()
+            reporter.join(timeout=diagnostic_timeout)
+        except RuntimeError:
+            pass
+        os._exit(5)
+        return
+
+
 def run_supervised(supervisor):
-    def watchdog():
-        while not supervisor.finished.wait(1):
-            if time.monotonic() - supervisor.progress > 30:
-                emit("CLEANUP_FAILED", error="The hand supervisor stopped responding. Adapter leases will expire; restart Virtual Desktop and SteamVR before retrying.")
-                os._exit(5)
-    threading.Thread(target=watchdog, daemon=True).start()
+    threading.Thread(target=watch_supervisor, args=(supervisor,), daemon=True).start()
     try:
         supervisor.start()
     except Exception as error:
@@ -500,7 +558,7 @@ def run_supervised(supervisor):
                  adapters=supervisor.last_statuses, detached=supervisor.detached_sessions)
         raise
     finally:
-        supervisor.progress = time.monotonic()
+        supervisor.checkpoint("cleanup:start")
         try:
             supervisor.cleanup()
         finally:

@@ -12,8 +12,21 @@ const freeName = api('mono_assembly_name_free', 'void', ['pointer']);
 const imageOf = api('mono_assembly_get_image', 'pointer', ['pointer']);
 const findClass = api('mono_class_from_name', 'pointer', ['pointer', 'pointer', 'pointer']);
 const methodOf = api('mono_class_get_method_from_name', 'pointer', ['pointer', 'pointer', 'int']);
+const signatureOf = api('mono_method_signature', 'pointer', ['pointer']);
+const parameterCount = api('mono_signature_get_param_count', 'uint32', ['pointer']);
+const instanceSignature = api('mono_signature_is_instance', 'int', ['pointer']);
+const returnType = api('mono_signature_get_return_type', 'pointer', ['pointer']);
+const nextParameter = api('mono_signature_get_params', 'pointer', ['pointer', 'pointer']);
+const typeKind = api('mono_type_get_type', 'int', ['pointer']);
+const byReference = api('mono_type_is_byref', 'int', ['pointer']);
+const typeClass = api('mono_type_get_class', 'pointer', ['pointer']);
+const enumClass = api('mono_class_is_enum', 'int', ['pointer']);
+const enumBase = api('mono_class_enum_basetype', 'pointer', ['pointer']);
 const compile = api('mono_compile_method', 'pointer', ['pointer']);
 const fieldOf = api('mono_class_get_field_from_name', 'pointer', ['pointer', 'pointer']);
+const fieldType = api('mono_field_get_type', 'pointer', ['pointer']);
+const fieldFlags = api('mono_field_get_flags', 'uint32', ['pointer']);
+const instanceSize = api('mono_class_instance_size', 'int', ['pointer']);
 const offsetOf = api('mono_field_get_offset', 'uint32', ['pointer']);
 const parentOf = api('mono_class_get_parent', 'pointer', ['pointer']);
 const className = api('mono_class_get_name', 'pointer', ['pointer']);
@@ -22,8 +35,9 @@ const staticValue = api('mono_field_static_get_value', 'void', ['pointer', 'poin
 const invoke = api('mono_runtime_invoke', 'pointer', ['pointer', 'pointer', 'pointer', 'pointer']);
 const pinObject = api('mono_gchandle_new', 'uint32', ['pointer', 'int']);
 const freePin = api('mono_gchandle_free', 'void', ['uint32']);
+const pinTarget = api('mono_gchandle_get_target', 'pointer', ['uint32']);
 let state = 'idle', error = null, hooks = [], pins = [], lease = null;
-let restoreTimer = null, hmd = null, originals = null, frames = 0;
+let restoreTimer = null, hmd = null, originals = null, frames = 0, restorationBusy = false, activationBusy = false;
 let native = null, cleanupTimer = null, cleanupDeadline = 0;
 const validFrames = [0, 0];
 let lastValid = [0, 0];
@@ -125,7 +139,7 @@ function prepareNative() {
         try {
             if (state === 'restoring') { restore(); return; }
             if (state !== 'starting') return;
-            hmd = owner; pins.push(pinObject(hmd, 1));
+            hmd = pinnedObject(owner, 'HMD');
             originals = {hmd: hmd.add(bindings.hmdOffset).readU8(), shared: bindings.shared.add(bindings.sharedOffset).readU8()};
             setBoolean(bindings.sharedSetter, bindings.shared, 1);
             setBoolean(bindings.hmdSetter, hmd, 1);
@@ -153,6 +167,7 @@ function prepareNative() {
 }
 function restorationFailure(failure) {
     error = String(failure); state = 'restore-failed';
+    if (cleanupTimer !== null) { clearTimeout(cleanupTimer); cleanupTimer = null; }
     try { native?.setPhase(0); } catch (disableFailure) { error += '; ' + String(disableFailure); }
 }
 function requestStop(failure) {
@@ -165,8 +180,14 @@ function requirePointer(pointer, message) {
     return pointer;
 }
 function managed(action) {
-    const thread = attachThread(rootDomain);
+    const thread = requirePointer(attachThread(rootDomain), 'Managed thread attachment failed');
     try { return action(); } finally { detachThread(thread); }
+}
+function pinnedObject(object, label) {
+    const handle = pinObject(requirePointer(object, label + ' is unavailable'), 1);
+    if (!handle) throw new Error(label + ' pin was not created');
+    pins.push(handle);
+    return requirePointer(pinTarget(handle), 'Pinned ' + label + ' is unavailable');
 }
 function classFor(assembly, namespace, name) {
     const descriptor = assemblyName(Memory.allocUtf8String(assembly));
@@ -176,15 +197,56 @@ function classFor(assembly, namespace, name) {
     } finally { freeName(descriptor); }
 }
 function method(klass, name, argumentsCount) {
-    return requirePointer(methodOf(klass, Memory.allocUtf8String(name), argumentsCount), 'Managed method is missing: ' + name);
+    const found = requirePointer(methodOf(klass, Memory.allocUtf8String(name), argumentsCount), 'Managed method is missing: ' + name);
+    const signature = requirePointer(signatureOf(found), 'Managed signature is unavailable: ' + name);
+    if (!instanceSignature(signature) || parameterCount(signature) !== argumentsCount)
+        throw new Error('Managed instance signature is unsupported: ' + name);
+    return found;
+}
+function signatureTypes(found) {
+    const signature = signatureOf(found), iterator = Memory.alloc(Process.pointerSize), parameters = [];
+    iterator.writePointer(ptr(0));
+    for (let index = 0; index < parameterCount(signature); index++)
+        parameters.push(requirePointer(nextParameter(signature, iterator), 'Managed parameter type is missing'));
+    return {result: requirePointer(returnType(signature), 'Managed return type is missing'), parameters};
+}
+function integral32(type, boolean = false) {
+    if (byReference(type)) return false;
+    let kind = typeKind(type);
+    // Mono's public type codes: Boolean=2, Int32=8, UInt32=9, ValueType=17.
+    if (kind === 17) {
+        const klass = typeClass(type);
+        if (klass.isNull() || !enumClass(klass)) return false;
+        kind = typeKind(enumBase(klass));
+    }
+    return kind === 8 || kind === 9 || (boolean && kind === 2);
+}
+function pointerParameter(type) {
+    // A byref, native pointer, or managed reference occupies the pointer slot
+    // used by the existing adapter. This does not validate its private layout.
+    return byReference(type) !== 0 || [15, 18, 20, 28, 29].includes(typeKind(type));
+}
+function setterMethod(klass, name) {
+    const found = method(klass, name, 1), types = signatureTypes(found);
+    if (byReference(types.result) || typeKind(types.result) !== 1 || byReference(types.parameters[0]) || typeKind(types.parameters[0]) !== 2)
+        throw new Error('Managed Boolean setter signature is unsupported: ' + name);
+    return found;
 }
 function field(klass, name) {
     return requirePointer(fieldOf(klass, Memory.allocUtf8String(name)), 'Managed field is missing: ' + name);
 }
+function booleanOffset(klass, name) {
+    const found = field(klass, name), type = requirePointer(fieldType(found), 'Managed field type is missing: ' + name);
+    const offset = offsetOf(found), size = instanceSize(klass);
+    if ((fieldFlags(found) & 16) || byReference(type) || typeKind(type) !== 2
+        || offset < Process.pointerSize * 2 || offset >= size)
+        throw new Error('Managed Boolean field layout is unsupported: ' + name);
+    return offset;
+}
 let bindings = null;
 function resolve() {
     if (bindings !== null) return bindings;
-    return managed(() => {
+    const resolved = managed(() => {
         const klass = classFor(profile.assembly, profile.namespace, profile.class);
         const settings = classFor(profile.settingsAssembly, profile.settingsNamespace, profile.settingsClass);
         let base = settings;
@@ -194,21 +256,33 @@ function resolve() {
         }
         if (className(base).readUtf8String() !== 'SettingsBase`1') throw new Error('Settings inheritance is unsupported');
         const sharedSlot = Memory.alloc(Process.pointerSize);
-        staticValue(vtableOf(rootDomain, base), field(base, '<Default>k__BackingField'), sharedSlot);
-        const shared = requirePointer(sharedSlot.readPointer(), 'Settings singleton is unavailable');
-        const get = name => requirePointer(compile(method(klass, name, name === 'ConvertFingerState' ? 2 : 1)), 'Managed method did not compile');
-        bindings = {
-            update: get('Update'), handState: get('GetHandState'),
-            convert: new NativeFunction(get('ConvertFingerState'), 'int', ['pointer', 'int', 'pointer']),
-            hmdSetter: method(klass, 'set_UseMultiModalInput', 1),
-            sharedSetter: method(settings, 'set_UseMultiModal', 1), shared,
-            hmdOffset: offsetOf(field(klass, '_useMultiModalInput')),
-            sharedOffset: offsetOf(field(settings, '_useMultiModal'))
+        const sharedVtable = requirePointer(vtableOf(rootDomain, base), 'Settings singleton vtable is unavailable');
+        const sharedField = field(base, '<Default>k__BackingField');
+        if (!(fieldFlags(sharedField) & 16)) throw new Error('Settings singleton field is not static');
+        staticValue(sharedVtable, sharedField, sharedSlot);
+        requirePointer(sharedSlot.readPointer(), 'Settings singleton is unavailable');
+        const converter = method(klass, 'ConvertFingerState', 2), types = signatureTypes(converter);
+        if (!integral32(types.result, true) || !integral32(types.parameters[0]) || !pointerParameter(types.parameters[1]))
+            throw new Error('Managed finger conversion signature is unsupported');
+        const get = name => {
+            const found = method(klass, name, 1);
+            if (name === 'GetHandState' && !pointerParameter(signatureTypes(found).parameters[0]))
+                throw new Error('Managed hand-state pointer signature is unsupported');
+            return requirePointer(compile(found), 'Managed method did not compile');
         };
-        if (bindings.hmdOffset < Process.pointerSize * 2 || bindings.sharedOffset < Process.pointerSize * 2)
+        const value = {
+            update: get('Update'), handState: get('GetHandState'),
+            convert: new NativeFunction(requirePointer(compile(converter), 'Managed method did not compile'), 'int', ['pointer', 'int', 'pointer']),
+            hmdSetter: setterMethod(klass, 'set_UseMultiModalInput'),
+            sharedSetter: setterMethod(settings, 'set_UseMultiModal'), shared: null, sharedVtable, sharedField,
+            hmdOffset: booleanOffset(klass, '_useMultiModalInput'),
+            sharedOffset: booleanOffset(settings, '_useMultiModal')
+        };
+        if (value.hmdOffset < Process.pointerSize * 2 || value.sharedOffset < Process.pointerSize * 2)
             throw new Error('Managed field offsets are unsupported');
-        return bindings;
+        return value;
     });
+    bindings = resolved; return bindings;
 }
 function setBoolean(setter, object, value) {
     const argument = Memory.alloc(4); argument.writeS32(value);
@@ -226,13 +300,20 @@ function release() {
     function finish() {
         cleanupTimer = null;
         try {
-            if (native !== null && native.pending() !== 0) {
+            const pending = native !== null ? native.pending() : 0;
+            if (state === 'restore-failed') return;
+            if (pending !== 0 || activationBusy) {
                 if (Date.now() >= cleanupDeadline) throw new Error('Native optical callbacks did not drain');
                 cleanupTimer = setTimeout(finish, 25); return;
             }
             while (hooks.length) { hooks[0].detach(); hooks.shift(); }
             Interceptor.flush();
-            managed(() => { while (pins.length) { freePin(pins[0]); pins.shift(); } });
+            managed(() => {
+                while (pins.length && state !== 'restore-failed') { freePin(pins[0]); pins.shift(); }
+            });
+            // Mono handle release/detach also releases the JS lock. A failure
+            // on another restoration thread must remain sticky after cleanup.
+            if (state === 'restore-failed') return;
             // Keep native code, storage and callbacks strongly reachable until
             // Frida unloads the script after its own native Interceptor drain.
             state = 'stopped';
@@ -241,17 +322,24 @@ function release() {
     cleanupTimer = setTimeout(finish, 0);
 }
 function restore() {
+    // Both the Mono-attached fallback and a resumed VD Update can reach here.
+    // Claim restoration before a cooperative NativeFunction releases the JS
+    // lock, so only one caller owns the saved values and managed setter calls.
+    if (state !== 'restoring' || restorationBusy) return;
+    restorationBusy = true;
     try {
         if (native !== null && native.handPending() !== 0) return;
-        if (originals === null) { release(); return; }
-        setBoolean(bindings.hmdSetter, hmd, originals.hmd);
-        setBoolean(bindings.sharedSetter, bindings.shared, originals.shared);
-        if (hmd.add(bindings.hmdOffset).readU8() !== originals.hmd ||
-            bindings.shared.add(bindings.sharedOffset).readU8() !== originals.shared)
+        const saved = originals;
+        if (saved === null) { release(); return; }
+        setBoolean(bindings.hmdSetter, hmd, saved.hmd);
+        setBoolean(bindings.sharedSetter, bindings.shared, saved.shared);
+        if (hmd.add(bindings.hmdOffset).readU8() !== saved.hmd ||
+            bindings.shared.add(bindings.sharedOffset).readU8() !== saved.shared)
             throw new Error('Managed settings restoration did not verify');
         originals = null;
         release();
     } catch (failure) { restorationFailure(failure); }
+    finally { restorationBusy = false; }
 }
 function deactivate() {
     if (['stopped', 'restore-failed', 'restoring'].includes(state)) return;
@@ -287,16 +375,33 @@ rpc.exports = {
         nativeCallbacks: true, fridaRuntime: Script.runtime}; },
     activate(seconds) {
         if (state !== 'idle') throw new Error('Optical hand adapter is already used');
-        resolve(); const callbacks = prepareNative(); state = 'starting';
+        if (!Number.isFinite(seconds) || seconds < 1 || seconds > 30) throw new Error('Invalid optical hand lease');
+        resolve(); if (state !== 'idle') return;
+        const callbacks = prepareNative(); if (state !== 'idle') return;
+        state = 'starting';
+        activationBusy = true;
         try {
-            pins.push(managed(() => pinObject(bindings.shared, 1)));
+            managed(() => {
+                // Validation retains metadata, never a movable singleton pointer.
+                // Re-read immediately before creating the handle, retain that
+                // handle before detach can fail, and use its rooted target.
+                if (state !== 'starting') return;
+                const slot = Memory.alloc(Process.pointerSize);
+                staticValue(bindings.sharedVtable, bindings.sharedField, slot);
+                if (state !== 'starting') return;
+                bindings.shared = pinnedObject(slot.readPointer(), 'Settings singleton');
+            });
+            if (state !== 'starting') return;
             callbacks.setPhase(1);
+            if (state !== 'starting') return;
             hooks.push(Interceptor.attach(bindings.update, {onEnter: callbacks.module.updateEnter}));
             callbacks.attached = true;
+            if (!['starting', 'running'].includes(state)) return;
             hooks.push(Interceptor.attach(bindings.handState, {
                 onEnter: callbacks.module.handEnter, onLeave: callbacks.module.handLeave}));
-            heartbeat(seconds);
+            if (['starting', 'running'].includes(state)) heartbeat(seconds);
         } catch (failure) { requestStop(failure); throw failure; }
+        finally { activationBusy = false; }
     },
     heartbeat, deactivate,
     status() { return {state, error, frames, validFrames, freshSides: lastValid.map(time => Date.now() - time < 500),
