@@ -12,13 +12,13 @@ internal sealed class HubTrackingHealth
     private readonly Func<double> _now;
     private double? _cameraAt, _healthAt, _pupilAt;
     private double _cameraTimeout = 6.5;
-    private string _tongue = "warming", _cheek = "warming", _pupil = "warming";
+    private string _tongue = "warming", _pupil = "warming";
     private TrackingSignalState? _cameraEnded;
     internal bool Running { get; private set; }
     internal bool TongueSelected { get; private set; }
-    internal bool CheekSelected { get; private set; }
+    internal bool CheekSelected => false;
     internal bool PupilSelected { get; private set; }
-    internal bool CameraSelected => TongueSelected || CheekSelected || PupilSelected;
+    internal bool CameraSelected => TongueSelected || PupilSelected;
     internal string LowerFaceBackend { get; private set; } = "Waiting for backend";
     internal string PupilBackend { get; private set; } = "Waiting for backend";
     internal double? CameraFps { get; private set; }
@@ -49,7 +49,7 @@ internal sealed class HubTrackingHealth
     internal HubTrackingHealth(Func<double>? now = null) => _now = now ?? (() => Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency);
 
     internal void Select(bool tongue, bool cheek, bool pupil)
-        => (TongueSelected, CheekSelected, PupilSelected) = (tongue, cheek, pupil);
+        => (TongueSelected, PupilSelected) = (tongue, pupil);
 
     internal void Start(bool tongue, bool cheek, bool pupil)
     {
@@ -71,7 +71,7 @@ internal sealed class HubTrackingHealth
         _cameraEnded = null;
         _cameraAt = _healthAt = _pupilAt = null;
         _cameraTimeout = 6.5;
-        _tongue = _cheek = _pupil = "warming";
+        _tongue = _pupil = "warming";
         LowerFaceBackend = PupilBackend = "Waiting for backend";
         CameraFps = InferenceFps = FrameAgeMs = ResultAgeMs = PipelineMs = DecodeMs = PreprocessMs = InferenceMs = TransferMs = PupilMs = PupilAgeMs = QueueP95Ms = null;
         DroppedFrames = PupilDroppedFrames = SourceSkips = null;
@@ -79,12 +79,12 @@ internal sealed class HubTrackingHealth
 
     internal TrackingSignalState FeatureState(string feature)
     {
-        var selected = feature switch { "tongue" => TongueSelected, "cheek" => CheekSelected, "pupil" => PupilSelected, _ => false };
+        var selected = feature switch { "tongue" => TongueSelected, "pupil" => PupilSelected, _ => false };
         if (!selected) return TrackingSignalState.Off;
         if (_cameraEnded.HasValue) return _cameraEnded.Value;
         if (!Running) return TrackingSignalState.Stopped;
         if (CameraState == TrackingSignalState.Stale) return TrackingSignalState.Stale;
-        var value = feature switch { "tongue" => _tongue, "cheek" => _cheek, _ => _pupil };
+        var value = feature == "tongue" ? _tongue : _pupil;
         var at = feature == "pupil" ? _pupilAt : _healthAt;
         if (!at.HasValue) return TrackingSignalState.Waiting;
         if (_now() - at.Value > 3.5 || (feature == "pupil" ? PupilAgeMs : ResultAgeMs) + (_now() - at.Value) * 1000 > 3500)
@@ -98,36 +98,48 @@ internal sealed class HubTrackingHealth
         };
     }
 
-    internal TrackingSignalState LowerFaceState
-    {
-        get
-        {
-            var selected = new List<TrackingSignalState>(2);
-            if (TongueSelected) selected.Add(FeatureState("tongue"));
-            if (CheekSelected) selected.Add(FeatureState("cheek"));
-            return selected.Count == 0 ? TrackingSignalState.Off
-                : selected.Contains(TrackingSignalState.Error) ? TrackingSignalState.Error
-                : selected.Contains(TrackingSignalState.Stale) ? TrackingSignalState.Stale
-                : selected.All(state => state == TrackingSignalState.Live) ? TrackingSignalState.Live
-                : selected.All(state => state == TrackingSignalState.Stopped) ? TrackingSignalState.Stopped
-                : TrackingSignalState.Waiting;
-        }
-    }
+    internal TrackingSignalState LowerFaceState => FeatureState("tongue");
 
     internal string LowerFaceStatusText => LowerFaceState switch
     {
         TrackingSignalState.Live => "Live",
         TrackingSignalState.Stale => "Stale output",
+        TrackingSignalState.Invalid => "Invalid output",
         TrackingSignalState.Waiting => "Waiting for output",
         _ => LowerFaceState.ToString(),
     };
 
     internal double? SnapshotAgeSeconds => _healthAt.HasValue ? Math.Max(0, _now() - _healthAt.Value) : null;
 
+    internal string GuidanceText => CameraState switch
+    {
+        TrackingSignalState.Stale => "Camera input is stale. Keep the headset awake; check the connection and Activity.",
+        TrackingSignalState.Error => "Camera worker failed. Check Activity for the error before restarting.",
+        TrackingSignalState.Waiting => "Waiting for camera frames. Selecting a GPU does not confirm live input.",
+        TrackingSignalState.Stopped => "Camera tracking stopped. Start tracking to see live health.",
+        TrackingSignalState.Off => "Camera features are off. Enable tongue or pupils to see live health.",
+        _ => OutputGuidance(),
+    };
+
+    private string OutputGuidance()
+    {
+        var tongue = FeatureState("tongue");
+        var pupil = FeatureState("pupil");
+        if (tongue == TrackingSignalState.Stale || pupil == TrackingSignalState.Stale)
+            return "A camera feature has stale output. Check Activity before relying on it.";
+        var invalid = new List<string>(2);
+        if (tongue == TrackingSignalState.Invalid) invalid.Add("Tongue output is invalid. Check the selected model and Activity.");
+        if (pupil == TrackingSignalState.Invalid) invalid.Add("Pupils are invalid or warming. Hold steady and check Activity if this continues.");
+        if (invalid.Count > 0) return string.Join(" ", invalid);
+        if (tongue == TrackingSignalState.Waiting || pupil == TrackingSignalState.Waiting)
+            return "Camera frames are live. Waiting for selected model outputs to warm up.";
+        return "Processing delay is measured on this PC. Check tracking output in VRCFaceTracking.";
+    }
+
     internal string DiagnosticText()
     {
         static string Metric(double? value) => value?.ToString("0.0", CultureInfo.InvariantCulture) ?? "unavailable";
-        return $"Camera health: {CameraState}; tongue: {FeatureState("tongue")}; camera cheeks: {FeatureState("cheek")}; pupils: {FeatureState("pupil")}\n"
+        return $"Camera health: {CameraState}; tongue: {FeatureState("tongue")}; pupils: {FeatureState("pupil")}\n"
             + $"Lower-face backend: {LowerFaceBackend}; pupil backend: {PupilBackend}\n"
             + $"Last camera FPS: {Metric(CameraFps)}; inference FPS: {Metric(InferenceFps)}; processing delay ms: {Metric(PipelineMs)}; snapshot age seconds: {Metric(SnapshotAgeSeconds)}\n"
             + $"Last PC frame age ms: {Metric(FrameAgeMs)}; result age ms: {Metric(ResultAgeMs)}; pupil age ms: {Metric(PupilAgeMs)}\n"
@@ -183,7 +195,7 @@ internal sealed class HubTrackingHealth
         if (!Number(fields, "camera_fps", out var cameraFps) || !Number(fields, "inference_fps", out var inferenceFps)
             || !Number(fields, "frame_age_ms", out var frameAge) || !Timing(fields, "pipeline_ms", out var pipeline)
             || Count(fields, "dropped_frames") is not { } dropped
-            || !Signal(fields, "tongue", out var tongue) || !Signal(fields, "cheek", out var cheek) || !Signal(fields, "pupil", out var pupil)) return false;
+            || !Signal(fields, "tongue", out var tongue) || !Signal(fields, "pupil", out var pupil)) return false;
         if (_healthAt.HasValue && observedAt < _healthAt.Value) return false;
         _healthAt = _cameraAt = observedAt;
         _cameraTimeout = 3.5;
@@ -191,7 +203,7 @@ internal sealed class HubTrackingHealth
         ResultAgeMs = Optional(fields, "result_age_ms");
         DecodeMs = Optional(fields, "decode_ms"); PreprocessMs = Optional(fields, "preprocess_ms");
         InferenceMs = Optional(fields, "inference_ms"); TransferMs = Optional(fields, "transfer_ms");
-        DroppedFrames = dropped; _tongue = tongue; _cheek = cheek; _pupil = pupil;
+        DroppedFrames = dropped; _tongue = tongue; _pupil = pupil;
         _pupilAt = observedAt;
         PupilMs = Optional(fields, "pupil_ms"); PupilAgeMs = Optional(fields, "pupil_age_ms");
         PupilDroppedFrames = Count(fields, "pupil_dropped_frames");
@@ -237,7 +249,7 @@ internal sealed partial class HubForm
     private readonly Label _healthRates = Info("Camera — FPS · inference — FPS · processing delay — ms");
     private readonly Label _healthTiming = Info("PC frame age — ms · result age — ms");
     private readonly Label _healthDrops = Info("Queue drops — · source skips —");
-    private readonly Label _healthFeatures = Info("Tongue: off · camera cheeks: off · pupils: off");
+    private readonly Label _healthFeatures = Info("Tongue: off · pupils: off");
     private readonly Label _healthNote = Info("Live health appears when camera tracking starts.");
     private readonly Label _healthStages = Info("Decode — ms · prepare — ms · prediction total — ms · GPU wait/readback — ms");
     private readonly Label _healthPupil = Info("Pupil processing — ms · pupil result age — ms · queue delay p95 — ms");
@@ -247,10 +259,10 @@ internal sealed partial class HubForm
     {
         var card = Card();
         _trackingHealthCard = card;
-        card.AccessibleName = "Live tracking health";
+        card.AccessibleName = "Tracking health";
         card.ColumnCount = 1;
         card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        card.Controls.Add(SectionTitle("Live tracking health", HubIcon.Activity));
+        card.Controls.Add(SectionTitle("Tracking health", HubIcon.Activity));
         foreach (var label in new[] { _healthRates, _healthFeatures, _healthModule, _healthNote })
         {
             label.Margin = new Padding(0, 0, 0, 6);
@@ -286,21 +298,21 @@ internal sealed partial class HubForm
 
     private void InitializeTrackingHealthUi()
     {
-        foreach (var toggle in new[] { _tongue, _cameraCheekPuff, _pupil })
+        foreach (var toggle in new[] { _tongue, _pupil })
             toggle.CheckedChanged += (_, _) =>
             {
-                if (!_trackingHealth.Running) _trackingHealth.Select(_tongue.Checked, _cameraCheekPuff.Checked, _pupil.Checked);
+                if (!_trackingHealth.Running) _trackingHealth.Select(_tongue.Checked, false, _pupil.Checked);
                 RefreshTrackingHealth();
             };
         Resize += (_, _) => { if (WindowState != FormWindowState.Minimized) RefreshTrackingHealth(); };
         ResizeEnd += (_, _) => RefreshTrackingHealth();
-        _trackingHealth.Select(_tongue.Checked, _cameraCheekPuff.Checked, _pupil.Checked);
+        _trackingHealth.Select(_tongue.Checked, false, _pupil.Checked);
         RefreshTrackingHealth();
     }
 
     private void BeginTrackingHealth()
     {
-        _trackingHealth.Start(_tongue.Checked, _cameraCheekPuff.Checked, _pupil.Checked);
+        _trackingHealth.Start(_tongue.Checked, false, _pupil.Checked);
         _cameraInputReady = false;
         RefreshTrackingHealth();
     }
@@ -357,23 +369,12 @@ internal sealed partial class HubForm
             Label(_healthPupil, $"Pupil processing {(metricsCurrent ? Number(_trackingHealth.PupilMs) : "—")} ms · pupil result age {(metricsCurrent ? Number(_trackingHealth.PupilAgeMs) : "—")} ms · queue delay p95 {Number(_trackingHealth.QueueP95Ms)} ms", Muted);
         }
         Label(_healthDrops, $"Queue drops {_trackingHealth.DroppedFrames?.ToString(CultureInfo.InvariantCulture) ?? "—"} · pupil drops {_trackingHealth.PupilDroppedFrames?.ToString(CultureInfo.InvariantCulture) ?? "—"} · source skips {_trackingHealth.SourceSkips?.ToString(CultureInfo.InvariantCulture) ?? "—"}", Muted);
-        var states = new[] { _trackingHealth.FeatureState("tongue"), _trackingHealth.FeatureState("cheek"), _trackingHealth.FeatureState("pupil") };
+        var states = new[] { _trackingHealth.FeatureState("tongue"), _trackingHealth.FeatureState("pupil") };
         var featureColor = states.Contains(TrackingSignalState.Error) ? Bad
             : states.Any(state => state is TrackingSignalState.Stale or TrackingSignalState.Invalid or TrackingSignalState.Waiting) ? Warning
             : states.Contains(TrackingSignalState.Live) ? Good : Muted;
-        Label(_healthFeatures, $"Tongue: {State(states[0])} · camera cheeks: {State(states[1])} · pupils: {State(states[2])}", featureColor);
-        var note = camera switch
-        {
-            TrackingSignalState.Stale => "Camera input is stale. Keep the headset awake; check the connection and Activity.",
-            TrackingSignalState.Error => "Camera worker failed. Check Activity for the error before restarting.",
-            TrackingSignalState.Waiting => "Waiting for camera frames. Selecting a GPU does not confirm live input.",
-            TrackingSignalState.Stopped => "Camera tracking stopped. Start tracking to see live health.",
-            TrackingSignalState.Off => "Camera features are off. Enable tongue, camera cheeks or pupils to see live health.",
-            _ => states.Contains(TrackingSignalState.Stale) ? "A camera feature has stale output. Check Activity before relying on it."
-                : states.Contains(TrackingSignalState.Invalid) ? "Pupils are invalid or warming. Hold steady and check Activity if this continues."
-                : states.Contains(TrackingSignalState.Waiting) ? "Camera frames are live. Waiting for selected model outputs to warm up."
-                : "Processing delay is measured on this PC. Check tracking output in VRCFaceTracking.",
-        };
+        Label(_healthFeatures, $"Tongue: {State(states[0])} · pupils: {State(states[1])}", featureColor);
+        var note = _trackingHealth.GuidanceText;
         var showWarning = camera is TrackingSignalState.Stale or TrackingSignalState.Error or TrackingSignalState.Waiting
             || states.Any(state => state is TrackingSignalState.Stale or TrackingSignalState.Error or TrackingSignalState.Invalid or TrackingSignalState.Waiting);
         if (_healthNote.Visible != showWarning) _healthNote.Visible = showWarning;
@@ -384,19 +385,19 @@ internal sealed partial class HubForm
             _healthTiming.AccessibleDescription = $"Decode {Number(_trackingHealth.DecodeMs)} ms; preprocess {Number(_trackingHealth.PreprocessMs)} ms; prediction total {Number(_trackingHealth.InferenceMs)} ms; GPU wait/readback {Number(_trackingHealth.TransferMs)} ms. Prediction includes preparation and GPU wait/readback, so timings cannot be added. These are PC observations, not headset-to-avatar latency.";
         if (!_stopping && !_starting && _trackingHealth.Running)
         {
-            if (_trackingHealth.TongueSelected || _trackingHealth.CheekSelected)
+            if (_trackingHealth.TongueSelected)
                 SetStatus(_inferenceStatus, _trackingHealth.LowerFaceState == TrackingSignalState.Live ? StatusKind.Good
                     : _trackingHealth.LowerFaceState == TrackingSignalState.Error ? StatusKind.Bad : StatusKind.Warning,
                     _trackingHealth.LowerFaceStatusText);
             if (_trackingHealth.PupilSelected)
-                SetStatus(_pupilStatus, states[2] == TrackingSignalState.Live ? StatusKind.Good : StatusKind.Warning, State(states[2]));
+                SetStatus(_pupilStatus, states[1] == TrackingSignalState.Live ? StatusKind.Good : StatusKind.Warning, State(states[1]));
         }
     }
 
     internal void ApplyTrackingHealthPreview()
     {
         if (!_previewOnly) throw new InvalidOperationException("Health sample data requires preview mode.");
-        _tongue.Checked = _cameraCheekPuff.Checked = _pupil.Checked = true;
+        _tongue.Checked = _pupil.Checked = true;
         BeginTrackingHealth();
         _trackingHealth.Observe("INFERENCE_BACKEND feature=tongue backend=nvidia-cuda device=cuda:0 name=NVIDIA RTX 4070 · sample");
         _trackingHealth.Observe("INFERENCE_BACKEND feature=pupil backend=nvidia-cuda device=cuda:0 name=NVIDIA RTX 4070 · sample");

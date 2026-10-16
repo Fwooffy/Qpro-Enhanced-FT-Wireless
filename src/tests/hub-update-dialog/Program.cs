@@ -16,6 +16,12 @@ internal static class UpdateDialogTests
         Application.SetColorMode(SystemColorMode.Dark);
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
         Control.CheckForIllegalCrossThreadCalls = true;
+        if (args.Contains("--branding-only", StringComparer.Ordinal))
+        {
+            try { CheckBranding(args.FirstOrDefault(value => !value.StartsWith("--", StringComparison.Ordinal))); }
+            catch (Exception error) { Console.Error.WriteLine(error); Environment.ExitCode = 1; }
+            return;
+        }
         // A real message loop supplies the same synchronization context as the
         // app's modal update dialog. DoEvents alone creates a temporary loop.
         using var loop = new Form { ShowInTaskbar = false, Opacity = 0, Size = new Size(1, 1) };
@@ -26,6 +32,39 @@ internal static class UpdateDialogTests
             finally { loop.Close(); }
         };
         Application.Run(loop);
+    }
+
+    static void CheckBranding(string? output)
+    {
+        foreach (bool prerelease in new[] { false, true })
+        {
+            using var dialog = new HubUpdateDialog(Available(prerelease ? "3.0.2" : "3.0.1", prerelease),
+                new Version(3, 0, 0), true, null, (_, _, _) => throw new Exception("Branding preview cannot download."),
+                includePrereleases: prerelease,
+                checkUpdates: (_, _) => Task.FromResult(Available(prerelease ? "3.0.2" : "3.0.1", prerelease)));
+            Check(dialog.Text == "Qpro Companion updates" &&
+                Field<Label>(dialog, "_title").Text.StartsWith("Qpro Companion V", StringComparison.Ordinal),
+                "The update dialog kept the old public product name.");
+            using var surface = new OffscreenPreviewForm
+            {
+                Text = dialog.Text, BackColor = dialog.BackColor, ForeColor = dialog.ForeColor, Font = dialog.Font,
+                AutoScaleMode = dialog.AutoScaleMode, AutoScaleDimensions = dialog.AutoScaleDimensions,
+                Size = dialog.Size, MinimumSize = dialog.MinimumSize, StartPosition = FormStartPosition.Manual,
+                Location = new Point(-32000, -32000), ShowInTaskbar = false,
+            };
+            surface.Controls.Add(dialog.Controls[0]);
+            surface.Show(); Pump();
+            Check(Field<Label>(dialog, "_title").Height >= Field<Label>(dialog, "_title").GetPreferredSize(
+                new Size(Field<Label>(dialog, "_title").Width, 0)).Height, "The branded update title is clipped.");
+            Screenshot(surface, output, prerelease ? "updates-prerelease.png" : "updates-stable.png");
+            surface.Close();
+        }
+        Console.WriteLine($"PASS: {_passed} update display branding checks. Offscreen sample data only; no network, downloads or settings changes.");
+    }
+
+    private sealed class OffscreenPreviewForm : Form
+    {
+        protected override bool ShowWithoutActivation => true;
     }
 
     static void Run(string? output)
@@ -59,6 +98,9 @@ internal static class UpdateDialogTests
             var prereleases = Field<CheckBox>(dialog, "_prereleases");
             var install = Field<DarkButton>(dialog, "_install");
             var retry = Field<DarkButton>(dialog, "_checkAgain");
+            Check(dialog.Text == "Qpro Companion updates" &&
+                Field<Label>(dialog, "_title").Text == "Qpro Companion V3.0.1",
+                "The update dialog kept the old public product name.");
             Check(!dialog.IncludePrereleases && install.Enabled, "Default stable channel did not remain selected.");
             Screenshot(dialog, output, "updates-stable.png");
             prereleases.Checked = true; Pump();
@@ -178,7 +220,7 @@ internal static class UpdateDialogTests
             "PREVIEW · SAMPLE DATA\n\nSample release notes for layout verification.\n\n• Improve app setup diagnostics.\n• Keep models and saved options when updating.\n\nThis fixture does not download or install an update.",
             "QproFaceTracking.V" + version + ".zip", new Uri("https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases/download/v" + version + "/QproFaceTracking.V" + version + ".zip"),
             1024, new string('a', 64), prerelease);
-        return new(HubUpdateCheckState.Available, $"Sample result: QproFaceTracking V{version}" + (prerelease ? " prerelease is available." : " is available."), release);
+        return new(HubUpdateCheckState.Available, $"Sample result: Qpro Companion V{version}" + (prerelease ? " prerelease is available." : " is available."), release);
     }
     static T Field<T>(object value, string name) => (T)value.GetType().GetField(name, Private)!.GetValue(value)!;
     static void Check(bool value, string message) { if (!value) throw new Exception(message); _passed++; }

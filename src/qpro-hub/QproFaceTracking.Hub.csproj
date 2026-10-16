@@ -8,6 +8,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>QproFaceTracking.Hub</AssemblyName>
     <RootNamespace>QproFaceTracking.Hub</RootNamespace>
+    <Title>Qpro Companion</Title>
+    <AssemblyTitle>Qpro Companion</AssemblyTitle>
+    <Product>Qpro Companion</Product>
+    <Description>Qpro Companion</Description>
     <Version>3.0.0</Version>
   </PropertyGroup>
   <ItemGroup>

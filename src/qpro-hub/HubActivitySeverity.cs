@@ -43,6 +43,14 @@ internal sealed class HubActivityClassifier
             _continuations.Remove(start.Groups["name"].Value);
         }
 
+        // Optional binding setup reports a recoverable result even when its
+        // explanation includes an earlier failure or manual-selection fallback.
+        if (Regex.IsMatch(text, @"^CONTROLLER_BINDINGS_WARNING\b"))
+        {
+            _continuations.Remove(source);
+            return ActivitySeverity.Warning;
+        }
+
         if (Regex.IsMatch(text, @"^(?:\+\s*)?(?:CategoryInfo|FullyQualifiedErrorId)\s*:", IgnoreCase) ||
             Regex.IsMatch(text, @"^(?:.+\.ps1|&|[A-Za-z]+-[A-Za-z]+)\s+:\s+", IgnoreCase) ||
             Regex.IsMatch(text, @"^.+\s+:\s+Traceback \(most recent call last\):$", IgnoreCase) ||

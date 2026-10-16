@@ -80,6 +80,8 @@ internal sealed partial class HubForm
             // Publish the fresh transport result before unrelated module,
             // runtime or heartbeat work can delay or fail this refresh.
             PublishConnectionStatus(quest, wireless, target);
+            await DetectMagiskGazeOnceAsync(quest);
+            if (_closingInProgress || IsDisposed || Disposing || ContextChanged()) return;
             var dependencies = _previewStatusRefreshDependencies;
             var snapshot = await (dependencies?.ReadSnapshot() ?? Task.Run(ReadStatusSnapshot));
             if (_closingInProgress || IsDisposed || Disposing || ContextChanged()) return;
@@ -187,12 +189,16 @@ internal sealed partial class HubForm
     private void RememberGazeCompatibility(HubCompatibilityReport report)
     {
         _lastGazeStatusObservation = new(report, null, GetConfiguredAdbTarget(), _environment.WirelessSelected);
+        // A failed root/environment read is not a negative module scan.
+        if (report.HasActiveMagiskGaze || report.GazePreflightPassed)
+            _magiskGazeState.Observe(GetConfiguredAdbTarget(), _environment.WirelessSelected, report.HasActiveMagiskGaze);
         UpdateGazeSetupStatus();
     }
 
     private void RememberGazeInspection(HubGazeInspection report)
     {
         _lastGazeStatusObservation = new(null, report, GetConfiguredAdbTarget(), _environment.WirelessSelected);
+        _magiskGazeState.Observe(GetConfiguredAdbTarget(), _environment.WirelessSelected, report.HasActiveMagiskGaze);
         UpdateGazeSetupStatus();
     }
 
@@ -214,7 +220,9 @@ internal sealed partial class HubForm
             observed = _lastGazeStatusObservation = null;
         // Keep the last completed observation during unrelated refreshes and
         // pending checks. It describes that check, never runtime authorization.
-        var magisk = observed?.Compatibility?.HasActiveMagiskGaze == true || observed?.Inspection?.HasActiveMagiskGaze == true;
+        var magisk = HasActiveMagiskGaze;
+        var sessionEditable = !_trackingCleanupPending && !LiveTrackingRunning && !_starting && !_stopping;
+        ApplyMagiskGazeControlGate(sessionEditable);
         var needsRecovery = observed?.Inspection?.NeedsAttention == true;
         var incompatible = observed?.Compatibility is { HasActiveMagiskGaze: false, CanPrepareGaze: false };
         var prepared = EyeModelReady();
@@ -229,8 +237,8 @@ internal sealed partial class HubForm
         }
         else if (magisk)
         {
-            setupText = _gaze.Checked ? "Magisk gaze detected · turn Hub gaze off" : "Last check: Magisk gaze · skip Hub setup";
-            statusText = _gaze.Checked ? "Magisk gaze active · turn Hub gaze off" : "Magisk gaze · last check";
+            setupText = _gaze.Checked ? "Magisk gaze detected · Stop tracking first" : "Provided by Magisk · Skip Hub gaze setup";
+            statusText = _gaze.Checked ? "Two gaze methods · Stop tracking" : "Provided by Magisk · Hub gaze off";
             setupColor = _gaze.Checked ? Warning : Muted;
             status = _gaze.Checked ? StatusKind.Warning : StatusKind.Good;
         }
@@ -255,6 +263,7 @@ internal sealed partial class HubForm
         if (_setupGazeStatus.Text != setupText) _setupGazeStatus.Text = setupText;
         if (_setupGazeStatus.ForeColor != setupColor) _setupGazeStatus.ForeColor = setupColor;
         SetStatus(_gazeStatus, status, statusText);
+        if (magisk) _setupGazeButton.Enabled = _inspectGazeButton.Enabled = false;
     }
 
     private void StyleSetupStep(DarkButton button, Label status, string label, bool complete, bool attention)
@@ -348,14 +357,13 @@ internal sealed partial class HubForm
         // These values are passed once to the child process. Keep the controls
         // locked until Stop, rather than implying that a live model was reloaded.
         var sessionEditable = !running && !_stopping && !_starting;
-        _gaze.Enabled = sessionEditable;
+        ApplyMagiskGazeControlGate(sessionEditable);
         _tongue.Enabled = sessionEditable;
         _pupil.Enabled = sessionEditable;
-        _eyeProfiles.Enabled = _gaze.Checked && sessionEditable;
         // Model selection precedes the opt-in output switches. It must remain
         // usable when all camera features are off on a fresh Hub launch.
         _tongueModels.Enabled = sessionEditable;
-        _fps.Enabled = (_tongue.Checked || _cameraCheekPuff.Checked || _pupil.Checked) && sessionEditable;
+        _fps.Enabled = (_tongue.Checked || _pupil.Checked) && sessionEditable;
         _processingProfile.Enabled = _pupil.Checked && sessionEditable;
         _pupilSensitivity.Enabled = _pupil.Checked && sessionEditable;
         _cameraPreview.Enabled = sessionEditable;
@@ -369,21 +377,15 @@ internal sealed partial class HubForm
         _smoothing.Enabled = _tongue.Checked && sessionEditable;
         _visibilityMode.Enabled = _tongue.Checked && sessionEditable;
         _recoverGazeButton.Enabled = sessionEditable && !_setupActionRunning && !_utilityActionRunning && !_datasetOperationBusy && !_gazeRecoveryRunning;
-        _inspectGazeButton.Enabled = _recoverGazeButton.Enabled;
+        _inspectGazeButton.Enabled = _recoverGazeButton.Enabled && !HasActiveMagiskGaze;
         _resetLegacyGazeButton.Enabled = _recoverGazeButton.Enabled;
         var canStart = !running && !_stopping && !_starting && !_setupActionRunning &&
             !_utilityActionRunning && !_datasetOperationBusy;
         if (_checkCompatibility is not null) _checkCompatibility.Enabled = canStart && !_compatibilityChecking;
-        _cheekCameraBaseModels.Enabled = canStart;
-        _cheekCameraDatasets.Enabled = canStart;
-        _recordCameraCheeks.Enabled = canStart;
-        _trainCameraCheeks.Enabled = canStart && _cheekCameraBaseModels.SelectedItem is FileChoice &&
-            _cheekCameraDatasets.SelectedItem is DatasetChoice;
         _start.Enabled = canStart && !ControllerRestartBlocked;
         _stop.Enabled = (running || _starting) && !_stopping;
         StyleRunButton(_start, _start.Enabled);
         StyleRunButton(_stop, (running || _starting) && !_stopping);
-        UpdateCameraCheekAvailability();
         UpdateControllerInputAvailabilityFromSnapshot(snapshot?.RuntimeReady);
         SetSetupButtonsEnabled(true, snapshot?.RuntimeReady, snapshot?.BridgeUninstallAvailable);
     }
@@ -399,7 +401,7 @@ internal sealed partial class HubForm
         try
         {
             try { SaveLiveOptions(); }
-            catch (Exception error) { AppendLog("Could not save Live tracking choices: " + error.Message); }
+            catch (Exception error) { AppendLog("Could not save Facial tracking choices: " + error.Message); }
             await _environment.SuspendAdbProbesAsync();
             if (_starting || LiveTrackingRunning)
                 await StopTrackingAsync();

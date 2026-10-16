@@ -315,17 +315,24 @@ internal sealed class DarkSlider : Control
     public int Minimum { get; set; }
     [DefaultValue(100)]
     public int Maximum { get; set; } = 100;
+    [DefaultValue(1)]
+    public int SmallChange { get; set; } = 1;
+    public event EventHandler? ValueChanged;
     [DefaultValue(0)]
     public int Value
     {
         get => _value;
         set
         {
-            var next = Math.Clamp(value, Minimum, Maximum);
+            var clamped = Math.Clamp(value, Minimum, Maximum);
+            var step = Math.Max(1, SmallChange);
+            var next = Math.Clamp(Minimum + (int)Math.Round((clamped - Minimum) / (double)step,
+                MidpointRounding.AwayFromZero) * step, Minimum, Maximum);
             if (_value == next) return;
             _value = next;
             Invalidate();
             if (IsHandleCreated) AccessibilityNotifyClients(AccessibleEvents.ValueChange, -1);
+            ValueChanged?.Invoke(this, EventArgs.Empty);
         }
     }
 
@@ -396,8 +403,8 @@ internal sealed class DarkSlider : Control
         base.OnKeyDown(e);
         int change = e.KeyCode switch
         {
-            Keys.Left or Keys.Down => -1,
-            Keys.Right or Keys.Up => 1,
+            Keys.Left or Keys.Down => -Math.Max(1, SmallChange),
+            Keys.Right or Keys.Up => Math.Max(1, SmallChange),
             _ => 0
         };
         if (change == 0) return;

@@ -39,7 +39,7 @@ internal static class HubModuleHeartbeat
     internal const long LeaseMs = 3500;
     private static readonly Dictionary<string, long> ChannelTimeouts = new(StringComparer.Ordinal)
     { ["gaze-left"] = 250, ["gaze-right"] = 250, ["tongue"] = 300,
-      ["pupil-left"] = 350, ["pupil-right"] = 350, ["camera-cheeks"] = 500 };
+      ["pupil-left"] = 350, ["pupil-right"] = 350 };
 
     internal static string PathFor(bool steamLink) => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "QproFaceTracking", "status",
@@ -103,7 +103,8 @@ internal static class HubModuleHeartbeat
                 (steamLink && native == "untimed") || (!steamLink && native is "fresh" or "stale") ||
                 (native is "fresh" or "stale" && nativeAge < 0)) throw new FormatException("Invalid heartbeat fields.");
             var channels = root.GetProperty("Channels");
-            if (channels.ValueKind != JsonValueKind.Array || channels.GetArrayLength() != ChannelTimeouts.Count)
+            if (channels.ValueKind != JsonValueKind.Array || channels.GetArrayLength() < ChannelTimeouts.Count ||
+                channels.GetArrayLength() > ChannelTimeouts.Count + 1)
                 throw new FormatException("Invalid heartbeat channels.");
             var values = new List<HubHeartbeatChannel>();
             var names = new HashSet<string>(StringComparer.Ordinal);
@@ -111,14 +112,19 @@ internal static class HubModuleHeartbeat
             {
                 Unique(channel);
                 var name = channel.GetProperty("Name").GetString() ?? "";
+                if (!names.Add(name)) throw new FormatException("Duplicate heartbeat channel.");
+                // A previous module may still publish its retired sixth channel.
+                // It cannot establish current receiving, stale output or guidance.
+                if (name == "camera-cheeks") continue;
                 var age = channel.GetProperty("AgeMs").GetInt64();
                 var timeout = channel.GetProperty("TimeoutMs").GetInt64();
                 var applied = channel.GetProperty("Applied").GetBoolean();
-                if (!ChannelTimeouts.TryGetValue(name, out var expectedTimeout) || !names.Add(name) ||
+                if (!ChannelTimeouts.TryGetValue(name, out var expectedTimeout) ||
                     timeout != expectedTimeout || age < -1 || (applied && (age < 0 || age > timeout)))
                     throw new FormatException("Invalid heartbeat channel freshness.");
                 values.Add(new(name, age, timeout, applied));
             }
+            if (values.Count != ChannelTimeouts.Count) throw new FormatException("Missing heartbeat channel.");
             if (!processMatches(pid, start)) return HubModuleHeartbeatObservation.Missing("Module process is no longer running, or its identity changed.");
             return new(new(source, pid, start, session, sequence, tick, state, native, nativeAge,
                 root.GetProperty("OwnsEyes").GetBoolean(), root.GetProperty("OwnsFace").GetBoolean(), values.ToArray()), "");
@@ -156,17 +162,17 @@ internal static class HubModuleHeartbeat
         if (age < 0 || age > LeaseMs) return new("stale", "Module output: heartbeat stale", "The module observation expired. Check VRCFaceTracking; a running process does not confirm live output.");
         if (data.State is "closed" or "failed") return new(data.State, "Module output: " + data.State, "The selected module stopped or failed to initialize. Check the VRCFaceTracking log.");
         if (data.State != "active") return new("loaded", "Module loaded: " + (data.State == "inactive" ? "inactive" : "initializing"), "The module has not confirmed ownership of active output slots.");
-        var applied = data.Channels.Where(channel => channel.Applied && channel.AgeMs >= 0 &&
+        var applied = data.Channels.Where(channel => ChannelTimeouts.ContainsKey(channel.Name) && channel.Applied && channel.AgeMs >= 0 &&
             channel.AgeMs <= channel.TimeoutMs && age <= channel.TimeoutMs - channel.AgeMs &&
-            (channel.Name is "tongue" or "camera-cheeks" ? data.OwnsFace : data.OwnsEyes)).Select(channel => channel.Name).ToArray();
+            (channel.Name == "tongue" ? data.OwnsFace : data.OwnsEyes)).Select(channel => channel.Name).ToArray();
         var nativeFresh = data.NativeState == "fresh" && data.NativeAgeMs >= 0 && data.NativeAgeMs <= 500 && age <= 500 - data.NativeAgeMs && (data.OwnsEyes || data.OwnsFace);
-        var recent = data.Channels.Where(channel => channel.Applied &&
-            (channel.Name is "tongue" or "camera-cheeks" ? data.OwnsFace : data.OwnsEyes)).Select(channel => channel.Name).ToArray();
+        var recent = data.Channels.Where(channel => ChannelTimeouts.ContainsKey(channel.Name) && channel.Applied &&
+            (channel.Name == "tongue" ? data.OwnsFace : data.OwnsEyes)).Select(channel => channel.Name).ToArray();
         var detail = $"{data.Source}; observation {age / 1000.0:0.0} s ago; module active; eye slots {(data.OwnsEyes ? "owned" : "not owned")}, face slots {(data.OwnsFace ? "owned" : "not owned")}. ";
         detail += recent.Length > 0 ? "Applied at last observation: " + string.Join(", ", recent) + ". " : "No custom output applied at last observation. ";
         detail += "This verifies local VRCFT slots only; check the avatar separately.";
         var featureNames = applied.Select(name => name.StartsWith("gaze-", StringComparison.Ordinal) ? "gaze"
-            : name.StartsWith("pupil-", StringComparison.Ordinal) ? "pupils" : name == "camera-cheeks" ? "camera cheeks" : name).Distinct();
+            : name.StartsWith("pupil-", StringComparison.Ordinal) ? "pupils" : name).Distinct();
         if (applied.Length > 0 || nativeFresh) return new("receiving", "Module receiving: " + (nativeFresh ? "Steam Link" : string.Join(", ", featureNames)), detail);
         // The producer reports once per second. Its last good observation
         // cannot establish current packet age between those reports, and does
@@ -174,8 +180,8 @@ internal static class HubModuleHeartbeat
         if (recent.Length > 0 || data.NativeState == "fresh")
             return new("observed", $"Module active: output last observed {age / 1000.0:0.0} s ago",
                 detail + " Current packet freshness is unavailable between module observations.");
-        var expiredChannels = data.Channels.Any(channel => channel.AgeMs > channel.TimeoutMs &&
-            (channel.Name is "tongue" or "camera-cheeks" ? data.OwnsFace : data.OwnsEyes));
+        var expiredChannels = data.Channels.Any(channel => ChannelTimeouts.ContainsKey(channel.Name) && channel.AgeMs > channel.TimeoutMs &&
+            (channel.Name == "tongue" ? data.OwnsFace : data.OwnsEyes));
         if (expiredChannels || data.NativeState == "stale")
             return new("stale", "Module active: received output is stale", detail +
                 (data.NativeState == "untimed" ? " Native Virtual Desktop source age remains unknown." : " Check the selected input source."));

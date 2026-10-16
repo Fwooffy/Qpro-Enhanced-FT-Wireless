@@ -252,7 +252,8 @@ internal sealed partial class HubForm
         if (metadata?["displayName"] is JsonValue value && value.TryGetValue<string>(out var name) &&
             !string.IsNullOrWhiteSpace(name))
             return CleanDisplayName(name);
-        return HasMoustacheModelIcon(metadata) ? "Mustachio" : version == 8 ? "Developer-trained tongue model" : "Personal tongue model";
+        return HasMoustacheModelIcon(metadata) ? "Mustachio" : HubModelMetadata.IsDeveloper(metadata)
+            ? "Developer tongue model" : version == 8 ? "Developer-trained tongue model" : "Personal tongue model";
     }
 
     private static bool HasMoustacheModelIcon(JsonObject? metadata) => HubModelMetadata.IsMustachio(metadata);
@@ -292,7 +293,7 @@ internal sealed partial class HubForm
         if (name is null) return;
         var existing = ReadModelMetadata(version);
         var origin = existing?["origin"] is JsonValue originValue && originValue.TryGetValue<string>(out var previousOrigin)
-            ? previousOrigin : version == 8 ? "bundled developer model" : "renamed local model";
+            ? previousOrigin : HubModelMetadata.IsBundledDeveloper(version, existing) ? "bundled developer model" : "renamed local model";
         WriteModelMetadata(version, name, null, origin);
         AppendLog($"Renamed tongue model v{version} to “{name}”.");
         ReloadProfiles();
@@ -303,9 +304,9 @@ internal sealed partial class HubForm
         if (_modelList.SelectedItem is not FileChoice model) { MessageBox.Show(this, "Select a tongue model first."); return; }
         if (LiveTrackingRunning) { MessageBox.Show(this, "Stop live tracking before deleting a model."); return; }
         var version = VersionFromPath(model.Primary);
-        if (version == 8)
+        if (HubModelMetadata.IsBundledDeveloper(version, ReadModelMetadata(version)))
         {
-            MessageBox.Show(this, "The bundled developer v8 model is protected so the hub always retains a working demo. You can export or rename it, but not delete it.", "Bundled model protected");
+            MessageBox.Show(this, "The bundled developer model is protected so the Hub retains a ready-to-use tongue model. You can export or rename it, but not delete it.", "Bundled model protected");
             return;
         }
         if (MessageBox.Show(this, $"Delete “{model.Label}” from this installation?\n\nThis removes its paired checkpoints and cannot be undone unless you exported it first.", "Delete tongue model", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;

@@ -119,7 +119,7 @@ internal static class HubModuleInstallation
                 return Result(HubModuleState.Invalid, "Module card needs repair", "The installed module card has duplicate or excessive fields. " + repair);
             if (data.GetProperty("ModuleId").GetString() != id || data.GetProperty("DllFileName").GetString() != dllName ||
                 data.GetProperty("IsLocal").ValueKind != JsonValueKind.True || data.GetProperty("AuthorName").GetString() != "Fwooffy" ||
-                data.GetProperty("ModuleName").GetString() != "QproFaceTracking - " + (steamLink ? "Steam Link" : "Virtual Desktop") ||
+                !AcceptedModuleName(data.GetProperty("ModuleName").GetString(), source) ||
                 !Version.TryParse(data.GetProperty("Version").GetString(), out _))
                 return Result(HubModuleState.Invalid, "Module card needs repair", "The module card does not match the selected Qpro source. " + repair);
             var recordedHash = data.GetProperty("FileHash").GetString();
@@ -143,6 +143,13 @@ internal static class HubModuleInstallation
             return Result(HubModuleState.Unreadable, "Module check needs attention", "The module files could not be verified: " + error.Message + " " + repair);
         }
     }
+
+    // Keep exact source names and legacy card spellings. The brand alone
+    // never establishes ownership; GUID, assembly and hashes are checked too.
+    private static bool AcceptedModuleName(string? name, string source)
+        => name == "Qpro Companion \u2014 " + source || name == "Qpro Companion \u2013 " + source ||
+           name == "Qpro Companion - " + source || name == "QproFaceTracking \u2013 " + source ||
+           name == "QproFaceTracking - " + source;
 
     private static List<string> FindQproDlls(string customLibs)
     {

@@ -17,7 +17,7 @@ internal sealed partial class HubForm
             ApplyLiveOptions(options);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
-        { AppendLog("Could not restore Live tracking choices: " + error.Message); }
+        { AppendLog("Could not restore Facial tracking choices: " + error.Message); }
     }
 
     internal void ApplyLiveOptions(HubLiveOptions options)
@@ -27,7 +27,8 @@ internal sealed partial class HubForm
         RestoreModel(_eyeProfiles, options.EyeProfile);
         _tongue.Checked = options.Tongue;
         _pupil.Checked = options.Pupil;
-        _cameraCheekPuff.Checked = options.CameraCheeks;
+        // Older releases saved camera-cheek output here. It is retired and
+        // must never restart when those preferences are restored.
         _hybridHands.Checked = options.Hands;
         _controllerTouchpad.Checked = options.Touchpad;
         _smoothing.Value = Math.Clamp(options.Smoothing, _smoothing.Minimum, _smoothing.Maximum);
@@ -36,6 +37,9 @@ internal sealed partial class HubForm
         RestoreChoice(_pupilSensitivity, options.PupilSensitivity);
         RestoreChoice(_visibilityMode, options.Visibility);
         RestoreChoice(_touchpadMode, options.TouchpadMode);
+        _touchpadSide.SelectedIndex = 0;
+        RestoreChoice(_touchpadSide, options.TouchpadSide);
+        RestoreSwipeSensitivity(options.SwipeSensitivityPercent);
         UpdateControlState();
     }
 
@@ -53,12 +57,13 @@ internal sealed partial class HubForm
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
-    internal HubLiveOptions CaptureLiveOptions() => new(1, _tongue.Checked, _pupil.Checked, _cameraCheekPuff.Checked,
+    internal HubLiveOptions CaptureLiveOptions() => new(1, _tongue.Checked, _pupil.Checked, false,
             _hybridHands.Checked, _controllerTouchpad.Checked, _smoothing.Value,
             _fps.SelectedItem?.ToString(), _pupilSensitivity.SelectedItem?.ToString(),
             _visibilityMode.SelectedItem?.ToString(), _touchpadMode.SelectedItem?.ToString(),
             Path.GetFileName((_tongueModels.SelectedItem as FileChoice)?.Primary),
-            Path.GetFileName((_eyeProfiles.SelectedItem as FileChoice)?.Primary), ProcessingProfileValue());
+            Path.GetFileName((_eyeProfiles.SelectedItem as FileChoice)?.Primary), ProcessingProfileValue(),
+            _touchpadSide.SelectedItem?.ToString(), SwipeSensitivityPercentValue());
 
     private static void RestoreChoice(ComboBox box, string? text)
     {
@@ -81,4 +86,4 @@ internal sealed partial class HubForm
 internal sealed record HubLiveOptions(int Schema, bool Tongue, bool Pupil, bool CameraCheeks,
     bool Hands, bool Touchpad, int Smoothing, string? Fps, string? PupilSensitivity,
     string? Visibility, string? TouchpadMode, string? Model, string? EyeProfile,
-    string? ProcessingProfile = null);
+    string? ProcessingProfile = null, string? TouchpadSide = null, int? SwipeSensitivityPercent = null);

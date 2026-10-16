@@ -75,9 +75,9 @@ internal sealed record HubGazeInspection(string Firmware, string ExperimentalSel
             if (MagiskGazeModules.Count > 3) names += $" (+{MagiskGazeModules.Count - 3} more)";
             method += "\nModule: " + names;
             next = "A Magisk gaze module is active. Skip Check gaze setup and Prepare gaze. Leave Independent Eye Gaze unchecked in the Hub. " +
-                "You can still use Qpro tongue, camera cheek, pupil and eyebrow features. " +
+                "You can still use Qpro tongue, pupil and eyebrow features. " +
                 "Confirm the module's eye tracking in VRCFaceTracking's preview. " +
-                "To use the Hub method instead, disable that gaze module in Magisk, reboot, then run Check gaze setup again.";
+                "To use the Hub method instead, disable that gaze module in Magisk, reboot, then reconnect the headset or run Check headset compatibility to refresh detection.";
             if (QproSessionRecorded) next += " A Qpro record also remains; stop its owning Hub and use Recover Qpro gaze.";
         }
         else if (QproSessionRecorded)
@@ -101,7 +101,7 @@ internal sealed record HubGazeInspection(string Firmware, string ExperimentalSel
         else if (NormalSelection)
         {
             method = "Normal headset gaze selection";
-            next = "For the Hub's temporary independent gaze, press Prepare gaze, then enable Independent Eye Gaze in Live tracking " +
+            next = "For the Hub's temporary independent gaze, press Prepare gaze, then enable Independent Eye Gaze in Facial tracking " +
                 "and press Start tracking. For tongue or pupil tracking only, leave Independent Eye Gaze unchecked.";
         }
         else

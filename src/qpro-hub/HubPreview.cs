@@ -4,12 +4,17 @@ namespace QproFaceTracking.Hub;
 
 internal sealed partial class HubForm
 {
+    // Rendering a preview during a guided headset capture must not take focus
+    // from its capture window. Normal Hub launches retain normal activation.
+    protected override bool ShowWithoutActivation => _previewOnly || base.ShowWithoutActivation;
+
     // These are display fixtures, never compatibility evidence. The preview
     // constructor suppresses hardware checks and persistence before this runs.
     internal void ApplyPreviewScenario(string scenario, string source)
     {
         if (!_previewOnly) throw new InvalidOperationException("Sample scenarios require preview mode.");
-        if (scenario is not ("ready" or "unsupported" or "runtime-error" or "magisk"))
+        if (scenario is not ("ready" or "unsupported" or "runtime-error" or "magisk" or
+            "hands-ready" or "hands-blocked" or "hands-unknown" or "hands-modes" or "health-live"))
             throw new ArgumentException("Unknown preview scenario: " + scenario);
         if (source is not ("VirtualDesktop" or "SteamLink"))
             throw new ArgumentException("Unknown preview source: " + source);
@@ -28,25 +33,23 @@ internal sealed partial class HubForm
         _eyeProfiles.Items.Add(new FileChoice("Prepared eye profile · sample", "preview-eye-profile.json"));
         _eyeProfiles.SelectedIndex = 0;
         _tongueModels.Items.Clear();
-        _tongueModels.Items.Add(new FileChoice("Developer lower-face model · sample", "preview-gate.pt", "preview-direction.pt"));
+        _tongueModels.Items.Add(new FileChoice("Developer tongue model · highly experimental · sample", "preview-gate.pt", "preview-direction.pt", true));
         _tongueModels.Items.Add(new FileChoice("Mustachio · highly experimental · sample", "preview-mustachio-gate.pt", "preview-mustachio-direction.pt", true, true));
         _tongueModels.SelectedIndex = 0;
         _modelList.Items.Clear();
         foreach (var model in _tongueModels.Items) _modelList.Items.Add(model);
         _modelList.SelectedIndex = 0;
         _modelEmpty.Visible = false;
-        _gaze.Checked = _tongue.Checked = _pupil.Checked = _cameraCheekPuff.Checked = false;
+        _gaze.Checked = _tongue.Checked = _pupil.Checked = false;
         _hybridHands.Checked = _controllerTouchpad.Checked = _eyebrowBoost.Checked = false;
         _individualCheekPuff.Checked = _individualCheekSuck.Checked = true;
-        _cheekPuffStyle.SelectedIndex = 1;
-        _cheekSuckStyle.SelectedIndex = 1;
-        _cheekPuffStyle.Enabled = _cheekSuckStyle.Enabled = true;
         _eyebrowSensitivity.SelectedIndex = 2;
         _eyebrowSensitivity.Enabled = false;
         _cameraPreview.Checked = false;
         foreach (var toggle in new[] { _individualCheekPuff, _individualCheekSuck, _eyebrowBoost, _cameraPreview })
             UpdateToggleStyle(toggle);
-        _tongueModelNote.Text = "Sample model list. Your installed models appear here in the app.";
+        _tongueModelNote.Text = "PREVIEW · SAMPLE DATA. " + DeveloperModelGuidance +
+            " Stop tracking before changing models, then press Start tracking to load the selection.";
         _trackingSourceLiveNote.Text = _trackingSourceSetupNote.Text = $"Preview · sample data. Face tracking source: {sourceName}.";
 
         var rawReport = PreviewCompatibilityJson(scenario != "unsupported", scenario == "magisk");
@@ -71,17 +74,20 @@ internal sealed partial class HubForm
         SetStatus(_pupilStatus, StatusKind.Warning, "Stopped");
         _setupRuntimeStatus.Text = _setupBridgeStatus.Text = "Complete · sample";
         _setupRuntimeStatus.ForeColor = _setupBridgeStatus.ForeColor = Good;
-        _setupGazeStatus.Text = scenario == "magisk" ? "Skip Hub gaze setup · Magisk sample" : "Optional · skip for Magisk gaze";
+        _setupGazeStatus.Text = scenario == "magisk" ? "Provided by Magisk · Skip Hub gaze setup · sample" : "Optional · skip for Magisk gaze";
         _setupGazeStatus.ForeColor = Muted;
         _setupProgressContainer.Visible = false;
-        _gaze.Enabled = true;
-        _setupGazeButton.Enabled = true;
+        _gaze.Enabled = scenario != "magisk";
+        _setupGazeButton.Enabled = _inspectGazeButton.Enabled = scenario != "magisk";
         _setupBridgeButton.Enabled = source == "VirtualDesktop";
         _setupSteamLinkModuleButton.Enabled = source == "SteamLink";
         _hybridHands.Enabled = _controllerTouchpad.Enabled = source == "VirtualDesktop";
-        _handsStatus.Text = source == "SteamLink"
-            ? "Hands and controllers require Virtual Desktop; Steam Link support is unverified."
-            : "Optional. Check the connected headset and Virtual Desktop versions before enabling.";
+        _checkHandsButton.Enabled = source == "VirtualDesktop";
+        PresentControllerStatus(source == "SteamLink"
+                ? "Steam Link controller support is unverified · sample" : "Compatibility not checked · sample",
+            "Preview only. No live finger test or game performance check was run.",
+            source == "SteamLink" ? "Use Virtual Desktop to check these optional inputs."
+                : "Turn on the required settings above, then check compatibility.", Warning);
         _start.Enabled = true;
         _stop.Enabled = false;
         _runStatus.Text = "● Preview — sample data, no live tracking";
@@ -116,8 +122,39 @@ internal sealed partial class HubForm
                 $"The sample Quest Pro, PC runtime and {sourceName} module are ready. " +
                     (scenario == "magisk" ? "A Magisk gaze module is detected; skip Hub gaze setup." : "Optional features are checked separately."),
                 scenario == "magisk"
-                    ? "Leave Independent Eye Gaze off in the Hub. Choose your other features on Live tracking, then press Start tracking."
-                    : "Choose the features you want on Live tracking, then press Start tracking.");
+                    ? "Leave Independent Eye Gaze off in the Hub. Choose your other features on Facial tracking, then press Start tracking."
+                    : "Choose the features you want on Facial tracking, then press Start tracking.");
+        }
+
+        if (scenario is "hands-ready" or "hands-blocked" or "hands-modes")
+        {
+            // Exercise the same validated report parser used by a real check.
+            // These fixtures intentionally never claim runtimeValidated.
+            bool passed = scenario != "hands-blocked";
+            if (scenario == "hands-modes") _controllerTouchpad.Checked = true;
+            var sampleCheck = "HANDS_CHECK " + JsonSerializer.Serialize(new
+            {
+                compatible = passed, androidVersion = "1.34.22.0 · sample",
+                pcDriverSha256 = new string('c', 64), fridaVersion = "17.18.0 · sample",
+                settings = new { hand_tracking_enabled = "true", multimodal_hands_and_controllers_enabled = "true",
+                    simultaneous_hands_and_controllers_mode = "1" },
+                settingSource = "current-user", experimental = true, runtimeValidated = false,
+                problems = passed ? Array.Empty<string>() : ["This Virtual Desktop version has no validated hand profile. Sample result."],
+                warnings = Array.Empty<string>(), componentsReady = true, componentProblems = Array.Empty<string>(),
+            });
+            if (!HubControllerFeedback.TryParseCheckLine(sampleCheck, out var sampleFeedback))
+                throw new InvalidOperationException("The sample hand/controller report did not pass validation.");
+            ShowControllerFeedback(sampleFeedback! with
+            {
+                Title = sampleFeedback!.Title + " · sample",
+                Detail = "PREVIEW · SAMPLE DATA\n" + sampleFeedback.Detail,
+            });
+        }
+        if (scenario == "health-live")
+        {
+            ApplyTrackingHealthPreview();
+            _runStatus.Text = "● Preview — sample data, no live tracking";
+            _runStatus.ForeColor = Muted;
         }
 
         // Fixed text keeps screenshots reproducible and makes simulated results

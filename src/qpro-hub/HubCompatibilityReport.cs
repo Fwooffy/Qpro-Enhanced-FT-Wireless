@@ -31,7 +31,7 @@ internal sealed record HubCompatibilityReport(
             ? "The engine passed firmware analysis. Live behavior is not yet verified; the eye patch is not prepared."
             : "The engine matches a live reference profile. The eye patch still needs preparation and a live input check.";
     internal string NextStep => HasActiveMagiskGaze
-        ? "Leave Independent Eye Gaze off in the Hub. Skip Check gaze setup and Prepare gaze; choose your other features on Live tracking. Confirm your Magisk module's eye tracking in VRCFaceTracking's preview. To switch to the Hub method, disable the Magisk gaze module and reboot first."
+        ? "Leave Independent Eye Gaze off in the Hub. Skip Check gaze setup and Prepare gaze; choose your other features on Facial tracking. Confirm your Magisk module's eye tracking in VRCFaceTracking's preview. To switch to the Hub method, disable the Magisk gaze module and reboot first."
         : !EngineSupported
         ? "Leave Independent Eye Gaze off. Copy this report with the exact firmware build. Check a Magisk gaze module's support before using it."
         : !GazePreflightPassed

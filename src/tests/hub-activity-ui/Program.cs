@@ -55,9 +55,13 @@ internal static class Program
         Add("[Worker] Completed successfully. No errors.");
         Add("[Worker] WARNING: GPU fallback is active.");
         Add("[Worker] RuntimeError: sample library could not load");
+        Add("[Worker] CONTROLLER_BINDINGS_WARNING {\"message\":\"Could not prepare menu scrolling; optional setup failed.\"}");
+        Add("[Worker] CONTROLLER_ERROR {\"message\":\"Sensor reader disconnected.\"}");
         CheckColor("[NORMAL] [Worker] Completed", "Good");
         CheckColor("[WARNING] [Worker] WARNING", "Warning");
         CheckColor("[ERROR] [Worker] RuntimeError", "Bad");
+        CheckColor("[WARNING] [Worker] CONTROLLER_BINDINGS_WARNING", "Warning");
+        CheckColor("[ERROR] [Worker] CONTROLLER_ERROR", "Bad");
         var diagnostics = (string)type.GetMethod("DiagnosticText", flags)!.Invoke(form, null)!;
         Check(diagnostics.Contains("RuntimeError: sample library could not load", StringComparison.Ordinal),
             "Copy/save diagnostics lost the original exception.");

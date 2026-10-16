@@ -20,6 +20,7 @@ internal static class LifecycleTests
     static void Run()
     {
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+        TrackingHealthFixtures.Run();
         // Preview construction avoids ADB, runtime detection, timers and preference writes.
         string fixtureRoot = Path.Combine(Path.GetTempPath(), "qpro-lifecycle-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(fixtureRoot);
@@ -44,6 +45,22 @@ internal static class LifecycleTests
         bool Pending() => (bool)typeof(HubForm).GetProperty("TrackingShutdownPending", Private)!.GetValue(form)!;
         void Check(bool value, string name) { if (!value) throw new Exception(name); Console.WriteLine("PASS " + name); }
         form.ApplyPreviewScenario("magisk", "VirtualDesktop");
+        Check(typeof(HubForm).GetField("_cameraCheekPuff", Private) is null &&
+              typeof(HubForm).GetField("_recordCameraCheeks", Private) is null &&
+              typeof(HubForm).GetField("_trainCameraCheeks", Private) is null,
+            "retired camera cheek controls and training actions are absent");
+        Check(typeof(HubForm).GetField("_cheekPuffStyle", Private) is null &&
+              typeof(HubForm).GetField("_cheekSuckStyle", Private) is null &&
+              typeof(HubForm).GetField("_calibrateCheekPuff", Private) is null,
+            "native cheeks have only 1/0 toggles, without retired style/calibration controls");
+        var rememberedOptions = form.CaptureLiveOptions() with { CameraCheeks = true };
+        form.ApplyLiveOptions(rememberedOptions);
+        Check(!form.CaptureLiveOptions().CameraCheeks,
+            "legacy saved camera-cheek output cannot restart and is saved as disabled");
+        var puffToggle = (CheckBox)typeof(HubForm).GetField("_individualCheekPuff", Private)!.GetValue(form)!;
+        var suckToggle = (CheckBox)typeof(HubForm).GetField("_individualCheekSuck", Private)!.GetValue(form)!;
+        Check(puffToggle.Text == "Individual cheek puff (1/0)" && suckToggle.Text == "Individual cheek suck (1/0)",
+            "native cheek toggles clearly identify the retained individual behavior");
         var gaze = (CheckBox)typeof(HubForm).GetField("_gaze", Private)!.GetValue(form)!;
         var compatibility = (Label)typeof(HubForm).GetField("_compatibilitySummary", Private)!.GetValue(form)!;
         var setupGaze = (Label)typeof(HubForm).GetField("_setupGazeStatus", Private)!.GetValue(form)!;
@@ -78,7 +95,8 @@ internal static class LifecycleTests
         Set("_compatibilityChecking", false);
         gaze.Checked = true;
         Call("UpdateGazeSetupStatus");
-        Check(setupGaze.Text.Contains("turn Hub gaze off"), "selecting Hub gaze still warns about the Magisk conflict");
+        Check(!gaze.Checked && !gaze.Enabled && setupGaze.Text.Contains("Provided by Magisk"),
+            "a confirmed Magisk method prevents selecting a second Hub gaze method");
         gaze.Checked = false;
         Call("UpdateGazeSetupStatus");
         Check(setupGaze.Text == confirmedGazeText, "unchecking Hub gaze restores the stable Magisk status");
@@ -98,22 +116,22 @@ internal static class LifecycleTests
         var scopedMagiskText = setupGaze.Text;
         verifiedSerial.SetValue(usb, null);
         Call("UpdateGazeSetupStatus");
-        Check(setupGaze.Text == scopedMagiskText && setupGaze.Text.Contains("Last check"),
+        Check(setupGaze.Text == scopedMagiskText && setupGaze.Text.Contains("Provided by Magisk") && !gaze.Enabled,
             "a transient USB probe gap retains the labeled last check");
         verifiedSerial.SetValue(usb, "synthetic-gaze-usb-b");
         Call("UpdateGazeSetupStatus");
-        Check(!setupGaze.Text.Contains("Last check"), "a different USB headset cannot inherit confirmed Magisk status");
+        Check(!setupGaze.Text.Contains("Provided by Magisk"), "a different USB headset cannot inherit confirmed Magisk status");
         verifiedSerial.SetValue(usb, null);
         Call("RememberGazeInspection", new HubGazeInspection("fixture-build", "false", false,
             ["fixture-independent-gaze"], []));
         verifiedSerial.SetValue(usb, "synthetic-gaze-usb-c");
         Call("UpdateGazeSetupStatus");
-        Check(!setupGaze.Text.Contains("Last check"), "an unscoped observation does not transfer to a newly verified headset");
+        Check(!setupGaze.Text.Contains("Provided by Magisk"), "an unscoped observation does not transfer to a newly verified headset");
         Call("RememberGazeInspection", new HubGazeInspection("fixture-build", "false", false,
             ["fixture-independent-gaze"], []));
         hubEnvironment.SelectConnection(true);
         Call("UpdateGazeSetupStatus");
-        Check(!setupGaze.Text.Contains("Last check"), "changing USB to wireless clears the prior gaze observation");
+        Check(!setupGaze.Text.Contains("Provided by Magisk"), "changing USB to wireless clears the prior gaze observation");
         hubEnvironment.SelectConnection(false);
         Call("RememberGazeInspection", new HubGazeInspection("fixture-build", "true", true, [], []));
         Check(setupGaze.Text.Contains("needs attention"), "a recorded Qpro session retains its recovery warning");
@@ -172,7 +190,7 @@ internal static class LifecycleTests
         Check(Pending(), "cheek-only session counts as live tracking without child processes");
         Call("UpdateControlState");
         Check(((Control)typeof(HubForm).GetField("_stop", Private)!.GetValue(form)!).Enabled, "cheek-only session enables Stop");
-        foreach (string field in new[] { "_start", "_connectionMode", "_trackingSourceSetup", "_trackingSourceLive", "_setupRuntimeButton", "_recordCameraCheeks", "_trainCameraCheeks", "_reconnectUsbButton", "_forgetUsbButton" })
+        foreach (string field in new[] { "_start", "_connectionMode", "_trackingSourceSetup", "_trackingSourceLive", "_setupRuntimeButton", "_reconnectUsbButton", "_forgetUsbButton" })
             Check(!((Control)typeof(HubForm).GetField(field, Private)!.GetValue(form)!).Enabled, "cheek-only session disables " + field);
 
         var stopped = (Task)Call("StopTrackingAsync")!;

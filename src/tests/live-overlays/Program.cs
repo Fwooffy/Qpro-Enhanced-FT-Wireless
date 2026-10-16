@@ -24,60 +24,53 @@ catch (Exception error)
 
 void RunChecks()
 {
-    foreach (string nativeStyle in new[] { "Off", "Balanced", "Strong", "Calibrated" })
+    foreach (string nativeStyle in new[] { "Off", "Strong" })
     {
-        using var f = new Fixture();
-        f.ConfigureCheekStyle(nativeStyle);
-        f.Native(faceFlags: 1, eyeFollowing: true, eyesValid: true,
-            leftCheek: .62f, rightCheek: .65f);
-        // A fresh camera model supplies continuous, independently trained
-        // cheek strengths. Native cheek calibration must not map those a
-        // second time or turn a unilateral camera pose into a bilateral one.
-        foreach ((float left, float right) in new[]
+        foreach ((float left, float right, float strongLeft, float strongRight) in new[]
+        { (.72f, .03f, 1f, 0f), (.03f, .72f, 0f, 1f), (.75f, .75f, 1f, 1f) })
         {
-            (.82f, 0f), (.35f, 0f), (0f, .74f), (0f, .23f),
-            (.9f, .85f), (.4f, .3f), (0f, 0f), (.15f, .03f)
-        })
-        {
-            f.SendCameraCheeks(left, right);
+            using var f = new Fixture();
+            f.ConfigureCheekStyle(nativeStyle);
+            f.Native(faceFlags: 1, eyeFollowing: true, eyesValid: true,
+                leftCheek: left, rightCheek: right);
             f.Module.Update();
-            Near(Tongue(UnifiedExpressions.CheekPuffLeft), left,
-                $"camera left remains exact through {nativeStyle} native style");
-            Near(Tongue(UnifiedExpressions.CheekPuffRight), right,
-                $"camera right remains exact through {nativeStyle} native style");
-            Near(Tongue(UnifiedExpressions.TongueOut), .85f,
-                "changing camera cheek sides leaves native tongue active");
-            f.Time += 50;
+            // Allow the native 1/0 two-sided confirmation to complete without
+            // sleeping or relying on the installed Hub's session/preferences.
+            f.Time += 60;
+            f.Module.Update();
+            Near(Tongue(UnifiedExpressions.CheekPuffLeft), nativeStyle == "Off" ? left : strongLeft,
+                $"native left cheek follows {nativeStyle}");
+            Near(Tongue(UnifiedExpressions.CheekPuffRight), nativeStyle == "Off" ? right : strongRight,
+                $"native right cheek follows {nativeStyle}");
+            Near(Tongue(UnifiedExpressions.TongueOut), .85f, "native cheek adjustment leaves the tongue source active");
+            f.SetCheekSession(active: false);
+            f.Native(faceFlags: 1, eyeFollowing: true, eyesValid: true, leftCheek: .42f, rightCheek: .23f);
+            f.Module.Update();
+            Near(Tongue(UnifiedExpressions.CheekPuffLeft), .42f, "stopped Hub session restores exact native left cheek");
+            Near(Tongue(UnifiedExpressions.CheekPuffRight), .23f, "stopped Hub session restores exact native right cheek");
         }
     }
 
     foreach (bool missingMap in new[] { false, true })
     {
         using var f = new Fixture();
-        f.Native(faceFlags: 1, eyeFollowing: true, eyesValid: true);
-        f.SendCameraCheeks(.75f, .1f);
+        f.ConfigureCheekStyle("Off");
+        f.Native(faceFlags: 1, eyeFollowing: true, eyesValid: true, leftCheek: .75f, rightCheek: .1f);
         f.Module.Update();
-        Near(Tongue(UnifiedExpressions.CheekPuffLeft), .75f, "fresh camera left cheek reaches production output");
-        Near(Tongue(UnifiedExpressions.CheekPuffRight), .1f, "fresh camera right cheek stays independent");
-        Near(Tongue(UnifiedExpressions.TongueOut), .85f, "camera cheeks do not replace native tongue");
+        Near(Tongue(UnifiedExpressions.CheekPuffLeft), .75f, "native left cheek reaches production output");
+        Near(Tongue(UnifiedExpressions.CheekPuffRight), .1f, "native right cheek reaches production output");
         if (missingMap) f.LoseMap();
         else f.Native(faceFlags: 0, eyeFollowing: true, eyesValid: false);
         f.Module.Update();
-        Near(Tongue(UnifiedExpressions.CheekPuffLeft), .75f, "fresh camera cheeks survive an unavailable native face source");
-        f.Time += 501;
-        f.Module.Update();
-        Near(Tongue(UnifiedExpressions.CheekPuffLeft), 0f, "expired camera cheeks clear without a native source");
-        Near(Tongue(UnifiedExpressions.CheekPuffRight), 0f, "expired camera cheeks clear both sides");
+        Near(Tongue(UnifiedExpressions.CheekPuffLeft), 0f, "source loss releases previously owned left native cheek");
+        Near(Tongue(UnifiedExpressions.CheekPuffRight), 0f, "source loss releases previously owned right native cheek");
         UnifiedTracking.Data.Shapes[(int)UnifiedExpressions.CheekPuffLeft].Weight = .37f;
         f.Module.Update();
-        Near(Tongue(UnifiedExpressions.CheekPuffLeft), .37f, "released camera cheek slots are not repeatedly overwritten");
-        f.Native(faceFlags: 1, eyeFollowing: true, eyesValid: true);
-        f.SendCameraCheeks(.9f, .2f);
+        Near(Tongue(UnifiedExpressions.CheekPuffLeft), .37f, "released native cheek slot is not repeatedly overwritten");
+        f.Native(faceFlags: 1, eyeFollowing: true, eyesValid: true, leftCheek: .4f, rightCheek: .6f);
         f.Module.Update();
-        f.SendCameraCheeks(0, 0, enabled: false);
-        f.Module.Update();
-        Near(Tongue(UnifiedExpressions.CheekPuffLeft), 0f, "camera stop restores native cheek style immediately");
-        Near(Tongue(UnifiedExpressions.CheekPuffRight), 0f, "camera stop restores the other native cheek");
+        Near(Tongue(UnifiedExpressions.CheekPuffLeft), .4f, "native left cheek recovers after source loss");
+        Near(Tongue(UnifiedExpressions.CheekPuffRight), .6f, "native right cheek recovers after source loss");
     }
 
     // Named test maps and ephemeral loopback ports keep these checks separate
@@ -265,7 +258,6 @@ sealed class Fixture : IDisposable
     private readonly UdpClient _gaze = Socket();
     private readonly UdpClient _tongue = Socket();
     private readonly UdpClient _pupil = Socket();
-    private readonly UdpClient _cameraCheeks = Socket();
     private MemoryMappedFile? _map;
     private MemoryMappedViewAccessor? _view;
     internal long Time = 1000;
@@ -284,9 +276,9 @@ sealed class Fixture : IDisposable
                     property.SetValue(Module, NullLogger.Instance);
         }
         Set("_gazeSocket", _gaze); Set("_tongueSocket", _tongue); Set("_pupilSocket", _pupil);
-        Set("_cheekCameraSocket", _cameraCheeks);
-        Set("_cheekSessionActive", true);
-        Set("_nextCheekSessionCheckTick", long.MaxValue);
+        SetCheekSession(active: true);
+        ConfigureCheekStyle("Off");
+        Set("_nextCheekSuckModeCheckTick", long.MaxValue);
         Set("_wasActive", true);
         SetSlotOwnership(eyes: true, mouth: true);
         Module.Status = ModuleState.Active;
@@ -303,13 +295,16 @@ sealed class Fixture : IDisposable
     {
         Assembly assembly = typeof(TrackingModule).Assembly;
         Type mode = assembly.GetType("Qpro.GazeBridge.CheekPuffMode")!;
-        Type calibration = assembly.GetType("Qpro.Shared.CheekPuffCalibration")!;
         Set("_cheekPuffMode", Enum.Parse(mode, style));
-        Set("_cheekPuffCalibration", Activator.CreateInstance(calibration,
-            [.03f, .4f, .02f, .5f]));
         // Keep an offline fixture from reading or changing the user's saved
         // Hub preferences while exercising each native mapping style.
         Set("_nextCheekPuffModeCheckTick", long.MaxValue);
+    }
+
+    internal void SetCheekSession(bool active)
+    {
+        Set("_cheekSessionActive", active);
+        Set("_nextCheekSessionCheckTick", long.MaxValue);
     }
 
     internal void Native(byte faceFlags, bool eyeFollowing, bool eyesValid,
@@ -374,13 +369,6 @@ sealed class Fixture : IDisposable
         Send(_pupil, packet);
     }
 
-    internal void SendCameraCheeks(float left, float right, bool enabled = true)
-    {
-        byte[] packet = Packet("QPCO", 16, enabled ? (byte)1 : (byte)0);
-        WriteFloat(packet, 8, left); WriteFloat(packet, 12, right);
-        Send(_cameraCheeks, packet);
-    }
-
     internal void SendMalformedThenValid()
     {
         foreach (UdpClient target in new[] { _gaze, _tongue, _pupil })
@@ -391,8 +379,14 @@ sealed class Fixture : IDisposable
         SendAll();
     }
 
-    private void Send(UdpClient target, byte[] packet) =>
+    private void Send(UdpClient target, byte[] packet)
+    {
         _sender.Send(packet, packet.Length, (IPEndPoint)target.Client.LocalEndPoint!);
+        // This tests an already-delivered packet, not the scheduler delay
+        // between a loopback Send and the receiver becoming readable.
+        if (!target.Client.Poll(1_000_000, SelectMode.SelectRead))
+            throw new IOException("The isolated loopback fixture packet did not arrive within one second.");
+    }
     private void Set(string field, object? value) =>
         typeof(TrackingModule).GetField(field, Private)!.SetValue(Module, value);
     private static UdpClient Socket()

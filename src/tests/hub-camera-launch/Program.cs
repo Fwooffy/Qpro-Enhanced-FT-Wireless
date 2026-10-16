@@ -13,26 +13,25 @@ try
         "malformed string capability is not accepted");
     foreach (string source in new[] { "VirtualDesktop", "SteamLink" })
     foreach (bool tongue in new[] { false, true })
-    foreach (bool camera in new[] { false, true })
     foreach (bool pupil in new[] { false, true })
     foreach (bool preview in new[] { false, true })
     {
-        var selection = Selection(source, tongue, camera, pupil, preview);
+        var selection = Selection(source, tongue, pupil, preview);
         var plan = HubCameraTrackingLaunch.Create(selection);
-        Check(plan.Required == (tongue || camera || pupil), "only selected camera features start a process");
+        Check(plan.Required == (tongue || pupil), "only selected tongue/pupil features start a process");
         if (!plan.Required) continue;
         var arguments = plan.Arguments;
         Check(Value(arguments, "-TrackingSource") == source, "streaming source stays isolated");
         Check(Value(arguments, "-TrackingProfile") == "responsive", "existing options preserve full processing cadence");
         Check(arguments.Contains("-EnableTongueOutput") == tongue, "tongue output follows explicit selection");
-        Check(arguments.Contains("-EnableCheekOutput") == camera, "camera cheeks follow explicit selection");
-        Check(arguments.Contains("-TonguePreview") == (tongue || camera), "camera cheeks work without enabling tongue output");
+        Check(!arguments.Contains("-EnableCheekOutput"), "retired camera cheek output is never enabled");
+        Check(arguments.Contains("-TonguePreview") == tongue, "tongue weights load only for enabled tongue output");
         Check(arguments.Contains("-PupilOutput") == pupil, "pupil output remains independent");
         Check(arguments.Contains("-NoWindow") == !preview, "preview selection is preserved");
         Check(Value(arguments, "-MaxFps") == "24" && arguments.Count(value => value == "-MaxFps") == 1,
             "a combined process receives only one FPS setting");
         Check(Value(arguments, "-StopFile") == selection.StopFile, "all camera combinations use the same stop file");
-        if (tongue || camera)
+        if (tongue)
         {
             Check(Value(arguments, "-TongueModelPath") == selection.GateModelPath,
                 "selected visibility gate is retained including path spaces");
@@ -42,35 +41,27 @@ try
             Check(Value(arguments, "-TongueVisibilityMode") == "weighted", "visibility selection is retained");
         }
         else Check(!arguments.Contains("-TongueModelPath"), "pupil-only tracking does not load an unrelated model");
-        Check(plan.OutputDescription.Contains(camera ? "camera cheek puff ON" : "camera cheek puff OFF"),
-            "the startup message reflects effective camera cheek output");
+        Check(plan.OutputDescription.Contains("native face values") && !plan.OutputDescription.Contains("camera cheek"),
+            "the startup message describes native cheek output without a retired feature");
     }
 
-    var combinedOff = HubCameraTrackingLaunch.Create(Selection("VirtualDesktop", true, false, false, true));
+    var combinedOff = HubCameraTrackingLaunch.Create(Selection("VirtualDesktop", true, false, true));
     foreach (var profile in new[] { "responsive", "balanced", "low-cpu" })
     {
-        var plan = HubCameraTrackingLaunch.Create(Selection("VirtualDesktop", true, false, true, false) with
+        var plan = HubCameraTrackingLaunch.Create(Selection("VirtualDesktop", true, true, false) with
             { TrackingProfile = profile });
         Check(Value(plan.Arguments, "-TrackingProfile") == profile, "processing profile reaches the launcher");
         Check(Value(plan.Arguments, "-MaxFps") == "24", "profile preserves the camera FPS cap");
         Check(!plan.Arguments.Contains("-TongueProcessingFps"), "profiles do not reduce tongue cadence");
     }
-    Throws(() => HubCameraTrackingLaunch.Create(Selection("VirtualDesktop", true, false, true, false) with
+    Throws(() => HubCameraTrackingLaunch.Create(Selection("VirtualDesktop", true, true, false) with
         { TrackingProfile = "unknown" }), "unknown processing profile gets actionable validation");
-    Check(!combinedOff.Arguments.Contains("-EnableCheekOutput"), "a combined model alone does not opt into camera output");
-    Check(combinedOff.OutputDescription.Contains("native-source adjustments"), "off explicitly describes the native cheek source");
-    Throws(() => HubCameraTrackingLaunch.Create(Selection("VirtualDesktop", true, true, false, true) with
-        { ModelHasCameraCheeks = false }), "plain model cannot silently send camera cheeks");
-    Throws(() => HubCameraTrackingLaunch.Create(Selection("VirtualDesktop", false, true, false, true) with
-        { DirectionModelPath = null }), "camera output cannot silently fall back to the visibility gate");
-    Throws(() => HubCameraTrackingLaunch.Create(Selection("VirtualDesktop", true, false, false, true) with
+    Check(!combinedOff.Arguments.Contains("-EnableCheekOutput"), "a legacy combined model cannot enable retired camera output");
+    Check(combinedOff.OutputDescription.Contains("native face values"), "the startup message describes the native cheek source");
+    Throws(() => HubCameraTrackingLaunch.Create(Selection("VirtualDesktop", true, false, true) with
+        { DirectionModelPath = null }), "tongue output cannot silently fall back to the visibility gate");
+    Throws(() => HubCameraTrackingLaunch.Create(Selection("VirtualDesktop", true, false, true) with
         { GateModelPath = "" }), "missing gate is rejected");
-    Check(HubCameraTrackingLaunch.DescribeCheekSource(true, false, false).Contains("available but OFF"),
-        "model selection and output selection are clearly distinguished");
-    Check(HubCameraTrackingLaunch.DescribeCheekSource(true, true, false).Contains("next start"),
-        "an enabled stopped feature is not described as already loaded");
-    Check(HubCameraTrackingLaunch.DescribeCheekSource(false, true, false).Contains("unavailable"),
-        "a stale checked selection gets actionable feedback");
 
     if (args.Length == 1)
     {
@@ -79,10 +70,10 @@ try
         var direction = Path.Combine(models, "qpro-stereo-tongue-v12-direction.pt");
         var metadata = JsonNode.Parse(File.ReadAllText(Path.Combine(models, "qpro-stereo-tongue-v12.metadata.json")))?.AsObject();
         Check(File.Exists(gate) && File.Exists(direction), "actual v12 model pair exists");
-        var plan = HubCameraTrackingLaunch.Create(Selection("VirtualDesktop", false, true, false, false) with
-            { GateModelPath = gate, DirectionModelPath = direction, ModelHasCameraCheeks = HubModelMetadata.HasCameraCheeks(metadata) });
-        Check(Value(plan.Arguments, "-TongueDirectionModelPath") == direction && plan.Arguments.Contains("-EnableCheekOutput"),
-            "actual bundled v12 metadata and paths enable the camera-only launch");
+        var plan = HubCameraTrackingLaunch.Create(Selection("VirtualDesktop", true, false, false) with
+            { GateModelPath = gate, DirectionModelPath = direction });
+        Check(Value(plan.Arguments, "-TongueDirectionModelPath") == direction && !plan.Arguments.Contains("-EnableCheekOutput"),
+            "actual legacy combined metadata and paths launch tongue output only");
     }
     Console.WriteLine($"Hub camera launch checks passed: {checks}. No processes, modules, or headset changes.");
     return 0;
@@ -112,7 +103,7 @@ static string? Value(string[] arguments, string option)
     return index >= 0 && index + 1 < arguments.Length ? arguments[index + 1] : null;
 }
 
-static HubCameraTrackingSelection Selection(string source, bool tongue, bool camera, bool pupil, bool preview) =>
-    new(source, tongue, camera, true, @"C:\release folder\models\qpro-stereo-tongue-v12-gate.pt",
+static HubCameraTrackingSelection Selection(string source, bool tongue, bool pupil, bool preview) =>
+    new(source, tongue, @"C:\release folder\models\qpro-stereo-tongue-v12-gate.pt",
         @"C:\release folder\models\qpro-stereo-tongue-v12-direction.pt", "24", 55, "weighted",
         pupil, "1.4", preview, @"C:\release folder\config\tracking.stop");

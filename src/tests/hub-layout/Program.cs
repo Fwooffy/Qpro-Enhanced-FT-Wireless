@@ -223,7 +223,7 @@ internal static class LayoutTests
         thresholdContent.MaximumSize = originalMaximum;
         thresholdPage.AutoScrollMinSize = originalExtent;
         form.Size = new Size(1140, 850);
-        tabs.Single(tab => tab.Text == "Live tracking").PerformClick();
+        tabs.Single(tab => tab.Text == "Facial tracking").PerformClick();
         Pump(150);
         foreach (var name in new[] { "connection and camera settings", "eye settings and guidance", "camera settings",
             "cheek adjustment details", "hand and controller details" })
@@ -303,7 +303,7 @@ internal static class LayoutTests
         var statuses = (TableLayoutPanel)labels[0].Parent!.Parent!;
         var beginBatch = typeof(HubForm).GetMethod("BeginReadinessUpdate", flags)!;
         IDisposable Batch() => (IDisposable)beginBatch.Invoke(form, null)!;
-        var live = tabs.Single(button => button.AccessibleName == "Live tracking");
+        var live = tabs.Single(button => button.AccessibleName == "Facial tracking");
         var activity = tabs.Single(button => button.AccessibleName == "Activity");
         form.Size = new Size(1140, 850);
         live.PerformClick(); Pump(150);
@@ -356,7 +356,7 @@ internal static class LayoutTests
         form.Text = "Qpro V3 paint fixture - sample data only";
         form.KeyPreview = true;
         var controls = Descendants(form).ToArray();
-        var live = controls.OfType<Button>().Single(button => Equals(button.Tag, "workflow-tab") && button.Text == "Live tracking");
+        var live = controls.OfType<Button>().Single(button => Equals(button.Tag, "workflow-tab") && button.Text == "Facial tracking");
         var activity = controls.OfType<Button>().Single(button => Equals(button.Tag, "workflow-tab") && button.Text == "Activity");
         var append = typeof(HubForm).GetMethod("AppendLog", BindingFlags.Instance | BindingFlags.NonPublic,
             null, [typeof(string)], null)!;

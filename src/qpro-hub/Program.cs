@@ -84,6 +84,8 @@ internal static class Program
                 {
                     if (pageArgument + 1 >= args.Length) throw new ArgumentException("--preview-page requires a page name.");
                     var requested = args[pageArgument + 1];
+                    if (requested.Equals("Live", StringComparison.OrdinalIgnoreCase) || requested.Equals("Live tracking", StringComparison.OrdinalIgnoreCase))
+                        requested = "Facial tracking";
                     var tab = FindControl(form, control => Equals(control.Tag, "workflow-tab") && control.Text.Contains(requested, StringComparison.OrdinalIgnoreCase)) as Button;
                     if (tab is null) throw new ArgumentException("Unknown preview page: " + requested);
                     tab.PerformClick();
@@ -156,7 +158,7 @@ internal static class Program
             try { installUseLock = HubUpdateRunner.AcquireInstallUseLock(root); }
             catch (IOException error)
             {
-                MessageBox.Show(error.Message, "Qpro Hub is in use", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(error.Message, HubForm.ProductDisplayName + " is in use", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return 2;
             }
             using (installUseLock) Application.Run(new HubForm(root));
@@ -185,7 +187,7 @@ internal static class Program
                 log = null;
             }
             MessageBox.Show(error.Message + "\n\n" + (log is null ? error.ToString() : "Details: " + log),
-                "QproFaceTracking Hub could not start", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                HubForm.ProductDisplayName + " could not start", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }
     }

@@ -71,6 +71,23 @@ foreach (var line in new[]
     "[AMD ROCm and PyTorch] WARNING: Existing ROCm packages need installation or repair: AMD PyTorch import failed before GPU detection. ModuleNotFoundError: No module named 'torchgen'. Setup will continue."
 }) Check(new(), line, ActivitySeverity.Warning);
 
+// Typed optional-binding reports remain warnings regardless of failure words
+// in their explanation. Actual controller errors retain their error severity.
+foreach (var line in new[]
+{
+    "CONTROLLER_BINDINGS_WARNING {\"message\":\"Prepared binding needs selection.\"}",
+    "CONTROLLER_BINDINGS_WARNING {\"message\":\"Automatic dashboard binding failed; choose it manually.\"}",
+    "[Hand/controller input] CONTROLLER_BINDINGS_WARNING {\"message\":\"Could not prepare VRChat menu scrolling; custom bindings are kept.\"}",
+    "[Hand/controller components] CONTROLLER_BINDINGS_WARNING {\"status\":\"needs-selection\",\"message\":\"Binding layout is unknown.\"}",
+    "[Hand/controller input]   CONTROLLER_BINDINGS_WARNING {\"message\":\"Could not recognize the saved schema.\"}"
+}) Check(new(), line, ActivitySeverity.Warning);
+Check(new(), "[Hand/controller input] CONTROLLER_ERROR {\"message\":\"Could not start the sensor reader.\"}", ActivitySeverity.Error);
+Check(new(), "CONTROLLER_BINDINGS_WARNING_EXTRA {\"message\":\"Preparation failed.\"}", ActivitySeverity.Error);
+var bindingRecovery = new HubActivityClassifier();
+Check(bindingRecovery, "[Hand/controller input] Traceback (most recent call last):", ActivitySeverity.Error);
+Check(bindingRecovery, "[Hand/controller input]   CONTROLLER_BINDINGS_WARNING {\"message\":\"Could not prepare optional binding.\"}", ActivitySeverity.Warning);
+Check(bindingRecovery, "[Hand/controller input]   Sensor reader is ready.", ActivitySeverity.Normal);
+
 // Windows PowerShell multi-line records, including interleaved independent output.
 var powershell = new HubActivityClassifier();
 foreach (var (line, expected) in new[]

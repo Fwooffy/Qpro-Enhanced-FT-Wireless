@@ -227,7 +227,7 @@ internal static class ActivePaintTests
             SendMessage(form.Handle, 0x0232, 0, 0);
             if ((bool)sizing.GetValue(form)!) throw new Exception("Native resize end did not resume optional reflow.");
         }
-        tabs.Single(tab => tab.Text == "Live tracking").PerformClick();
+        tabs.Single(tab => tab.Text == "Facial tracking").PerformClick();
         foreach (var name in new[] { "connection and camera settings", "eye settings and guidance", "camera settings", "cheek adjustment details", "hand and controller details" })
             controls.OfType<Button>().Single(button => button.Text == "Show " + name).PerformClick();
         Pump(250);

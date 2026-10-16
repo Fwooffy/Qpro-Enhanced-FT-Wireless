@@ -32,6 +32,7 @@ internal sealed partial class HubForm
         _updateToken = _updateLifetime.Token;
         Disposed += (_, _) => EndUpdateLifetime(releaseSource: true);
         _updateLink.LinkClicked += async (_, _) => await HandleHubUpdateClickAsync();
+        WireUpdateNotifications();
         if (_previewOnly) return;
         try
         {
@@ -54,7 +55,8 @@ internal sealed partial class HubForm
             try
             {
                 await Task.Delay(1000, _updateToken);
-                await CheckHubUpdatesAsync();
+                if (!_updateAutomatically) return;
+                await CheckHubUpdatesAsync(notifyAvailability: true);
             }
             catch (OperationCanceledException) { }
         };
@@ -72,9 +74,9 @@ internal sealed partial class HubForm
         }
     }
 
-    private async Task CheckHubUpdatesAsync()
+    private async Task CheckHubUpdatesAsync(bool notifyAvailability = false)
     {
-        if (_previewOnly || _updateChecking || IsDisposed || _closingInProgress) return;
+        if (_previewOnly || _updateChecking || _updateDialogOpen || _updateNotificationOpen || IsDisposed || _closingInProgress) return;
         _updateChecking = true;
         _updateLink.Enabled = false;
         _updateLink.Text = "Checking…";
@@ -84,9 +86,10 @@ internal sealed partial class HubForm
             var result = await client.CheckAsync(AppVersion, _updateToken, _updateIncludePrereleases);
             if (IsDisposed || Disposing) return;
             _updateCheck = result;
-            _updateLink.Text = result.Release is not null ? "Update available" : _componentPlan?.Updates.Count > 0 ? "Component updates" : "Check updates";
-            _updateLink.AccessibleDescription = result.Message;
             AppendLog("[Updates] " + result.Message);
+            if (notifyAvailability) QueueUpdateNotification(result);
+            else _updateNotification.Observe(result, AppVersion, _updateIncludePrereleases);
+            RefreshUpdateLink();
         }
         catch (OperationCanceledException) { }
         catch (Exception error)
@@ -94,8 +97,10 @@ internal sealed partial class HubForm
             if (!IsDisposed && !Disposing)
             {
                 _updateCheck = new(HubUpdateCheckState.Unavailable, "Updates could not be checked: " + error.Message);
-                _updateLink.Text = _componentPlan?.Updates.Count > 0 ? "Component updates" : "Check updates";
                 AppendLog("[Updates] " + _updateCheck.Message);
+                if (notifyAvailability) QueueUpdateNotification(_updateCheck);
+                else _updateNotification.Observe(_updateCheck, AppVersion, _updateIncludePrereleases);
+                RefreshUpdateLink();
             }
         }
         finally
@@ -107,15 +112,20 @@ internal sealed partial class HubForm
 
     private async Task HandleHubUpdateClickAsync()
     {
-        if (_previewOnly || _updateChecking || _closingInProgress) return;
-        if (_updateCheck?.Release is null) await CheckHubUpdatesAsync();
-        if (IsDisposed || Disposing || _updateCheck is null) return;
+        if (_previewOnly || _updateChecking || _closingInProgress || _updateDialogOpen || _updateNotificationOpen) return;
+        var reviewCheck = UpdateCheckForReview();
+        if (reviewCheck?.Release is null)
+        {
+            await CheckHubUpdatesAsync();
+            reviewCheck = UpdateCheckForReview();
+        }
+        if (IsDisposed || Disposing || reviewCheck is null) return;
         // An update never interrupts a capture, download or tracking recovery.
         if (UtilityActionIsBusy()) return;
         var live = _starting || _stopping || LiveTrackingRunning;
         var packaged = HubUpdateRunner.IsPackagedInstall(_root);
         string? blocked = HubUpdateBlockReason(live, packaged, _root);
-        using var dialog = new HubUpdateDialog(_updateCheck, AppVersion, _updateAutomatically, blocked,
+        using var dialog = new HubUpdateDialog(reviewCheck, AppVersion, _updateAutomatically, blocked,
             async (release, progress, cancellation) =>
             {
                 using var client = new HubUpdateClient();
@@ -128,15 +138,20 @@ internal sealed partial class HubForm
                 if (!IsDisposed && !Disposing && !linked.IsCancellationRequested) AppendLog("[Updates] " + check.Message);
                 return check;
             });
-        var result = dialog.ShowDialog(this);
+        if (reviewCheck.Release is { } reviewed) _updateNotification.Acknowledge(reviewed);
+        _updateDialogOpen = true;
+        DialogResult result;
+        try { result = dialog.ShowDialog(this); }
+        finally { _updateDialogOpen = false; }
         _updateAutomatically = dialog.CheckAutomatically;
         _updateIncludePrereleases = dialog.IncludePrereleases;
         _updateCheck = dialog.Check;
+        if (_updateCheck is not null) _updateNotification.Observe(_updateCheck, AppVersion, _updateIncludePrereleases);
+        else _updateNotification.RestrictChannel(_updateIncludePrereleases);
+        if (_updateCheck?.Release is { } dialogRelease) _updateNotification.Acknowledge(dialogRelease);
         if (!IsDisposed && !Disposing)
         {
-            _updateLink.Text = _updateCheck?.Release is not null ? "Update available"
-                : _componentPlan?.Updates.Count > 0 ? "Component updates" : "Check updates";
-            _updateLink.AccessibleDescription = _updateCheck?.Message ?? "Check the selected release channel again.";
+            RefreshUpdateLink();
         }
         try
         {

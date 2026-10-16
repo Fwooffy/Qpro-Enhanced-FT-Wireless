@@ -191,6 +191,7 @@ internal sealed partial class HubForm
     {
         if (_previewOnly || _environment.WirelessSelected || _compatibilityChecking ||
             !TryBeginSetupProgress("Reconnect USB headset")) return;
+        _magiskGazeState.RetryScan();
         UpdateControlState();
         bool connected = false;
         try

@@ -43,7 +43,7 @@ internal sealed class HubUpdateDialog : Form
         _stage = stage;
         _checkUpdates = checkUpdates; _current = current; _blocked = blocked;
         _lifetimeToken = _lifetime.Token;
-        Text = "Qpro updates";
+        Text = HubForm.ProductDisplayName + " updates";
         DoubleBuffered = true;
         BackColor = HubForm.Background; ForeColor = Color.WhiteSmoke;
         Font = new Font("Segoe UI", 10F);
@@ -118,7 +118,7 @@ internal sealed class HubUpdateDialog : Form
     private void ShowCheck(HubUpdateCheck check)
     {
         Check = check;
-        _title.Text = check.Release is { } release ? "QproFaceTracking V" + release.Version +
+        _title.Text = check.Release is { } release ? HubForm.ProductDisplayName + " V" + release.Version +
             (release.PrereleaseSuffix is { } suffix ? "-" + suffix : string.Empty) +
             (release.IsPrerelease ? " · Prerelease" : string.Empty) : "App updates";
         _summary.Text = $"Installed: V{_current}\n{check.Message}\n\n" +

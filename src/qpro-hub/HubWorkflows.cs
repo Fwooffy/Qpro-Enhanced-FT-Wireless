@@ -26,7 +26,7 @@ internal sealed partial class HubForm
     private bool _nativeCheekOnlySession;
     private bool LiveTrackingRunning => _cheekTrackingSession is not null || _trackingProcesses.Any(p => !p.HasExited);
     private bool NativeCheekAdjustmentsSelected => _individualCheekPuff.Checked || _individualCheekSuck.Checked;
-    private bool WorkerTrackingSelected => _gaze.Checked || _tongue.Checked || _cameraCheekPuff.Checked || _pupil.Checked || _hybridHands.Checked || _controllerTouchpad.Checked;
+    private bool WorkerTrackingSelected => _gaze.Checked || _tongue.Checked || _pupil.Checked || _hybridHands.Checked || _controllerTouchpad.Checked;
 
     private void EndCheekTrackingSession()
     {
@@ -100,6 +100,7 @@ internal sealed partial class HubForm
                 var direction = Path.Combine(modelsDir, $"qpro-stereo-tongue-v{version}-direction.pt");
                 if (File.Exists(direction))
                 {
+                    if (HubLegacyModelIdentity.IsObsoleteBundledModel(_root, gate, direction)) continue;
                     var metadata = ReadModelMetadata(version);
                     var choice = new FileChoice(ModelDisplayName(version), gate, direction,
                         IsExperimentalModelMetadata(metadata), HasMoustacheModelIcon(metadata));
@@ -108,13 +109,15 @@ internal sealed partial class HubForm
                 }
             }
         }
-        SelectOrFirst(_tongueModels, selectedTongue);
+        var defaultTongue = HubModelSelection.ChooseGatePath(_tongueModels.Items.Cast<FileChoice>()
+            .Select(choice => new HubModelOption(choice.Primary, VersionFromPath(choice.Primary),
+                ReadModelMetadata(VersionFromPath(choice.Primary)))), selectedTongue);
+        SelectOrFirst(_tongueModels, defaultTongue);
         SelectOrFirst(_modelList, selectedManaged);
         _modelEmpty.Visible = _modelList.Items.Count == 0;
         if (_modelEmpty.Visible) _modelEmpty.BringToFront();
         UpdateTongueModelNote();
         ReloadDatasetQueues();
-        ReloadCameraCheekWorkflow();
         UpdateControlState();
     }
 
@@ -137,8 +140,22 @@ internal sealed partial class HubForm
             foreach (var gate in Directory.GetFiles(source, "qpro-stereo-tongue-v*-gate.pt").OrderByDescending(VersionFromPath))
             {
                 var version = VersionFromPath(gate);
-                if (version <= 0 || version == 8) continue;
+                if (version <= 0) continue;
                 var sourceDirection = Path.Combine(source, $"qpro-stereo-tongue-v{version}-direction.pt");
+                if (HubLegacyModelIdentity.IsObsoleteBundledModel(sibling.FullName, gate, sourceDirection)) continue;
+                try
+                {
+                    var sourceMetadata = Path.Combine(source, $"qpro-stereo-tongue-v{version}.metadata.json");
+                    if (File.Exists(sourceMetadata))
+                    {
+                        var metadata = JsonNode.Parse(File.ReadAllText(sourceMetadata))?.AsObject();
+                        // Obsolete combined bundles require the exact identity above.
+                        // A modified legacy copy remains eligible for carry-forward.
+                        if (metadata?["modelKind"]?.GetValue<string>() != "developer-lower-face" &&
+                            HubModelMetadata.IsBundledDeveloper(version, metadata)) continue;
+                    }
+                }
+                catch (Exception error) when (error is IOException or JsonException or InvalidOperationException) { }
                 var destinationGate = Path.Combine(destination, Path.GetFileName(gate));
                 var destinationDirection = Path.Combine(destination, Path.GetFileName(sourceDirection));
                 if (!File.Exists(sourceDirection) || File.Exists(destinationGate) || File.Exists(destinationDirection)) continue;
@@ -158,23 +175,25 @@ internal sealed partial class HubForm
             AppendLog($"Carried personal tongue model{(imported.Count == 1 ? string.Empty : "s")} v{string.Join(", v", imported.Distinct().Order())} forward from the previous release.");
     }
 
+    private const string DeveloperModelGuidance = "Developer tongue model: tongue visibility improved in a fresh capture from one clean-shaven developer. Some pose and direction checks remain below the release criteria; independent wearer validation is pending. Quick refinement can adapt a copy to your face.";
+
     private void UpdateTongueModelNote()
     {
         var model = _tongueModels.SelectedItem as FileChoice;
         var version = model is null ? 0 : VersionFromPath(model.Primary);
-        _tongueModelNote.Text = model?.HasMoustacheIcon == true
-            ? "Highly experimental: includes the Mustachio beard/moustache training branch. Independent clean-shaven validation is pending. The developer v8 demo remains available."
+        var metadata = model is null ? null : ReadModelMetadata(version);
+        _tongueModelNote.Text = HubModelMetadata.IsDeveloper(metadata)
+            ? DeveloperModelGuidance
+            : model?.HasMoustacheIcon == true
+            ? "Highly experimental: includes the Mustachio beard/moustache training branch. Independent clean-shaven validation is pending. The Developer tongue model remains available."
             : model?.IsExperimental == true
-                ? "Highly experimental tongue model. Independent wearer validation is pending. The developer v8 demo remains available."
+                ? "Highly experimental tongue model. Independent wearer validation is pending. The Developer tongue model remains available."
                 : version == 8
             ? "Trained only on the developer. It is suitable for a first demo; quick refinement is recommended for another wearer."
             : model is null
                 ? "No complete gate/direction model pair was found."
-                : "Personal model discovered in this release folder. The bundled developer v8 remains unchanged.";
+                : "Personal tongue model discovered in this release folder. Your other models stay available.";
         _tongueModelNote.Text += " Stop tracking before changing models, then press Start tracking to load the selection.";
-        if (SelectedModelHasCameraCheeks())
-            _tongueModelNote.Text += " This experimental copy also has camera cheek puff outputs; enable Camera cheek puff separately to use them.";
-        UpdateCameraCheekAvailability();
     }
 
     private async Task ConfirmCaptureAsync(TongueDatasetKind kind)
@@ -201,9 +220,9 @@ internal sealed partial class HubForm
         }
         var title = kind switch
         {
-            TongueDatasetKind.Quick => "Start quick lower-face refinement?",
+            TongueDatasetKind.Quick => "Start quick tongue refinement?",
             TongueDatasetKind.Focused => "Start focused tongue capture?",
-            _ => "Start full lower-face capture?",
+            _ => "Start full tongue capture?",
         };
         var estimate = kind switch
         {
@@ -213,9 +232,9 @@ internal sealed partial class HubForm
         };
         var purpose = kind switch
         {
-            TongueDatasetKind.Quick => "This refines the selected tongue model and records 21 cheek camera cards. Training creates a separate tongue + cheeks copy. Camera cheeks remain experimental and are enabled separately in Live tracking.",
+            TongueDatasetKind.Quick => "This records tongue poses to refine the selected model for your face. Training creates a separate personal tongue model.",
             TongueDatasetKind.Focused => "This records fixed diagonal tongue poses plus matched tongue-hidden and tongue-visible poses with facial hair. Keep the tongue visible in both camera views for each visible card. It fine-tunes a new model without replacing your other captures or models.",
-            _ => "This records broad tongue coverage and 21 cheek camera cards. Training creates a new personal lower-face copy. It requires many carefully held poses; camera cheeks remain experimental and are enabled separately in Live tracking.",
+            _ => "This records broad tongue coverage for a new personal model. It requires many carefully held poses and trains independently of the selected model.",
         };
         var choice = MessageBox.Show(
             this,
@@ -236,7 +255,7 @@ internal sealed partial class HubForm
                 {
                     TongueDatasetKind.Quick => "Quick refinement capture",
                     TongueDatasetKind.Focused => "Focused tongue capture",
-                    _ => "Full lower-face capture",
+                    _ => "Full tongue capture",
                 },
                 "build-and-run.ps1",
                 "-TrackingSource", _environment.TrackingSourceArgument,
@@ -252,9 +271,9 @@ internal sealed partial class HubForm
             var proposed = dataset.DisplayName.StartsWith("Dataset ", StringComparison.Ordinal)
                 ? kind switch
                 {
-                    TongueDatasetKind.Quick => "My lower-face refinement",
+                    TongueDatasetKind.Quick => "My tongue refinement",
                     TongueDatasetKind.Focused => "My diagonal and facial hair refinement",
-                    _ => "My full lower-face dataset",
+                    _ => "My full tongue dataset",
                 }
                 : dataset.DisplayName;
             var name = PromptForText(
@@ -325,19 +344,27 @@ internal sealed partial class HubForm
         AppendLog($"The Qpro {sourceName} module is active on disk; the other Qpro source module was removed. Restart VRCFaceTracking to load it.");
         PlaySfx("succeed.wav");
         MessageBox.Show(this,
-            $"The Qpro {sourceName} module is installed. The other Qpro source module was removed.\n\nReopen VRCFaceTracking and confirm expressions move in its preview. Choose your features on Live tracking.\n\nUsing a Magisk independent-gaze module? Leave Independent Eye Gaze off in the Hub; Check gaze setup and Prepare gaze are not needed.",
+            $"The Qpro {sourceName} module is installed. The other Qpro source module was removed.\n\nReopen VRCFaceTracking and confirm expressions move in its preview. Choose your features on Facial tracking.\n\nUsing a Magisk independent-gaze module? Leave Independent Eye Gaze off in the Hub; Check gaze setup and Prepare gaze are not needed.",
             "Setup step complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private async Task PrepareGazeAsync()
     {
+        if (HasActiveMagiskGaze)
+        {
+            UpdateGazeSetupStatus();
+            SetActionFeedback("Independent gaze is provided by Magisk",
+                "The detected Magisk gaze module already supplies this feature. Hub gaze preparation is disabled.",
+                "Skip Check gaze setup and Prepare gaze. You can still use pupil, eyebrow and tongue features.");
+            return;
+        }
         var adb = FindAdb();
         if (adb is null)
         {
             PlaySfx("warning.wav");
             MessageBox.Show(
                 this,
-                "The bundled Android tools could not be found.\n\nRe-extract the complete QproFaceTracking release and confirm that platform-tools\\adb.exe is present, then try Prepare gaze again.",
+                "The bundled Android tools could not be found.\n\nRe-extract the complete Qpro Companion release and confirm that platform-tools\\adb.exe is present, then try Prepare gaze again.",
                 "Android tools are missing",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
@@ -430,9 +457,9 @@ internal sealed partial class HubForm
         UpdateRuntimeRecoveryButtons(enabled);
         UpdateModuleInstallButtonState(enabled);
         _uninstallBridgeButton.Enabled = enabled && (bridgeUninstallAvailable ?? BridgeUninstallAvailable());
-        _setupGazeButton.Enabled = enabled;
+        _setupGazeButton.Enabled = enabled && !HasActiveMagiskGaze;
         _recoverGazeButton.Enabled = enabled && !_gazeRecoveryRunning;
-        _inspectGazeButton.Enabled = _recoverGazeButton.Enabled;
+        _inspectGazeButton.Enabled = _recoverGazeButton.Enabled && !HasActiveMagiskGaze;
         _resetLegacyGazeButton.Enabled = _recoverGazeButton.Enabled;
         _enableWirelessButton.Enabled = enabled;
         _connectWirelessButton.Enabled = enabled;
@@ -493,15 +520,9 @@ internal sealed partial class HubForm
                 throw new InvalidOperationException("The training helper exited successfully, but no complete new model pair was found. Check Activity and the selected dataset before retrying.");
             if (created > 0)
             {
-                // The trainer's result determines whether cheeks were trained.
-                // An older tongue-only capture must not inherit a parent's
-                // camera-cheek flag after its new tongue checkpoint is written.
                 JsonObject? resultMetadata = ReadModelMetadata(created);
-                JsonObject? classification = (resultMetadata ??
-                    (parentVersion > 0 ? ReadModelMetadata(parentVersion) : null))?.DeepClone()?.AsObject();
-                if (resultMetadata?["hasCameraCheeks"] is not JsonValue cheekFlag ||
-                    !cheekFlag.TryGetValue<bool>(out var hasCheeks) || !hasCheeks)
-                    classification?.Remove("hasCameraCheeks");
+                JsonObject? classification = HubModelMetadata.CreateRefinementClassification(resultMetadata,
+                    parentVersion > 0 ? ReadModelMetadata(parentVersion) : null);
                 if (parentVersion > 0)
                 {
                     classification ??= new JsonObject();
@@ -510,6 +531,7 @@ internal sealed partial class HubForm
                     classification["parentDisplayName"] = ModelFriendlyName(parentVersion, parentMetadata);
                     classification["parentModelKind"] = HasMoustacheModelIcon(parentMetadata)
                         ? "mustachio-experimental" : parentMetadata?["modelKind"]?.DeepClone();
+                    HubModelMetadata.CopyDeveloperParentDetails(parentMetadata, classification);
                     if (IsExperimentalModelMetadata(parentMetadata)) classification["isExperimental"] = true;
                 }
                 WriteModelMetadata(created, dataset.DisplayName, dataset.SessionPath, kind switch
@@ -535,19 +557,13 @@ internal sealed partial class HubForm
                         break;
                     }
                 }
-                if (_cameraCheekPuff.Checked && !SelectedModelHasCameraCheeks())
-                {
-                    _cameraCheekPuff.Checked = false;
-                    AppendLog("This tongue-only capture has no trained cheek camera outputs. Camera cheek puff is off; record the new lower-face cheek cards to train a combined copy.");
-                }
             }
             FinishTrainingProgress(created > 0);
             if (created > 0)
             {
                 PlaySfx("trainingComplete.wav");
-                MessageBox.Show(this, $"Training is complete. “{dataset.DisplayName}” is now available as lower-face model v{created}." +
-                    (SelectedModelHasCameraCheeks() ? " Enable Camera cheek puff (experimental) in Live tracking to test its cheek outputs." : " This copy contains tongue outputs."),
-                    "Lower-face model ready", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(this, $"Training is complete. “{dataset.DisplayName}” is now available as tongue model v{created}.",
+                    "Tongue model ready", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
         }
         catch (Exception error)
@@ -577,7 +593,7 @@ internal sealed partial class HubForm
             : "an authorized Quest over USB — connect the cable and approve debugging");
         else if (needsHeadsetRuntime && await QuestIdentityProblemAsync() is { } identityProblem) missing.Add(identityProblem);
         if (!Process.GetProcessesByName("vrserver").Any()) missing.Add("SteamVR");
-        bool faceFeatures = _gaze.Checked || _tongue.Checked || _cameraCheekPuff.Checked || _pupil.Checked || NativeCheekAdjustmentsSelected;
+        bool faceFeatures = _gaze.Checked || _tongue.Checked || _pupil.Checked || NativeCheekAdjustmentsSelected;
         if (faceFeatures && !Process.GetProcessesByName("VRCFaceTracking").Any()) missing.Add("VRCFaceTracking");
         else if (faceFeatures && _environment.TrackingSourceRequiresVrcftRestart()) missing.Add("restart VRCFaceTracking after changing the face-tracking source");
         if (faceFeatures && !BridgeInstalled()) missing.Add("the Qpro VRCFT module — use First-time setup: Install module");
@@ -585,8 +601,7 @@ internal sealed partial class HubForm
         if (needsHeadsetRuntime && !BackendReady()) missing.Add("the PC runtime — use First-time setup: Install runtime");
         if (_gaze.Checked && !EyeModelReady()) missing.Add("the locally prepared gaze patch — use First-time setup: Optional independent gaze");
         if (_gaze.Checked && _eyeProfiles.SelectedItem is null) missing.Add("an eye profile");
-        if ((_tongue.Checked || _cameraCheekPuff.Checked) && _tongueModels.SelectedItem is null) missing.Add("a paired tongue model");
-        if (_cameraCheekPuff.Checked && !SelectedModelHasCameraCheeks()) missing.Add("a trained tongue + cheeks model — use Personalize to record and train cheek camera poses, then select that copy under Lower-face model");
+        if (_tongue.Checked && _tongueModels.SelectedItem is null) missing.Add("a paired tongue model");
         if (_pupil.Checked && !File.Exists(Path.Combine(_root, "pupil_dilation.py"))) missing.Add("the pupil estimation script — re-extract the complete release");
         AddControllerPrerequisites(missing);
         return missing;
@@ -596,9 +611,10 @@ internal sealed partial class HubForm
     {
         if (_starting || _stopping) return;
         if (UtilityActionIsBusy()) return;
+        ApplyMagiskGazeControlGate(sessionEditable: !LiveTrackingRunning && !_trackingCleanupPending);
         _trackingProcesses.RemoveAll(p => p.HasExited);
         if (LiveTrackingRunning) { MessageBox.Show(this, "Tracking is already running."); return; }
-        if (!_gaze.Checked && !_tongue.Checked && !_cameraCheekPuff.Checked && !_pupil.Checked && !_hybridHands.Checked && !_controllerTouchpad.Checked && !NativeCheekAdjustmentsSelected) { PlaySfx("warning.wav"); MessageBox.Show(this, "Select at least one tracking feature."); return; }
+        if (!_gaze.Checked && !_tongue.Checked && !_pupil.Checked && !_hybridHands.Checked && !_controllerTouchpad.Checked && !NativeCheekAdjustmentsSelected) { PlaySfx("warning.wav"); MessageBox.Show(this, "Select at least one tracking feature."); return; }
         bool workerTrackingRequested = WorkerTrackingSelected;
         _starting = true;
         StopTrackingHealth();
@@ -620,13 +636,17 @@ internal sealed partial class HubForm
             }
 
             AppendLog($"Face-tracking source for this session: {(_environment.SteamLinkSelected ? "Steam Link OSC (port 9015)" : "Virtual Desktop")}.");
+            // Old calibration profiles remain on disk, but this UI's enabled
+            // cheek toggles always select the native individual 1/0 mode.
+            HubCheekPuffPreference.Save(_individualCheekPuff.Checked, HubCheekPuffMode.Strong);
+            HubCheekSuckPreference.Save(_individualCheekSuck.Checked, true);
             _gazeFailureHandled = false;
             _gazeRecoveryConfirmed = false;
             File.Delete(_stopFile);
             _start.Enabled = false; _stop.Enabled = true;
             _runStatus.Text = "● Starting…"; _runStatus.ForeColor = Warning;
             BeginTrackingHealth();
-            SetStatus(_inferenceStatus, StatusKind.Warning, (_tongue.Checked || _cameraCheekPuff.Checked) ? "Detecting…" : "Idle");
+            SetStatus(_inferenceStatus, StatusKind.Warning, _tongue.Checked ? "Detecting…" : "Idle");
             SetStatus(_pupilStatus, StatusKind.Warning, _pupil.Checked ? "Starting…" : "Idle");
             if (_gaze.Checked)
             {
@@ -676,15 +696,14 @@ internal sealed partial class HubForm
             startCancellation.Token.ThrowIfCancellationRequested();
             FileChoice? lowerFaceModel = _tongueModels.SelectedItem as FileChoice;
             var cameraPlan = HubCameraTrackingLaunch.Create(new(
-                _environment.TrackingSourceArgument, _tongue.Checked, _cameraCheekPuff.Checked,
-                SelectedModelHasCameraCheeks(), lowerFaceModel?.Primary, lowerFaceModel?.Secondary,
+                _environment.TrackingSourceArgument, _tongue.Checked, lowerFaceModel?.Primary, lowerFaceModel?.Secondary,
                 _fps.SelectedItem?.ToString() ?? "24", _smoothing.Value, VisibilityModeValue(),
                 _pupil.Checked, PupilSensitivityValue(), _cameraPreview.Checked, _stopFile, ProcessingProfileValue()));
             Task<HubTrackingExitFeedback?>? cameraExitResult = null;
             if (cameraPlan.Required)
             {
-                if ((_tongue.Checked || _cameraCheekPuff.Checked) && lowerFaceModel is not null)
-                    AppendLog($"Lower-face model selected for this session: v{VersionFromPath(lowerFaceModel.Primary)} (gate: {Path.GetFileName(lowerFaceModel.Primary)}; direction: {Path.GetFileName(lowerFaceModel.Secondary)}).");
+                if (_tongue.Checked && lowerFaceModel is not null)
+                    AppendLog($"Tongue model selected for this session: v{VersionFromPath(lowerFaceModel.Primary)} (gate: {Path.GetFileName(lowerFaceModel.Primary)}; direction: {Path.GetFileName(lowerFaceModel.Secondary)}).");
                 AppendLog("Camera outputs for this session: " + cameraPlan.OutputDescription);
                 var supervisedArguments = cameraPlan.Arguments.Concat(new[]
                 {
@@ -692,7 +711,7 @@ internal sealed partial class HubForm
                     "-CompanionStartFileTime", Process.GetCurrentProcess().StartTime.ToUniversalTime().ToFileTimeUtc()
                         .ToString(System.Globalization.CultureInfo.InvariantCulture)
                 }).ToArray();
-                StartManaged(_tongue.Checked || _cameraCheekPuff.Checked ? "Camera tracking" : "Pupil tracking",
+                StartManaged(_tongue.Checked ? "Camera tracking" : "Pupil tracking",
                     "build-and-run.ps1", out cameraExitResult, supervisedArguments);
             }
             StartControllerInput();
@@ -1069,7 +1088,7 @@ internal sealed partial class HubForm
         if (succeeded && result is not null) RememberGazeInspection(result);
         if (succeeded && result is { HasActiveMagiskGaze: true, NeedsAttention: false })
             SetActionFeedback("Magisk gaze module detected", "The optional gaze check found an active Magisk gaze module.",
-                "Leave Independent Eye Gaze off in the Hub. Skip Check gaze setup and Prepare gaze; choose your other features on Live tracking.",
+                "Leave Independent Eye Gaze off in the Hub. Skip Check gaze setup and Prepare gaze; choose your other features on Facial tracking.",
                 severity: ActivitySeverity.Normal);
         MessageBox.Show(this, succeeded && result is not null ? result.PopupText() : HubGazeInspection.FailedPopupText,
             "Gaze setup result", MessageBoxButtons.OK,
@@ -1266,7 +1285,7 @@ internal sealed partial class HubForm
             // Show its result without waiting on a second network status probe.
             if (label != "Connect wireless Quest") await RefreshStatusAsync();
             if (controllerFeedback is not null) ShowControllerFeedback(controllerFeedback);
-            else SetActionFeedback(label + " completed", "The helper exited successfully and its required result checks passed.", label.StartsWith("Install ", StringComparison.Ordinal) && label.Contains("module", StringComparison.Ordinal) ? "Reopen VRCFaceTracking to load the installed module." : "Continue setup or choose your features on Live tracking.");
+            else SetActionFeedback(label + " completed", "The helper exited successfully and its required result checks passed.", label.StartsWith("Install ", StringComparison.Ordinal) && label.Contains("module", StringComparison.Ordinal) ? "Reopen VRCFaceTracking to load the installed module." : "Continue setup or choose your features on Facial tracking.");
             return true;
         }
         catch (Exception error)

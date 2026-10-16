@@ -50,6 +50,7 @@ internal static class ControllerLifecycleFixtures
 
     internal static void Run(string root)
     {
+        ControllerStatusFixtures.Run(root);
         TestCleanFailure(root);
         TestExplicitStop(root);
         foreach (var result in new[] { "missing", "interim", "malformed", "failed" })
@@ -76,7 +77,9 @@ internal static class ControllerLifecycleFixtures
         var status = fixture.Get<Label>("_runStatus").Text;
         Check(status.Contains("Camera input received") && status.Contains("controller input off") && !status.Contains("thumb-rest"),
             "optional controller exit keeps camera readiness without waiting forever for controller input");
-        Application.DoEvents();
+        // The pipe drain and the bounded UI log queue finish independently.
+        fixture.Wait(() => fixture.Get<RichTextBox>("_log").Text.Contains("controller sensor reader disconnected"),
+            "final controller error visible in Activity");
         Check(fixture.Get<RichTextBox>("_log").Text.Contains("controller sensor reader disconnected"),
             "final controller stderr without a newline survives the bounded exit drain");
         fixture.Stop();

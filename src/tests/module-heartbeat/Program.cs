@@ -7,6 +7,7 @@ using System.Net.Sockets;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Qpro.GazeBridge;
@@ -64,6 +65,17 @@ foreach (var steam in new[] { false, true })
     var json = await fixture.Latest();
     var observation = Read(json, steam);
     Check(observation.Snapshot is not null, "production module serializes a receiver-compatible " + (steam ? "Steam Link" : "Virtual Desktop") + " heartbeat");
+    Check(observation.Snapshot!.Channels.Length == 5 && observation.Snapshot.Channels.All(channel => channel.Name != "camera-cheeks"),
+        "production module and Hub agree on five active channels");
+    var legacy = JsonNode.Parse(json)!.AsObject();
+    legacy["Channels"]!.AsArray().Add(new JsonObject { ["Name"] = "camera-cheeks", ["AgeMs"] = 0, ["TimeoutMs"] = 500, ["Applied"] = true });
+    var oldObservation = Read(legacy.ToJsonString(), steam);
+    Check(oldObservation.Snapshot?.Channels.Length == 5 &&
+        !View(oldObservation, fixture.Time).Summary.Contains("cheek") && !View(oldObservation, fixture.Time).Detail.Contains("camera-cheeks"),
+        "one legacy camera cheek channel is ignored rather than presented as live");
+    legacy["Channels"]!.AsArray().RemoveAt(2);
+    Check(Read(legacy.ToJsonString(), steam).Snapshot is null,
+        "retired legacy camera channel cannot replace a required tongue channel");
     Check(observation.Snapshot!.Channels.Single(channel => channel.Name == "tongue").Applied,
         "real received tongue packet was applied to owned output slots: " + json);
     Check(View(observation, fixture.Time).State == "receiving", "fresh applied output reports receiving");
@@ -160,7 +172,7 @@ Console.WriteLine($"PASS: {checks} module-heartbeat protocol, stale/nonmatching/
 
 static HeartbeatChannel[] Channels(bool applied) =>
  [new("gaze-left", -1, 250, false), new("gaze-right", -1, 250, false), new("tongue", applied ? 0 : -1, 300, applied),
-  new("pupil-left", -1, 350, false), new("pupil-right", -1, 350, false), new("camera-cheeks", -1, 500, false)];
+  new("pupil-left", -1, 350, false), new("pupil-right", -1, 350, false)];
 static byte[] Message(string address, float value)
 {
     using var output = new MemoryStream();

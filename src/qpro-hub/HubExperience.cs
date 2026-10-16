@@ -7,7 +7,7 @@ internal sealed partial class HubForm
 {
     private readonly Label _actionTitle = SectionTitle("Nothing running yet");
     private readonly Label _actionDetail = Info("Setup and tracking results appear here. Your full Activity log stays below.");
-    private readonly Label _actionNext = Info("Next: complete First-time setup, then choose features on Live tracking.");
+    private readonly Label _actionNext = Info("Next: complete First-time setup, then choose features on Facial tracking.");
     private readonly Label _compatibilityIdentity = Info("Headset not checked. An ADB connection alone does not verify a Quest Pro or its firmware.");
     private readonly Label _compatibilitySummary = Info("Feature support has not been checked.");
     private readonly Label _compatibilityGaze = Info("Independent gaze: not checked");
@@ -38,7 +38,7 @@ internal sealed partial class HubForm
     {
         if (_stopping || _closingInProgress || _gazeRecoveryRunning
             || (_gazeFailureHandled && !_gazeRecoveryConfirmed)) return;
-        var cameras = _tongue.Checked || _cameraCheekPuff.Checked || _pupil.Checked;
+        var cameras = _tongue.Checked || _pupil.Checked;
         if (cameras && _trackingHealth.CameraState is TrackingSignalState.Error or TrackingSignalState.Stopped) return;
         var missing = new List<string>();
         if (cameras && !_cameraInputReady) missing.Add(_trackingHealth.CameraState == TrackingSignalState.Stale ? "fresh camera frames" : "camera frames");
@@ -130,9 +130,9 @@ internal sealed partial class HubForm
 
     private string DiagnosticText()
     {
-        var text = $"QproFaceTracking V{AppVersion}\nWindows build: {Environment.OSVersion.Version.Build}\n" +
+        var text = $"{ProductDisplayName} V{AppVersion}\nWindows build: {Environment.OSVersion.Version.Build}\n" +
             $"Face source: {_trackingSourceLive.Text}\n\n{_actionSeverity.Text}: {_actionTitle.Text}\n{_actionDetail.Text}\n{_actionNext.Text}\n\n" +
-            _compatibilityDiagnostic + "\n\nLIVE TRACKING HEALTH\n" + _trackingHealth.DiagnosticText() +
+            _compatibilityDiagnostic + "\n\nTRACKING HEALTH\n" + _trackingHealth.DiagnosticText() +
             "\n\nMODULE OUTPUT\n" + ModuleHeartbeatView().Summary + "\n" + ModuleHeartbeatView().Detail + "\n\nACTIVITY\n" + _log.Text;
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         if (!string.IsNullOrEmpty(home)) text = text.Replace(home, "%USERPROFILE%", StringComparison.OrdinalIgnoreCase);

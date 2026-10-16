@@ -36,7 +36,7 @@ var supplied = Path.Combine(fixture, "packaged", "Qpro.GazeBridge.dll");
 Directory.CreateDirectory(Path.GetDirectoryName(supplied)!);
 File.Copy(args[0], supplied);
 
-static string InstallFixture(string customLibs, string supplied, bool steamLink, string? moduleId = null, string? dllName = null, string? hash = null)
+static string InstallFixture(string customLibs, string supplied, bool steamLink, string? moduleId = null, string? dllName = null, string? hash = null, string? displayName = null)
 {
     var id = moduleId ?? (steamLink ? HubModuleInstallation.SteamLinkId : HubModuleInstallation.VirtualDesktopId);
     var filename = dllName ?? (steamLink ? "000-Qpro.SteamLink.dll" : "000-Qpro.VirtualDesktop.dll");
@@ -47,7 +47,7 @@ static string InstallFixture(string customLibs, string supplied, bool steamLink,
     File.WriteAllText(Path.Combine(folder, "module.json"), JsonSerializer.Serialize(new
     {
         ModuleId = id, DllFileName = filename, IsLocal = true, AuthorName = "Fwooffy", Version = "2.1.2",
-        ModuleName = "QproFaceTracking - " + (steamLink ? "Steam Link" : "Virtual Desktop"),
+        ModuleName = displayName ?? "Qpro Companion \u2014 " + (steamLink ? "Steam Link" : "Virtual Desktop"),
         FileHash = hash ?? Convert.ToHexString(MD5.HashData(File.ReadAllBytes(dll))).ToLowerInvariant()
     }));
     return folder;
@@ -63,6 +63,27 @@ Check(HubModuleInstallation.HasInstalled(customLibs) && !HubModuleInstallation.I
     "A loose legacy DLL was not detected for migration or was mistaken for a current module card.");
 Check(HubModuleInstallation.Inspect(customLibs, supplied, false).State == HubModuleState.Legacy, "A loose module did not explain migration to the new directory.");
 File.Delete(legacy);
+foreach (var steamLink in new[] { false, true })
+{
+    var source = steamLink ? "Steam Link" : "Virtual Desktop";
+    foreach (var prefix in new[] { "Qpro Companion \u2014 ", "Qpro Companion \u2013 ", "Qpro Companion - ",
+        "QproFaceTracking \u2013 ", "QproFaceTracking - " })
+    {
+        var name = prefix + source;
+        var named = InstallFixture(customLibs, supplied, steamLink, displayName: name);
+        Check(HubModuleInstallation.IsCurrent(customLibs, supplied, steamLink), "A supported exact module display name was rejected: " + name);
+        Directory.Delete(named, recursive: true);
+    }
+    foreach (var name in new[] { "Qpro Companion \u2014 " + (steamLink ? "Virtual Desktop" : "Steam Link"),
+        "Qpro Companion \u2014 " + source + " extra", "Qpro companion \u2014 " + source,
+        "Other \u2014 " + source, "QproFaceTracking \u2014 " + source })
+    {
+        var named = InstallFixture(customLibs, supplied, steamLink, displayName: name);
+        Check(HubModuleInstallation.Inspect(customLibs, supplied, steamLink).State == HubModuleState.Invalid,
+            "An unsupported or wrong-source display name became ready: " + name);
+        Directory.Delete(named, recursive: true);
+    }
+}
 var vd = InstallFixture(customLibs, supplied, false);
 Check(HubModuleInstallation.HasInstalled(customLibs) && HubModuleInstallation.IsCurrent(customLibs, supplied, false) &&
     !HubModuleInstallation.IsCurrent(customLibs, supplied, true), "Own source metadata and supplied DLL parity did not determine readiness.");

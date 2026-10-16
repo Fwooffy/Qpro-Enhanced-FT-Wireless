@@ -35,14 +35,14 @@ internal static class TrackingHealthTests
         now += 6.6;
         Check(!health.CameraFresh && health.CameraState == TrackingSignalState.Stale, "Legacy camera readiness latched after its report expired.");
         Check(health.Observe(Healthy) && health.CameraFresh, "Fresh health did not recover after a stall.");
-        Check(health.FeatureState("tongue") == TrackingSignalState.Live && health.FeatureState("cheek") == TrackingSignalState.Live, "Hidden tongue is a valid neutral output, not a stale sample.");
+        Check(health.FeatureState("tongue") == TrackingSignalState.Live && health.FeatureState("cheek") == TrackingSignalState.Off, "Hidden tongue is a valid neutral output and retired camera cheeks remain off.");
         Check(health.LowerFaceState == TrackingSignalState.Live && health.LowerFaceStatusText == "Live", "Valid selected lower-face outputs did not report live.");
         health.Observe(Healthy.Replace("tongue=hidden", "tongue=warming"));
         Check(health.CameraFresh && health.SnapshotFresh && health.LowerFaceState == TrackingSignalState.Waiting
             && health.LowerFaceStatusText == "Waiting for output", "A current camera snapshot incorrectly reported a warming selected tongue as live.");
         health.Observe(Healthy.Replace("cheek=valid", "cheek=stale"));
-        Check(health.LowerFaceState == TrackingSignalState.Stale && health.LowerFaceStatusText == "Stale output",
-            "A live tongue masked its selected stale cheek output.");
+        Check(health.LowerFaceState == TrackingSignalState.Live && health.LowerFaceStatusText == "Live",
+            "Retired camera cheek telemetry changed current tongue health.");
         var tongueOnly = new HubTrackingHealth(() => now);
         tongueOnly.Start(true, false, false);
         tongueOnly.Observe(Healthy.Replace("cheek=valid", "cheek=stale"));
@@ -50,7 +50,8 @@ internal static class TrackingHealthTests
         var cheeksOnly = new HubTrackingHealth(() => now);
         cheeksOnly.Start(false, true, false);
         cheeksOnly.Observe(Healthy.Replace("tongue=hidden", "tongue=warming"));
-        Check(cheeksOnly.LowerFaceState == TrackingSignalState.Live, "An unselected tongue output changed cheek-only status.");
+        Check(cheeksOnly.LowerFaceState == TrackingSignalState.Off && cheeksOnly.CameraState == TrackingSignalState.Off,
+            "Retired camera cheek selection activated camera tracking health.");
         health.Observe(Healthy);
         Check(health.PupilDroppedFrames == 1 && health.DroppedFrames == 2 && health.SourceSkips == 4 && health.PipelineMs == 8.6, "Telemetry metrics were lost.");
         now += 3.6;
@@ -126,7 +127,7 @@ internal static class TrackingHealthTests
         form.Show();
         form.ApplyPreviewScenario("magisk", "VirtualDesktop");
         var all = Descendants(form).ToArray();
-        all.OfType<Button>().Single(button => Equals(button.Tag, "workflow-tab") && button.Text == "Live tracking").PerformClick();
+        all.OfType<Button>().Single(button => Equals(button.Tag, "workflow-tab") && button.Text == "Activity").PerformClick();
         ModuleUiTests(form);
         form.ApplyTrackingHealthPreview();
         Pump(250);

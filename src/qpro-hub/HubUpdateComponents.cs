@@ -20,7 +20,7 @@ internal sealed partial class HubForm
             var plan = await Task.Run(InspectComponentUpdates);
             if (IsDisposed || Disposing) return;
             _componentPlan = plan;
-            _updateLink.Text = _updateCheck?.Release is not null ? "Update available" : plan.Updates.Count > 0 ? "Component updates" : "Check updates";
+            RefreshUpdateLink();
             if (plan.Updates.Count > 0)
             {
                 AppendLog($"[Updates] {plan.Updates.Count} installed component(s) have an update or need verification for this release. Open Updates, then Components. Nothing has been installed.");

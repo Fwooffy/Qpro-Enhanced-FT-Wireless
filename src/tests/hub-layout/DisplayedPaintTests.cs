@@ -100,7 +100,7 @@ internal static class DisplayedPaintTests
             traffic.Start();
         }
 
-        tabs.Single(tab => tab.Text == "Live tracking").PerformClick();
+        tabs.Single(tab => tab.Text == "Facial tracking").PerformClick();
         Check("normal");
         foreach (var name in new[] { "connection and camera settings", "eye settings and guidance", "camera settings", "cheek adjustment details", "hand and controller details" })
             controls.OfType<Button>().Single(button => button.Text == "Show " + name).PerformClick();

@@ -179,7 +179,7 @@ internal sealed class HubUpdateApplyWindow : Form
 
     internal HubUpdateApplyWindow(HubUpdatePlan plan, Version version)
     {
-        Text = "Updating QproFaceTracking"; Size = new Size(640, 220); MinimumSize = new Size(540, 200);
+        Text = "Updating " + HubForm.ProductDisplayName; Size = new Size(640, 220); MinimumSize = new Size(540, 200);
         StartPosition = FormStartPosition.CenterScreen; BackColor = HubForm.Background;
         Font = new Font("Segoe UI", 10F); MinimizeBox = false; MaximizeBox = false;
         Controls.Add(_status);

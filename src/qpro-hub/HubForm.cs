@@ -16,6 +16,7 @@ namespace QproFaceTracking.Hub;
 
 internal sealed partial class HubForm : Form
 {
+    internal const string ProductDisplayName = "Qpro Companion";
     private readonly string _root;
     private readonly HubEnvironment _environment;
     private readonly HubScriptFactory _scripts;
@@ -24,15 +25,8 @@ internal sealed partial class HubForm : Form
     private readonly CheckBox _tongue = FeatureToggle("Experimental tongue tracking", false);
     private readonly CheckBox _pupil = FeatureToggle("Experimental relative pupil dilation (eye cameras)", false);
     private readonly CheckBox _cameraPreview = FeatureToggle("Preview tracking cameras", false);
-    private readonly CheckBox _individualCheekPuff = FeatureToggle("Individual cheek puff", true);
-    private readonly CheckBox _cameraCheekPuff = FeatureToggle("Camera cheek puff (experimental)", false);
-    private readonly Label _cameraCheekSourceNote = new() { AutoSize = true, ForeColor = Muted, Tag = "responsive-info" };
-    private readonly ComboBox _cheekCameraDatasets = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
-    private readonly ComboBox _cheekCameraBaseModels = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
-    private readonly Label _cheekCameraDatasetNote = new() { AutoSize = true, ForeColor = Muted, Tag = "responsive-info" };
-    private readonly DarkButton _recordCameraCheeks = SecondaryButton("1. Record cheek camera poses");
-    private readonly DarkButton _trainCameraCheeks = SecondaryButton("2. Train tongue + cheeks copy");
-    private readonly CheckBox _individualCheekSuck = FeatureToggle("Individual cheek suck", true);
+    private readonly CheckBox _individualCheekPuff = FeatureToggle("Individual cheek puff (1/0)", true);
+    private readonly CheckBox _individualCheekSuck = FeatureToggle("Individual cheek suck (1/0)", true);
     private readonly CheckBox _eyebrowBoost = FeatureToggle("Adjust eyebrow movement", false);
     private readonly ComboBox _trackingSourceSetup = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly ComboBox _trackingSourceLive = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
@@ -61,9 +55,6 @@ internal sealed partial class HubForm : Form
     private readonly ComboBox _pupilSensitivity = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
     private readonly DarkSlider _smoothing = new() { Minimum = 0, Maximum = 100, Value = 55, Width = 180, Height = 30 };
     private readonly ComboBox _visibilityMode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 265 };
-    private readonly ComboBox _cheekPuffStyle = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 245 };
-    private readonly DarkButton _calibrateCheekPuff = SecondaryButton("Calibrate cheek puff");
-    private readonly ComboBox _cheekSuckStyle = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 245 };
     private readonly ComboBox _eyebrowSensitivity = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
     private readonly Label _usbStatus = StatusLabel();
     private readonly Label _steamStatus = StatusLabel();
@@ -246,7 +237,7 @@ internal sealed partial class HubForm : Form
         _gaze.Checked = _environment.IndependentGazeEnabled;
         _scripts = new HubScriptFactory(root, _environment);
         _stopFile = Path.Combine(root, ".qpro-hub-stop");
-        Text = $"QproFaceTracking V{AppVersion} Hub";
+        Text = $"{ProductDisplayName} V{AppVersion}";
         MinimumSize = new Size(780, 580);
         Size = new Size(1140, 850);
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -281,14 +272,18 @@ internal sealed partial class HubForm : Form
         _stop.Click += async (_, _) => await StopTrackingAsync();
         _gaze.CheckedChanged += (_, _) =>
         {
-            if (_previewOnly) return;
+            if (_previewOnly || _updatingMagiskGazeSelection) return;
+            if (_gaze.Checked && HasActiveMagiskGaze)
+            {
+                ApplyMagiskGazeControlGate(!_trackingCleanupPending && !LiveTrackingRunning && !_starting && !_stopping);
+                return;
+            }
             try { _environment.SelectIndependentGaze(_gaze.Checked); }
             catch (Exception error) { AppendLog("Could not save independent gaze preference: " + error.Message); }
             UpdateGazeSetupStatus();
             UpdateControlState();
         };
         _tongue.CheckedChanged += (_, _) => UpdateControlState();
-        _cameraCheekPuff.CheckedChanged += (_, _) => { UpdateToggleStyle(_cameraCheekPuff); UpdateTongueModelNote(); UpdateControlState(); };
         _pupil.CheckedChanged += (_, _) => UpdateControlState();
         _cameraPreview.CheckedChanged += (_, _) =>
         {
@@ -298,10 +293,6 @@ internal sealed partial class HubForm : Form
             UpdateToggleStyle(_cameraPreview);
         };
         _tongueModels.SelectedIndexChanged += (_, _) => UpdateTongueModelNote();
-        _recordCameraCheeks.Click += async (_, _) => await RecordCameraCheeksAsync();
-        _trainCameraCheeks.Click += async (_, _) => await TrainCameraCheeksAsync();
-        _cheekCameraDatasets.SelectedIndexChanged += (_, _) => UpdateControlState();
-        _cheekCameraBaseModels.SelectedIndexChanged += (_, _) => UpdateControlState();
         _fps.Items.AddRange(["12", "15", "18", "20", "24", "30", "36", "48", "60", "72"]);
         _fps.SelectedItem = "24";
         _processingProfile.Items.AddRange(HubProcessingProfile.Choices);
@@ -315,69 +306,35 @@ internal sealed partial class HubForm : Form
         _visibilityMode.Items.AddRange(["Weighted camera + native", "Camera only", "Native only", "Conservative agreement"]);
         _visibilityMode.SelectedIndex = 0;
         _individualCheekPuff.Checked = HubCheekPuffPreference.LoadMode() != HubCheekPuffMode.Off;
-        _cheekPuffStyle.Items.AddRange(["Calibrated", "1/0", "Balanced"]);
-        _cheekPuffStyle.SelectedIndex = HubCheekPuffPreference.LoadLastStyle() switch
-        {
-            HubCheekPuffMode.Calibrated => 0,
-            HubCheekPuffMode.Balanced => 2,
-            _ => 1,
-        };
-        _cheekPuffStyle.Enabled = _individualCheekPuff.Checked;
         void SaveCheekPuffChoice()
         {
             if (_previewOnly) return;
             try
             {
-                HubCheekPuffMode style = _cheekPuffStyle.SelectedIndex switch
-                {
-                    0 => HubCheekPuffMode.Calibrated,
-                    2 => HubCheekPuffMode.Balanced,
-                    _ => HubCheekPuffMode.Strong,
-                };
-                HubCheekPuffPreference.Save(_individualCheekPuff.Checked, style);
-                _cheekPuffStyle.Enabled = _individualCheekPuff.Checked;
+                HubCheekPuffPreference.Save(_individualCheekPuff.Checked, HubCheekPuffMode.Strong);
                 UpdateToggleStyle(_individualCheekPuff);
                 AppendLog(_individualCheekPuff.Checked
-                    ? $"Individual cheek puff selected: {_cheekPuffStyle.SelectedItem}. Applies while Qpro tracking runs; Stop restores native cheeks."
-                    : "Individual cheek puff off: using the streaming app's original cheek values when camera cheek output is off.");
+                    ? "Individual cheek puff (1/0) selected. Applies while Qpro tracking runs; Stop restores native cheeks."
+                    : "Individual cheek puff off: using the streaming app's original cheek values.");
             }
             catch (Exception error) { AppendLog("Could not save cheek puff choice: " + error.Message); }
         }
         _individualCheekPuff.CheckedChanged += (_, _) => SaveCheekPuffChoice();
-        _cheekPuffStyle.SelectedIndexChanged += (_, _) => SaveCheekPuffChoice();
-        _calibrateCheekPuff.Enabled = true;
-        _calibrateCheekPuff.Margin = new Padding(6, 4, 6, 4);
-        _calibrateCheekPuff.Click += (_, _) =>
-        {
-            string source = _environment.SteamLinkSelected
-                ? CheekPuffCalibrationProfile.SteamLinkSource
-                : CheekPuffCalibrationProfile.VirtualDesktopSource;
-            using var dialog = new CheekPuffCalibrationDialog(source, UiFontName);
-            if (dialog.ShowDialog(this) != DialogResult.OK) return;
-            _cheekPuffStyle.SelectedIndex = 0;
-            _individualCheekPuff.Checked = true;
-            AppendLog($"Personal cheek puff calibration saved for {(_environment.SteamLinkSelected ? "Steam Link" : "Virtual Desktop")}. Calibrated mode is selected; the Qpro module updates while tracking is running.");
-        };
         _individualCheekSuck.Checked = HubCheekSuckPreference.LoadMode() != HubCheekSuckMode.Off;
-        _cheekSuckStyle.Items.AddRange(["Balanced", "Strong individual (1/0)"]);
-        _cheekSuckStyle.SelectedIndex = HubCheekSuckPreference.LoadLastStrongStyle() ? 1 : 0;
-        _cheekSuckStyle.Enabled = _individualCheekSuck.Checked;
         void SaveCheekSuckChoice()
         {
             if (_previewOnly) return;
             try
             {
-                HubCheekSuckPreference.Save(_individualCheekSuck.Checked, _cheekSuckStyle.SelectedIndex == 1);
-                _cheekSuckStyle.Enabled = _individualCheekSuck.Checked;
+                HubCheekSuckPreference.Save(_individualCheekSuck.Checked, true);
                 UpdateToggleStyle(_individualCheekSuck);
                 AppendLog(_individualCheekSuck.Checked
-                    ? $"Individual cheek suck selected: {_cheekSuckStyle.SelectedItem}. Applies while Qpro tracking runs; Stop restores native cheeks."
+                    ? "Individual cheek suck (1/0) selected. Applies while Qpro tracking runs; Stop restores native cheeks."
                     : "Individual cheek suck off: using the streaming app's original cheek values.");
             }
             catch (Exception error) { AppendLog("Could not save cheek suck choice: " + error.Message); }
         }
         _individualCheekSuck.CheckedChanged += (_, _) => SaveCheekSuckChoice();
-        _cheekSuckStyle.SelectedIndexChanged += (_, _) => SaveCheekSuckChoice();
         EyebrowSettings eyebrowSettings = EyebrowPreference.Load();
         _eyebrowSensitivity.Items.AddRange(Enumerable.Range(0, 11)
             .Select(index => $"{0.5 + index * 0.25:0.00}×" + (index == 2 ? " (Native)" : ""))
@@ -409,8 +366,6 @@ internal sealed partial class HubForm : Form
         ConfigureDropDown(_processingProfile);
         ConfigureDropDown(_pupilSensitivity);
         ConfigureDropDown(_visibilityMode);
-        ConfigureDropDown(_cheekPuffStyle);
-        ConfigureDropDown(_cheekSuckStyle);
         ConfigureDropDown(_eyebrowSensitivity);
         ConfigureDropDown(_quickDatasets);
         ConfigureDropDown(_focusedDatasets);
@@ -418,15 +373,12 @@ internal sealed partial class HubForm : Form
         ConfigureDropDown(_quickRecordedDatasets);
         ConfigureDropDown(_focusedRecordedDatasets);
         ConfigureDropDown(_fullRecordedDatasets);
-        ConfigureDropDown(_cheekCameraBaseModels);
-        ConfigureDropDown(_cheekCameraDatasets);
         ConfigureModelList(_modelList);
         UpdateToggleStyle(_gaze);
         UpdateToggleStyle(_tongue);
         UpdateToggleStyle(_pupil);
         UpdateToggleStyle(_cameraPreview);
         UpdateToggleStyle(_individualCheekPuff);
-        UpdateToggleStyle(_cameraCheekPuff);
         UpdateToggleStyle(_individualCheekSuck);
         UpdateToggleStyle(_eyebrowBoost);
         SetStatus(_inferenceStatus, StatusKind.Warning, "Idle");
