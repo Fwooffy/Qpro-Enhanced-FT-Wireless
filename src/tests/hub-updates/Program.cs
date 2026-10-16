@@ -28,6 +28,8 @@ JsonObject Metadata(string? digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 };
 HubUpdateCheck Parse(JsonObject metadata) => HubUpdateReleaseParser.Parse(metadata.ToJsonString(), current);
 Check(Parse(Metadata()).State == HubUpdateCheckState.Available, "verified stable release");
+Check(Parse(Metadata()).Message.StartsWith("Qpro Companion V2.1.3", StringComparison.Ordinal) &&
+    Parse(Metadata()).Release?.AssetName == assetName, "public display branding retains the compatible update asset identity");
 Check(Parse(Metadata(null)).State == HubUpdateCheckState.ManualDownloadOnly, "missing digest fallback");
 Check(Parse(Metadata("md5:abc")).State == HubUpdateCheckState.ManualDownloadOnly, "unknown digest fallback");
 Check(Parse(Metadata(tag: "v2.1.2")).State == HubUpdateCheckState.UpToDate, "same version");
@@ -49,6 +51,76 @@ Reject(() => HubUpdateReleaseParser.Parse(Metadata().ToJsonString().Replace("\"d
 Check(!HubUpdateReleaseParser.TryStableVersion("v02.1.3", out _), "leading zero version");
 Check(!HubUpdateReleaseParser.TryStableVersion("2.1.3.4", out _), "four component version");
 Check(!HubUpdateReleaseParser.IsAssetUrl(new Uri(assetUrl + "?token=secret"), "v2.1.3", assetName), "signed initial URL rejected");
+
+JsonObject BrandedMetadata(string brand, string repository = "Qpro-Companion")
+{
+    JsonObject metadata = Metadata();
+    string name = brand + ".V2.1.3.zip";
+    metadata["name"] = "Qpro Companion V2.1.3";
+    metadata["assets"]![0]!["name"] = name;
+    metadata["assets"]![0]!["browser_download_url"] =
+        "https://github.com/Fwooffy/" + repository + "/releases/download/v2.1.3/" + name;
+    return metadata;
+}
+JsonObject TransitionMetadata(int legacyCopies, int companionCopies)
+{
+    JsonObject metadata = Metadata();
+    var assets = new JsonArray();
+    for (int index = 0; index < legacyCopies; index++) assets.Add(Metadata()["assets"]![0]!.DeepClone());
+    for (int index = 0; index < companionCopies; index++) assets.Add(BrandedMetadata("QproCompanion")["assets"]![0]!.DeepClone());
+    metadata["assets"] = assets;
+    return metadata;
+}
+const string companionName = "QproCompanion.V2.1.3.zip";
+Check(Parse(BrandedMetadata("QproCompanion")).Release is { CanInstall: true, AssetName: companionName },
+    "new-brand ZIP works from the renamed repository");
+Check(Parse(BrandedMetadata("QproCompanion", "Qpro-Enhanced-FT-Wireless")).Release is { CanInstall: true, AssetName: companionName },
+    "new-brand ZIP also works before repository rename");
+Check(Parse(BrandedMetadata("QproFaceTracking")).Release is { CanInstall: true, AssetName: assetName },
+    "legacy ZIP alias works after repository rename");
+Check(Parse(TransitionMetadata(1, 1)).Release is { CanInstall: true, AssetName: companionName },
+    "transition release prefers new-brand ZIP over legacy alias");
+Check(Parse(TransitionMetadata(2, 1)).Release is { CanInstall: true, AssetName: companionName },
+    "ambiguous legacy aliases do not hide one new-brand ZIP");
+Check(Parse(TransitionMetadata(1, 2)).State == HubUpdateCheckState.ManualDownloadOnly,
+    "new-brand duplicates remain ambiguous even with a valid legacy alias");
+Check(Parse(TransitionMetadata(0, 2)).State == HubUpdateCheckState.ManualDownloadOnly,
+    "new-brand-only duplicates remain ambiguous");
+JsonObject companionNoHash = TransitionMetadata(1, 1); companionNoHash["assets"]![1]!["digest"] = null;
+Check(Parse(companionNoHash).State == HubUpdateCheckState.ManualDownloadOnly &&
+    Parse(companionNoHash).Release?.AssetName == companionName, "new-brand ZIP still needs a checksum despite legacy alias");
+JsonObject invalidCompanion = TransitionMetadata(1, 1);
+invalidCompanion["assets"]![1]!["browser_download_url"] =
+    "https://github.com/OtherOwner/Qpro-Companion/releases/download/v2.1.3/" + companionName;
+Check(Parse(invalidCompanion).Release is { CanInstall: true, AssetName: assetName },
+    "invalid new-brand candidate does not suppress the valid legacy ZIP");
+JsonObject companionTest = BrandedMetadata("QproCompanion"); companionTest["assets"]![0]!["name"] = "QproCompanion.V2.1.3.Test.zip";
+Check(Parse(companionTest).State == HubUpdateCheckState.ManualDownloadOnly, "new-brand test ZIP excluded");
+JsonObject companionWrongVersion = BrandedMetadata("QproCompanion"); companionWrongVersion["assets"]![0]!["name"] = "QproCompanion.V2.1.4.zip";
+Check(Parse(companionWrongVersion).State == HubUpdateCheckState.ManualDownloadOnly, "new-brand asset version must match release");
+JsonObject companionOversize = BrandedMetadata("QproCompanion");
+companionOversize["assets"]![0]!["size"] = HubUpdateReleaseParser.MaximumArchiveBytes + 1;
+Check(Parse(companionOversize).State == HubUpdateCheckState.ManualDownloadOnly, "new-brand archive size limit unchanged");
+JsonObject companionBeta = BrandedMetadata("QproCompanion"); companionBeta["prerelease"] = true;
+Check(Parse(companionBeta).State == HubUpdateCheckState.UpToDate &&
+    HubUpdateReleaseParser.Parse(companionBeta.ToJsonString(), current, true).Release is { CanInstall: true, IsPrerelease: true },
+    "new-brand numeric prerelease respects explicit channel opt-in");
+foreach (string address in new[]
+{
+    "https://github.com/OtherOwner/Qpro-Companion/releases/download/v2.1.3/" + companionName,
+    "https://github.com/Fwooffy/OtherRepo/releases/download/v2.1.3/" + companionName,
+    "https://github.com/Fwooffy/Qpro-Companion-copy/releases/download/v2.1.3/" + companionName,
+    "https://github.com/Fwooffy/Qpro-Companion/releases/download/v2.1.4/" + companionName,
+    "https://github.com/Fwooffy/Qpro-Companion/releases/download/v2.1.3/Other.zip",
+    "https://github.com/Fwooffy/Qpro-Companion/releases/download/v2.1.3/" + companionName + "?download=1",
+    "https://github.com/Fwooffy/Qpro-Companion/releases/download/v2.1.3/" + companionName + "#fragment",
+    "https://github.com.evil.example/Fwooffy/Qpro-Companion/releases/download/v2.1.3/" + companionName,
+    "https://github.com:444/Fwooffy/Qpro-Companion/releases/download/v2.1.3/" + companionName,
+    "http://github.com/Fwooffy/Qpro-Companion/releases/download/v2.1.3/" + companionName,
+    "https://attacker@github.com/Fwooffy/Qpro-Companion/releases/download/v2.1.3/" + companionName,
+})
+    Check(!HubUpdateReleaseParser.IsAssetUrl(new Uri(address), "v2.1.3", companionName),
+        "new repository alias preserves exact asset URL validation: " + address);
 
 JsonObject ChannelMetadata(string tag, bool isPrerelease = false)
 {

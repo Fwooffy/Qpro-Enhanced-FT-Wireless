@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
 namespace QproFaceTracking.Hub;
@@ -28,12 +29,13 @@ internal sealed class HubUpdateApplyException : IOException
 internal static class HubUpdateApply
 {
     private const string JournalName = ".qpro-update-transaction.json";
-    private sealed record JournalFile(string RelativePath, string NewHash, string? OriginalHash,
+    private sealed record JournalFile(string RelativePath, string? NewHash, string? OriginalHash,
         DateTime OriginalModified, FileAttributes OriginalAttributes, string TemporaryPath);
     private sealed record Journal(int Schema, string Package, string BackupDirectory, bool Completed,
         List<JournalFile> Files, List<string> CreatedDirectories);
-    private sealed record Change(string RelativePath, string Source, string Destination, string NewHash,
-        string? OriginalHash, DateTime OriginalModified, FileAttributes OriginalAttributes);
+    private sealed record Change(string RelativePath, string Source, string Destination, string? NewHash,
+        string? OriginalHash, DateTime OriginalModified, FileAttributes OriginalAttributes,
+        byte[]? NewContent = null, string? SourceHash = null);
 
     // The caller stops its Hub before entering this method. This engine only
     // changes package files: it launches no executable, installer, or ADB command.
@@ -110,22 +112,32 @@ internal static class HubUpdateApply
                 {
                     EnsureNoReparse(change.Source);
                     EnsureNoReparse(change.Destination);
-                    if (!Hash(change.Source).Equals(change.NewHash, StringComparison.Ordinal))
+                    if (!Hash(change.Source).Equals(change.SourceHash ?? change.NewHash, StringComparison.Ordinal))
                         throw new IOException("A staged file changed while the update was applying: " + change.RelativePath);
                     bool exists = File.Exists(change.Destination);
                     if (exists != (change.OriginalHash is not null) ||
                         exists && !Hash(change.Destination).Equals(change.OriginalHash, StringComparison.Ordinal))
                         throw new IOException("An installed file changed while the update was applying: " + change.RelativePath);
-                    CreateParents(destinationPackage, Path.GetDirectoryName(change.Destination)!, []);
-                    string temporary = temporaryFiles[changed];
-                    CopyDurably(change.Source, temporary);
-                    EnsureNoReparse(temporary);
-                    if (!Hash(temporary).Equals(change.NewHash, StringComparison.Ordinal))
-                        throw new IOException("An update file could not be copied intact: " + change.RelativePath);
-                    EnsureNoReparse(change.Destination);
-                    // The temporary file is on the destination volume. Replacing
-                    // its directory entry never writes through an existing hard link.
-                    File.Move(temporary, change.Destination, overwrite: exists);
+                    if (change.NewHash is null)
+                    {
+                        // Retirement is a backed-up transaction entry, rather
+                        // than a best-effort delete after the update commits.
+                        File.Delete(change.Destination);
+                    }
+                    else
+                    {
+                        CreateParents(destinationPackage, Path.GetDirectoryName(change.Destination)!, []);
+                        string temporary = temporaryFiles[changed];
+                        if (change.NewContent is null) CopyDurably(change.Source, temporary);
+                        else WriteDurably(change.NewContent, temporary);
+                        EnsureNoReparse(temporary);
+                        if (!Hash(temporary).Equals(change.NewHash, StringComparison.Ordinal))
+                            throw new IOException("An update file could not be copied intact: " + change.RelativePath);
+                        EnsureNoReparse(change.Destination);
+                        // The temporary file is on the destination volume. Replacing
+                        // its directory entry never writes through an existing hard link.
+                        File.Move(temporary, change.Destination, overwrite: exists);
+                    }
                     changed++;
                     afterFileApplied?.Invoke(changed, change.RelativePath);
                     progress?.Report(new("Updating app files", changed, changes.Count));
@@ -201,6 +213,14 @@ internal static class HubUpdateApply
         output.Flush(flushToDisk: true);
     }
 
+    private static void WriteDurably(byte[] content, string destination)
+    {
+        EnsureNoReparse(destination);
+        using var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        output.Write(content);
+        output.Flush(flushToDisk: true);
+    }
+
     private static void WriteJournal(string package, Journal journal)
     {
         string destination = Path.Combine(package, JournalName);
@@ -268,7 +288,7 @@ internal static class HubUpdateApply
                         CopyDurably(Within(journal.BackupDirectory, file.RelativePath), temporary);
                         if (Hash(temporary) != file.OriginalHash) throw new IOException("A recovery copy failed its checksum.");
                         EnsureNoReparse(destination);
-                        if (!File.Exists(destination) || Hash(destination) != file.NewHash)
+                        if ((File.Exists(destination) ? Hash(destination) : null) != file.NewHash)
                             throw new IOException("A file changed during recovery: " + file.RelativePath);
                         File.Move(temporary, destination, overwrite: true);
                         File.SetLastWriteTimeUtc(destination, file.OriginalModified);
@@ -319,7 +339,8 @@ internal static class HubUpdateApply
             CheckRelative(file.RelativePath);
             CheckRelative(file.TemporaryPath);
             if (!unique.Add(file.RelativePath) || file.RelativePath.Equals(JournalName, StringComparison.OrdinalIgnoreCase) ||
-                !Regex.IsMatch(file.NewHash, @"^[0-9a-f]{64}$") ||
+                file.NewHash is not null && !Regex.IsMatch(file.NewHash, @"^[0-9a-f]{64}$") ||
+                file.NewHash is null && file.OriginalHash is null ||
                 file.OriginalHash is not null && !Regex.IsMatch(file.OriginalHash, @"^[0-9a-f]{64}$") ||
                 Path.GetDirectoryName(file.RelativePath) != Path.GetDirectoryName(file.TemporaryPath) ||
                 !Regex.IsMatch(Path.GetFileName(file.TemporaryPath), @"^\.qpro-update-[0-9a-f]{32}\.tmp$"))
@@ -347,6 +368,11 @@ internal static class HubUpdateApply
     private static List<Change> Plan(string stagedPackage, string destinationPackage, List<string> warnings)
     {
         var changes = new List<Change>();
+        string stagedManifest = Path.Combine(stagedPackage, "QproRuntime", "release-manifest.json");
+        JsonObject manifest = JsonNode.Parse(File.ReadAllText(stagedManifest))!.AsObject();
+        JsonObject? retirement = ReadRetirementContract(manifest);
+        string? replacementStem = retirement is null ? null : Text(retirement, "replacementStem");
+        string? installedReplacement = null;
         var models = new Dictionary<string, List<(string Source, string Relative)>>(StringComparer.OrdinalIgnoreCase);
         foreach (string source in EnumerateSafeFiles(stagedPackage))
         {
@@ -371,6 +397,13 @@ internal static class HubUpdateApply
             }
             else Add(source, relative);
         }
+        string destinationModels = Path.Combine(destinationPackage, "QproRuntime", "models");
+        var reservedModelVersions = new HashSet<int>();
+        if (Directory.Exists(destinationModels))
+            foreach (string item in Directory.EnumerateFileSystemEntries(destinationModels))
+                if (ModelVersion(Path.GetFileName(item)) is int version) reservedModelVersions.Add(version);
+        foreach (string stem in models.Keys)
+            if (ModelVersion(stem) is int version) reservedModelVersions.Add(version);
         foreach (var model in models)
         {
             // Gate, direction, compiled variants and metadata form one model.
@@ -389,12 +422,65 @@ internal static class HubUpdateApply
                 ValidateFileTarget(destinationPackage, destination);
                 if (File.Exists(destination) && Hash(destination) != Hash(file.Source)) conflict = true;
             }
+            var metadataFile = model.Value.FirstOrDefault(file => file.Relative.EndsWith(model.Key + ".metadata.json", StringComparison.OrdinalIgnoreCase));
+            JsonObject? metadata = metadataFile.Source is null ? null : ReadModelMetadata(metadataFile.Source);
+            bool bundledDeveloper = IsBundledDeveloperModel(metadata) && ModelVersion(model.Key) is int;
+            if (bundledDeveloper)
+            {
+                string gateSource = model.Value.Single(file => file.Relative.EndsWith(model.Key + "-gate.pt", StringComparison.OrdinalIgnoreCase)).Source;
+                string directionSource = model.Value.Single(file => file.Relative.EndsWith(model.Key + "-direction.pt", StringComparison.OrdinalIgnoreCase)).Source;
+                if (FindMatchingDeveloperModel(destinationModels, Hash(gateSource), Hash(directionSource)) is int existingVersion)
+                {
+                    if (model.Key.Equals(replacementStem, StringComparison.OrdinalIgnoreCase))
+                        installedReplacement = "qpro-stereo-tongue-v" + existingVersion;
+                    if (conflict || existingVersion != ModelVersion(model.Key))
+                        warnings.Add("The bundled developer model is already available as v" + existingVersion + ". Its existing name and saved selection were kept.");
+                    continue;
+                }
+            }
             if (conflict)
             {
+                if (bundledDeveloper && ModelVersion(model.Key) is int suppliedVersion)
+                {
+                    // Personal model filenames and saved selections are user data.
+                    // Give the incoming bundle a free number instead of moving them.
+                    int localVersion = checked(suppliedVersion + 1);
+                    while (reservedModelVersions.Contains(localVersion)) localVersion = checked(localVersion + 1);
+                    reservedModelVersions.Add(localVersion);
+                    string localStem = "qpro-stereo-tongue-v" + localVersion;
+                    foreach (var file in model.Value)
+                    {
+                        string localRelative = "QproRuntime/models/" + localStem + Path.GetFileName(file.Relative)[model.Key.Length..];
+                        if (file.Source == metadataFile.Source)
+                        {
+                            JsonObject relocated = (JsonObject)metadata!.DeepClone();
+                            relocated["version"] = localVersion;
+                            relocated["sourceVersion"] ??= suppliedVersion;
+                            // Remap only public pair filenames; hashes, validation
+                            // facts and parent lineage describe the unchanged weights.
+                            foreach (string key in new[] { "gateFile", "directionFile" })
+                                if (relocated[key] is JsonValue value && value.TryGetValue<string>(out string? name) &&
+                                    name is not null && name.StartsWith(model.Key + "-", StringComparison.OrdinalIgnoreCase))
+                                    relocated[key] = localStem + name[model.Key.Length..];
+                            Add(file.Source, localRelative, Encoding.UTF8.GetBytes(relocated.ToJsonString(new JsonSerializerOptions { WriteIndented = true })));
+                        }
+                        else Add(file.Source, localRelative);
+                    }
+                    warnings.Add("Existing model " + model.Key + " and its saved selection were kept. The new bundled developer model was installed as v" + localVersion + ".");
+                    if (model.Key.Equals(replacementStem, StringComparison.OrdinalIgnoreCase)) installedReplacement = localStem;
+                    continue;
+                }
                 warnings.Add("Existing model " + model.Key + " was kept. The new bundled copy was not installed because its filenames conflict with different existing model files.");
                 continue;
             }
             foreach (var file in model.Value) Add(file.Source, file.Relative);
+            if (bundledDeveloper && model.Key.Equals(replacementStem, StringComparison.OrdinalIgnoreCase)) installedReplacement = model.Key;
+        }
+        if (retirement is not null)
+        {
+            if (installedReplacement is null)
+                throw new InvalidDataException("The update cannot replace retired bundled models because its developer tongue model is missing or incomplete.");
+            RetireBundles(retirement, stagedManifest, destinationPackage, installedReplacement, changes, warnings);
         }
         // Record the new identity last. Keep the current executable available
         // until the code and helpers that it uses have been replaced.
@@ -403,17 +489,184 @@ internal static class HubUpdateApply
                 : change.RelativePath.Equals("QproRuntime/release-manifest.json", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
             .ThenBy(change => change.RelativePath, StringComparer.OrdinalIgnoreCase).ToList();
 
-        void Add(string source, string relative)
+        void Add(string source, string relative, byte[]? content = null)
         {
             string destination = Within(destinationPackage, relative);
             ValidateFileTarget(destinationPackage, destination);
-            string supplied = Hash(source);
+            string sourceHash = Hash(source);
+            string supplied = content is null ? sourceHash : Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant();
             string? original = File.Exists(destination) ? Hash(destination) : null;
             if (supplied == original) return;
             changes.Add(new(relative, source, destination, supplied, original,
                 original is null ? default : File.GetLastWriteTimeUtc(destination),
-                original is null ? FileAttributes.Normal : File.GetAttributes(destination)));
+                original is null ? FileAttributes.Normal : File.GetAttributes(destination), content, content is null ? null : sourceHash));
         }
+    }
+
+    private static int? ModelVersion(string name)
+    {
+        Match match = Regex.Match(name, @"^qpro-stereo-tongue-v(?<version>\d+)(?:[-.]|$)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return match.Success && int.TryParse(match.Groups["version"].Value, out int version) && version > 0 ? version : null;
+    }
+
+    private static JsonObject? ReadModelMetadata(string path)
+    {
+        EnsureNoReparse(path);
+        if (!File.Exists(path) || new FileInfo(path).Length > 262_144) return null;
+        try { return JsonNode.Parse(File.ReadAllText(path)) as JsonObject; }
+        catch (JsonException) { return null; }
+    }
+
+    private static bool IsBundledDeveloperModel(JsonObject? metadata) =>
+        metadata?["modelKind"] is JsonValue kind && kind.TryGetValue<string>(out string? name) && name is "developer-lower-face" or "developer-tongue" &&
+        metadata["bundledDeveloperModel"] is JsonValue flag && flag.TryGetValue<bool>(out bool bundled) && bundled &&
+        metadata["origin"] is JsonValue origin && origin.TryGetValue<string>(out string? source) && source == "bundled developer model";
+
+    private static int? FindMatchingDeveloperModel(string models, string gateHash, string directionHash)
+    {
+        if (!Directory.Exists(models)) return null;
+        foreach (string path in Directory.EnumerateFiles(models, "qpro-stereo-tongue-v*.metadata.json"))
+        {
+            if (!IsBundledDeveloperModel(ReadModelMetadata(path)) || ModelVersion(Path.GetFileName(path)) is not int version) continue;
+            string gate = Path.Combine(models, "qpro-stereo-tongue-v" + version + "-gate.pt");
+            string direction = Path.Combine(models, "qpro-stereo-tongue-v" + version + "-direction.pt");
+            EnsureNoReparse(gate);
+            EnsureNoReparse(direction);
+            if (File.Exists(gate) && File.Exists(direction) && Hash(gate) == gateHash && Hash(direction) == directionHash) return version;
+        }
+        return null;
+    }
+
+    private static string? Text(JsonObject? value, string key) =>
+        value?[key] is JsonValue item && item.TryGetValue<string>(out string? text) ? text : null;
+
+    private static bool Flag(JsonObject? value, string key) =>
+        value?[key] is JsonValue item && item.TryGetValue<bool>(out bool flag) && flag;
+
+    private static JsonObject? ReadRetirementContract(JsonObject manifest)
+    {
+        if (!manifest.ContainsKey("modelRetirement")) return null;
+        if (manifest["modelRetirement"] is not JsonObject retirement ||
+            retirement["schema"] is not JsonValue schema || !schema.TryGetValue<int>(out int version) || version != 1 ||
+            Text(retirement, "replacementStem") is not string replacement || ModelVersion(replacement) is not int replacementVersion ||
+            replacement != "qpro-stereo-tongue-v" + replacementVersion ||
+            retirement["models"] is not JsonArray models || models.Count is < 1 or > 3)
+            throw new InvalidDataException("The update's bundled model retirement contract is invalid.");
+        var unique = new HashSet<string>(StringComparer.Ordinal);
+        foreach (JsonNode? node in models)
+        {
+            if (node is not JsonObject model || Text(model, "stem") is not string stem || !unique.Add(stem) ||
+                stem is not ("qpro-stereo-tongue-v8" or "qpro-stereo-tongue-v13" or "qpro-stereo-tongue-v15") ||
+                Text(model, "gateSha256") is not string gate || !Regex.IsMatch(gate, @"^[0-9a-f]{64}$") ||
+                Text(model, "directionSha256") is not string direction || !Regex.IsMatch(direction, @"^[0-9a-f]{64}$") ||
+                (stem == "qpro-stereo-tongue-v8" ? !Flag(model, "requireOriginalPackage") :
+                    !Flag(model, "hasCameraCheeks") || Text(model, "modelKind") != (stem.EndsWith("v13", StringComparison.Ordinal)
+                        ? "camera-cheeks-experimental" : "developer-lower-face") ||
+                    Text(model, "origin") != (stem.EndsWith("v13", StringComparison.Ordinal)
+                        ? "developer tongue with an experimental camera cheek head" : "bundled developer model") ||
+                    stem.EndsWith("v15", StringComparison.Ordinal) && !Flag(model, "bundledDeveloperModel")))
+                throw new InvalidDataException("The update contains an unsupported bundled model retirement identity.");
+        }
+        return retirement;
+    }
+
+    private static void RetireBundles(JsonObject retirement, string stagedManifest, string destinationPackage,
+        string replacementStem, List<Change> changes, List<string> warnings)
+    {
+        string models = Path.Combine(destinationPackage, "QproRuntime", "models");
+        JsonObject? oldManifest = ReadModelMetadata(Path.Combine(destinationPackage, "QproRuntime", "release-manifest.json"));
+        Dictionary<string, string> oldChecksums = ReadInstalledChecksums(destinationPackage);
+        var retired = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string contractHash = Hash(stagedManifest);
+        foreach (JsonObject model in retirement["models"]!.AsArray().Select(node => node!.AsObject()))
+        {
+            string suppliedStem = Text(model, "stem")!;
+            // A previous update may have allocated the old developer bundle a
+            // different number. Its exact weights and ownership still identify
+            // it; an imported copy without bundle ownership remains personal.
+            IEnumerable<string> candidates = suppliedStem == "qpro-stereo-tongue-v15" && Directory.Exists(models)
+                ? Directory.EnumerateFiles(models, "qpro-stereo-tongue-v*.metadata.json")
+                    .Select(path => Path.GetFileName(path)[..^".metadata.json".Length])
+                    .Where(stem => ModelVersion(stem) is int number && stem == "qpro-stereo-tongue-v" + number)
+                : [suppliedStem];
+            foreach (string stem in candidates.ToArray())
+            {
+                string gate = Path.Combine(models, stem + "-gate.pt");
+                string direction = Path.Combine(models, stem + "-direction.pt");
+                string metadataPath = Path.Combine(models, stem + ".metadata.json");
+                foreach (string path in new[] { gate, direction, metadataPath }) ValidateFileTarget(destinationPackage, path);
+                if (!File.Exists(gate) || !File.Exists(direction) || Hash(gate) != Text(model, "gateSha256") ||
+                    Hash(direction) != Text(model, "directionSha256")) continue;
+                JsonObject? metadata = ReadModelMetadata(metadataPath);
+                if (Flag(model, "requireOriginalPackage"))
+                {
+                    // Original v8 shipped without a sidecar. A local/imported name,
+                    // missing package provenance or changed weights stays personal.
+                    if (File.Exists(metadataPath) || !(Text(oldManifest, "bundledTongueModel") == stem || Text(oldManifest, "fallbackTongueModel") == stem) ||
+                        !OriginalChecksum(gate) || !OriginalChecksum(direction)) continue;
+                }
+                else if (Text(metadata, "modelKind") != Text(model, "modelKind") || Text(metadata, "origin") != Text(model, "origin") ||
+                    !Flag(metadata, "hasCameraCheeks") || Flag(model, "bundledDeveloperModel") && !Flag(metadata, "bundledDeveloperModel")) continue;
+
+                // A model number alone is not an ownership marker. Unknown or
+                // modified companion files make the entire local group ineligible.
+                string[] companions = Directory.EnumerateFiles(models).Where(path => Path.GetFileName(path).StartsWith(stem + "-", StringComparison.OrdinalIgnoreCase) ||
+                    Path.GetFileName(path).StartsWith(stem + ".", StringComparison.OrdinalIgnoreCase)).ToArray();
+                if (companions.Any(path =>
+                {
+                    ValidateFileTarget(destinationPackage, path);
+                    string suffix = Path.GetFileName(path)[stem.Length..];
+                    return suffix is not ("-gate.pt" or "-direction.pt" or ".metadata.json") &&
+                        (suffix is not ("-gate.torchscript.pt" or "-direction.torchscript.pt") || !OriginalChecksum(path));
+                }))
+                {
+                    warnings.Add("Kept " + stem + " because it has additional or changed local model files.");
+                    continue;
+                }
+                if (stem.Equals(replacementStem, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("The replacement developer model still matches a retired bundle; no model files were changed.");
+                foreach (string path in companions)
+                {
+                    string relative = Path.GetRelativePath(destinationPackage, path).Replace('\\', '/');
+                    if (changes.Any(change => change.RelativePath.Equals(relative, StringComparison.OrdinalIgnoreCase)))
+                        throw new InvalidDataException("The update both replaces and retires the same bundled model file.");
+                    changes.Add(new(relative, stagedManifest, path, null, Hash(path), File.GetLastWriteTimeUtc(path),
+                        File.GetAttributes(path), SourceHash: contractHash));
+                }
+                retired.Add(stem);
+                warnings.Add("Replaced the verified old bundled model " + stem + " with " + replacementStem + ". Personal and imported models were kept.");
+            }
+        }
+        string optionsPath = Path.Combine(destinationPackage, "QproRuntime", "config", "live-options.json");
+        ValidateFileTarget(destinationPackage, optionsPath);
+        JsonObject? options = ReadModelMetadata(optionsPath);
+        string? selected = Text(options, "Model");
+        if (selected is not null && retired.Any(stem => selected.Equals(stem + "-gate.pt", StringComparison.OrdinalIgnoreCase)))
+        {
+            options!["Model"] = replacementStem + "-gate.pt";
+            byte[] content = Encoding.UTF8.GetBytes(options.ToJsonString());
+            changes.Add(new("QproRuntime/config/live-options.json", stagedManifest, optionsPath,
+                Convert.ToHexString(SHA256.HashData(content)).ToLowerInvariant(), Hash(optionsPath),
+                File.GetLastWriteTimeUtc(optionsPath), File.GetAttributes(optionsPath), content, contractHash));
+        }
+
+        bool OriginalChecksum(string path) => oldChecksums.TryGetValue(Path.GetRelativePath(destinationPackage, path).Replace('\\', '/'),
+            out string? expected) && Hash(path) == expected;
+    }
+
+    private static Dictionary<string, string> ReadInstalledChecksums(string package)
+    {
+        var checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        string path = Path.Combine(package, "SHA256SUMS.txt");
+        EnsureNoReparse(path);
+        if (!File.Exists(path) || new FileInfo(path).Length > 2_097_152) return checksums;
+        foreach (string line in File.ReadLines(path))
+        {
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            Match match = Regex.Match(line, @"^(?<hash>[0-9a-f]{64})  (?<path>.+)$", RegexOptions.CultureInvariant);
+            if (!match.Success || checksums.Count >= 5000 || !checksums.TryAdd(match.Groups["path"].Value, match.Groups["hash"].Value)) return [];
+        }
+        return checksums;
     }
 
     private static bool Preserve(string relative)

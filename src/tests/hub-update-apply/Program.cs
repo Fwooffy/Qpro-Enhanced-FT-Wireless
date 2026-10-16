@@ -2,6 +2,7 @@ using QproFaceTracking.Hub;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 if (args.Length == 4 && args[0] is "--crash-fixture" or "--crash-recovery-fixture")
 {
@@ -106,8 +107,306 @@ void Crash((string Stage, string Destination) item, int stopAt, bool recovery = 
     Check(child.WaitForExit(30_000) && child.ExitCode == 99, "Crash fixture did not exit at its requested boundary.");
 }
 
+void AddDeveloperBundle((string Stage, string Destination) item, bool personalCollision)
+{
+    string stage = Directory.GetParent(item.Stage)!.FullName;
+    string destination = Directory.GetParent(item.Destination)!.FullName;
+    foreach (string suffix in new[] { "-gate.pt", "-direction.pt", "-gate.torchscript.pt" })
+        Write(stage, "QproRuntime/models/qpro-stereo-tongue-v15" + suffix, "developer " + suffix);
+    Write(stage, "QproRuntime/models/qpro-stereo-tongue-v15.metadata.json", JsonSerializer.Serialize(new
+    {
+        modelKind = "developer-lower-face", bundledDeveloperModel = true, origin = "bundled developer model",
+        version = 15, sourceVersion = 13, displayName = "Developer lower-face model", isExperimental = true,
+        gateFile = "qpro-stereo-tongue-v15-gate.pt", directionFile = "qpro-stereo-tongue-v15-direction.pt",
+        tongueParentSha256 = new string('a', 64), publicPromotionValidated = false,
+        validationScope = new { independentWearerValidation = false, missedVisible = 1 }
+    }));
+    if (personalCollision)
+    {
+        Write(destination, "QproRuntime/models/qpro-stereo-tongue-v15-gate.pt", "personal v15 gate");
+        Write(destination, "QproRuntime/models/qpro-stereo-tongue-v15-direction.pt", "personal v15 direction");
+        Write(destination, "QproRuntime/models/qpro-stereo-tongue-v15.metadata.json", "{\"modelKind\":\"personal\",\"version\":15,\"displayName\":\"My refinement\"}");
+        Write(destination, "QproRuntime/config/live-options.json", "{\"Schema\":1,\"Model\":\"qpro-stereo-tongue-v15-gate.pt\",\"Tongue\":true,\"Pupil\":true}");
+    }
+    Seal(stage);
+    Seal(destination);
+}
+
+void ModelCollisionFixtures()
+{
+    var collision = Make("developer-personal-collision");
+    AddDeveloperBundle(collision, personalCollision: true);
+    var original = Snapshot(collision.Destination);
+    string stagedMetadataHash = Hash(Path.Combine(collision.Stage, "models", "qpro-stereo-tongue-v15.metadata.json"));
+    var result = HubUpdateApply.Apply(collision.Stage, collision.Destination, version);
+    Check(Hash(Path.Combine(collision.Stage, "models", "qpro-stereo-tongue-v15.metadata.json")) == stagedMetadataHash, "Relocation changed the already-verified staging payload.");
+    string localStem = Path.Combine(collision.Destination, "models", "qpro-stereo-tongue-v16");
+    foreach (string suffix in new[] { "-gate.pt", "-direction.pt", "-gate.torchscript.pt" })
+        Check(Hash(localStem + suffix) == Hash(Path.Combine(collision.Stage, "models", "qpro-stereo-tongue-v15" + suffix)), "Relocation modified a developer weight/compiled file.");
+    foreach (var file in original.Where(file => file.Key.Contains("qpro-stereo-tongue-v15", StringComparison.Ordinal) || file.Key.EndsWith("live-options.json", StringComparison.Ordinal)))
+        Check(Hash(Path.Combine(Directory.GetParent(collision.Destination)!.FullName, file.Key)) == file.Value, "Relocation changed the personal model or saved choice: " + file.Key);
+    using (var metadata = JsonDocument.Parse(File.ReadAllText(localStem + ".metadata.json")))
+    {
+        JsonElement details = metadata.RootElement;
+        Check(details.GetProperty("version").GetInt32() == 16, "The relocated sidecar must describe its local version.");
+        Check(details.GetProperty("sourceVersion").GetInt32() == 13 && details.GetProperty("tongueParentSha256").GetString() == new string('a', 64), "Relocation changed parent lineage/hash.");
+        Check(details.GetProperty("gateFile").GetString() == "qpro-stereo-tongue-v16-gate.pt" && details.GetProperty("directionFile").GetString() == "qpro-stereo-tongue-v16-direction.pt", "Relocated public pair filenames were not mapped.");
+        Check(details.GetProperty("bundledDeveloperModel").GetBoolean() && !details.GetProperty("publicPromotionValidated").GetBoolean() && details.GetProperty("validationScope").GetProperty("missedVisible").GetInt32() == 1, "Relocation changed bundle ownership or validation facts.");
+    }
+    Check(result.Warnings.Any(text => text.Contains("installed as v16", StringComparison.Ordinal)), "The updater must explain the local developer version.");
+    // A later app release with the same weights must keep the user's renamed
+    // developer model, rather than allocating another copy of the bundle.
+    JsonObject renamed = JsonNode.Parse(File.ReadAllText(localStem + ".metadata.json"))!.AsObject();
+    renamed["displayName"] = "My renamed developer model";
+    File.WriteAllText(localStem + ".metadata.json", renamed.ToJsonString());
+    string renamedHash = Hash(localStem + ".metadata.json");
+    Write(Directory.GetParent(collision.Stage)!.FullName, "QproRuntime/release-manifest.json", "{\"name\":\"QproFaceTracking\",\"version\":\"2.1.4\",\"updateFormat\":1}");
+    Seal(Directory.GetParent(collision.Stage)!.FullName);
+    var repeated = HubUpdateApply.Apply(collision.Stage, collision.Destination, new Version(2, 1, 4));
+    Check(!File.Exists(Path.Combine(collision.Destination, "models", "qpro-stereo-tongue-v17-gate.pt")), "Repeated identical bundled weights created a duplicate model.");
+    Check(Hash(localStem + ".metadata.json") == renamedHash && repeated.Warnings.Any(text => text.Contains("already available as v16", StringComparison.Ordinal)), "A later release replaced the existing developer name.");
+    foreach (string suffix in new[] { "-gate.pt", "-direction.pt", ".metadata.json" })
+        File.Delete(Path.Combine(collision.Destination, "models", "qpro-stereo-tongue-v15" + suffix));
+    Write(Directory.GetParent(collision.Stage)!.FullName, "QproRuntime/release-manifest.json", "{\"name\":\"QproFaceTracking\",\"version\":\"2.1.5\",\"updateFormat\":1}");
+    Seal(Directory.GetParent(collision.Stage)!.FullName);
+    HubUpdateApply.Apply(collision.Stage, collision.Destination, new Version(2, 1, 5));
+    Check(!File.Exists(Path.Combine(collision.Destination, "models", "qpro-stereo-tongue-v15-gate.pt")) && Hash(localStem + ".metadata.json") == renamedHash, "Removing the old personal collision caused the next update to duplicate the relocated developer bundle.");
+
+    var free = Make("developer-no-collision");
+    AddDeveloperBundle(free, personalCollision: false);
+    var freeResult = HubUpdateApply.Apply(free.Stage, free.Destination, version);
+    Check(File.Exists(Path.Combine(free.Destination, "models", "qpro-stereo-tongue-v15-gate.pt")) && File.Exists(Path.Combine(free.Destination, "models", "qpro-stereo-tongue-v15-direction.pt")), "A noncolliding bundle was not installed at v15.");
+    Check(!freeResult.Warnings.Any(text => text.Contains("v15", StringComparison.Ordinal)), "A noncolliding developer bundle should not need relocation.");
+
+    var reserved = Make("developer-reserved-stems");
+    AddDeveloperBundle(reserved, personalCollision: true);
+    Write(Directory.GetParent(reserved.Destination)!.FullName, "QproRuntime/models/qpro-stereo-tongue-v16.metadata.json", "personal partial metadata");
+    Write(Directory.GetParent(reserved.Stage)!.FullName, "QproRuntime/models/qpro-stereo-tongue-v17-gate.pt", "incoming other gate");
+    Write(Directory.GetParent(reserved.Stage)!.FullName, "QproRuntime/models/qpro-stereo-tongue-v17-direction.pt", "incoming other direction");
+    Seal(Directory.GetParent(reserved.Stage)!.FullName);
+    HubUpdateApply.Apply(reserved.Stage, reserved.Destination, version);
+    Check(File.Exists(Path.Combine(reserved.Destination, "models", "qpro-stereo-tongue-v18-direction.pt")), "Relocation reused a partial local or incoming reserved model number.");
+    Check(File.ReadAllText(Path.Combine(reserved.Destination, "models", "qpro-stereo-tongue-v16.metadata.json")) == "personal partial metadata", "A partial local model was overwritten.");
+
+    var partialBundle = Make("developer-partial-bundle");
+    AddDeveloperBundle(partialBundle, personalCollision: true);
+    File.Delete(Path.Combine(partialBundle.Stage, "models", "qpro-stereo-tongue-v15-direction.pt"));
+    Seal(Directory.GetParent(partialBundle.Stage)!.FullName);
+    var partialOriginal = Snapshot(partialBundle.Destination);
+    var partialResult = HubUpdateApply.Apply(partialBundle.Stage, partialBundle.Destination, version);
+    Check(!File.Exists(Path.Combine(partialBundle.Destination, "models", "qpro-stereo-tongue-v16-gate.pt")) && partialResult.Warnings.Any(text => text.Contains("v15", StringComparison.Ordinal) && text.Contains("complete", StringComparison.Ordinal)), "An incomplete incoming bundle was relocated/installed.");
+    Check(Hash(Path.Combine(partialBundle.Destination, "models", "qpro-stereo-tongue-v15-gate.pt")) == partialOriginal[Path.Combine("QproRuntime", "models", "qpro-stereo-tongue-v15-gate.pt")], "An incomplete bundle changed personal weights.");
+
+    var rollback = Make("developer-relocation-rollback");
+    AddDeveloperBundle(rollback, personalCollision: true);
+    var rollbackOriginal = Snapshot(rollback.Destination);
+    try
+    {
+        HubUpdateApply.Apply(rollback.Stage, rollback.Destination, version, afterFileApplied: (_, relative) =>
+        { if (relative == "QproRuntime/models/qpro-stereo-tongue-v16.metadata.json") throw new IOException("Injected failure after relocated generated metadata"); });
+        throw new Exception("Relocation transaction fault was ignored.");
+    }
+    catch (HubUpdateApplyException error)
+    {
+        Check(error.RollbackComplete && Same(rollbackOriginal, Snapshot(rollback.Destination)), "Relocation did not roll back generated metadata and the complete model group.");
+    }
+    Console.WriteLine($"PASS: {passed} developer model collision assertions; personal models and saved choices unchanged.");
+}
+
+(string Stage, string Destination) RetirementFixture(string name, string selection = "qpro-stereo-tongue-v13-gate.pt")
+{
+    var item = Make(name);
+    AddDeveloperBundle(item, personalCollision: false);
+    string stage = Directory.GetParent(item.Stage)!.FullName;
+    string destination = Directory.GetParent(item.Destination)!.FullName;
+    foreach (string suffix in new[] { "-gate.pt", "-direction.pt" })
+        File.Delete(Path.Combine(item.Stage, "models", "qpro-stereo-tongue-v8" + suffix));
+    JsonObject newMetadata = JsonNode.Parse(File.ReadAllText(Path.Combine(item.Stage, "models", "qpro-stereo-tongue-v15.metadata.json")))!.AsObject();
+    newMetadata["modelKind"] = "developer-tongue";
+    newMetadata["hasCameraCheeks"] = false;
+    newMetadata["displayName"] = "Developer tongue model";
+    Write(stage, "QproRuntime/models/qpro-stereo-tongue-v15.metadata.json", newMetadata.ToJsonString());
+    foreach (int number in new[] { 13, 15 })
+    {
+        Write(destination, $"QproRuntime/models/qpro-stereo-tongue-v{number}-gate.pt", "old bundled gate " + number);
+        Write(destination, $"QproRuntime/models/qpro-stereo-tongue-v{number}-direction.pt", "old bundled cheek direction " + number);
+        Write(destination, $"QproRuntime/models/qpro-stereo-tongue-v{number}-gate.torchscript.pt", "old bundled compiled " + number);
+        Write(destination, $"QproRuntime/models/qpro-stereo-tongue-v{number}.metadata.json", JsonSerializer.Serialize(new
+        {
+            version = number, displayName = "Renamed old bundle",
+            modelKind = number == 13 ? "camera-cheeks-experimental" : "developer-lower-face",
+            origin = number == 13 ? "developer tongue with an experimental camera cheek head" : "bundled developer model",
+            bundledDeveloperModel = number == 15, hasCameraCheeks = true
+        }));
+    }
+    JsonObject originalManifest = JsonNode.Parse(File.ReadAllText(Path.Combine(item.Destination, "release-manifest.json")))!.AsObject();
+    originalManifest["bundledTongueModel"] = "qpro-stereo-tongue-v15";
+    originalManifest["fallbackTongueModel"] = "qpro-stereo-tongue-v8";
+    Write(destination, "QproRuntime/release-manifest.json", originalManifest.ToJsonString());
+    var retire = new JsonArray();
+    foreach (int number in new[] { 8, 13, 15 })
+    {
+        string stem = "qpro-stereo-tongue-v" + number;
+        var record = new JsonObject
+        {
+            ["stem"] = stem, ["gateSha256"] = Hash(Path.Combine(item.Destination, "models", stem + "-gate.pt")),
+            ["directionSha256"] = Hash(Path.Combine(item.Destination, "models", stem + "-direction.pt"))
+        };
+        if (number == 8) record["requireOriginalPackage"] = true;
+        else
+        {
+            record["modelKind"] = number == 13 ? "camera-cheeks-experimental" : "developer-lower-face";
+            record["origin"] = number == 13 ? "developer tongue with an experimental camera cheek head" : "bundled developer model";
+            record["hasCameraCheeks"] = true;
+            if (number == 15) record["bundledDeveloperModel"] = true;
+        }
+        retire.Add(record);
+    }
+    JsonObject manifest = JsonNode.Parse(File.ReadAllText(Path.Combine(item.Stage, "release-manifest.json")))!.AsObject();
+    manifest["bundledTongueModel"] = "qpro-stereo-tongue-v15";
+    manifest["modelRetirement"] = new JsonObject
+    { ["schema"] = 1, ["replacementStem"] = "qpro-stereo-tongue-v15", ["models"] = retire };
+    Write(stage, "QproRuntime/release-manifest.json", manifest.ToJsonString());
+    Write(destination, "QproRuntime/config/live-options.json", JsonSerializer.Serialize(new
+    {
+        Schema = 1, Model = selection, Tongue = true, Pupil = true, Smoothing = 64,
+        Fps = "24", EyeProfile = "personal-eye-profile.json", ExtraFutureSetting = new { nested = "keep", values = new[] { 1, 2 } }
+    }));
+    Seal(stage); Seal(destination);
+    return item;
+}
+
+void ModelRetirementFixtures()
+{
+    var normal = RetirementFixture("retire-bundles");
+    JsonObject originalOptions = JsonNode.Parse(File.ReadAllText(Path.Combine(normal.Destination, "config", "live-options.json")))!.AsObject();
+    string personalHash = Hash(Path.Combine(normal.Destination, "models", "qpro-stereo-tongue-v99-direction.pt"));
+    var result = HubUpdateApply.Apply(normal.Stage, normal.Destination, version);
+    foreach (int number in new[] { 8, 13, 15 })
+        Check(!Directory.GetFiles(Path.Combine(normal.Destination, "models"), "qpro-stereo-tongue-v" + number + "*").Any(), "An exact old bundle was not retired completely: " + number);
+    string replacement = Path.Combine(normal.Destination, "models", "qpro-stereo-tongue-v16");
+    Check(File.Exists(replacement + "-gate.pt") && File.Exists(replacement + "-direction.pt") && File.Exists(replacement + ".metadata.json"), "Retirement did not keep the relocated complete replacement.");
+    Check(Hash(replacement + "-direction.pt") == Hash(Path.Combine(normal.Stage, "models", "qpro-stereo-tongue-v15-direction.pt")), "Retirement changed incoming developer weights.");
+    Check(Hash(Path.Combine(normal.Destination, "models", "qpro-stereo-tongue-v99-direction.pt")) == personalHash, "An unrelated personal model changed.");
+    JsonObject migrated = JsonNode.Parse(File.ReadAllText(Path.Combine(normal.Destination, "config", "live-options.json")))!.AsObject();
+    Check(migrated["Model"]!.GetValue<string>() == "qpro-stereo-tongue-v16-gate.pt", "Retired selection did not map to the actual allocated developer version.");
+    migrated["Model"] = originalOptions["Model"]!.DeepClone();
+    Check(JsonNode.DeepEquals(migrated, originalOptions), "Migration changed another saved setting or unknown future setting.");
+    Check(result.Warnings.Count(text => text.StartsWith("Replaced the verified old bundled model", StringComparison.Ordinal)) == 3, "Retired bundle decisions were not reported.");
+
+    var personal = RetirementFixture("retire-preserve-personal", "qpro-stereo-tongue-v15-gate.pt");
+    string personalRoot = Directory.GetParent(personal.Destination)!.FullName;
+    // Imported copies can have identical weights: origin/ownership is decisive.
+    Write(personalRoot, "QproRuntime/models/qpro-stereo-tongue-v8.metadata.json", "{\"origin\":\"imported model\",\"displayName\":\"Personal v8\"}");
+    JsonObject imported13 = JsonNode.Parse(File.ReadAllText(Path.Combine(personal.Destination, "models", "qpro-stereo-tongue-v13.metadata.json")))!.AsObject();
+    imported13["origin"] = "imported model";
+    Write(personalRoot, "QproRuntime/models/qpro-stereo-tongue-v13.metadata.json", imported13.ToJsonString());
+    Write(personalRoot, "QproRuntime/models/qpro-stereo-tongue-v15-direction.pt", "different personal v15 weights");
+    Seal(personalRoot);
+    var personalBefore = Snapshot(personal.Destination);
+    HubUpdateApply.Apply(personal.Stage, personal.Destination, version);
+    foreach (var file in personalBefore.Where(file => file.Key.Contains("qpro-stereo-tongue-v8", StringComparison.Ordinal) ||
+        file.Key.Contains("qpro-stereo-tongue-v13", StringComparison.Ordinal) || file.Key.Contains("qpro-stereo-tongue-v15", StringComparison.Ordinal) || file.Key.EndsWith("live-options.json", StringComparison.Ordinal)))
+        Check(File.Exists(Path.Combine(personalRoot, file.Key)) && Hash(Path.Combine(personalRoot, file.Key)) == file.Value, "A personal/imported collision or selection was changed: " + file.Key);
+    Check(File.Exists(Path.Combine(personal.Destination, "models", "qpro-stereo-tongue-v16-gate.pt")), "Personal collisions prevented installation of the new developer model.");
+
+    var extra = RetirementFixture("retire-extra-local-files", "qpro-stereo-tongue-v13-gate.pt");
+    Write(Directory.GetParent(extra.Destination)!.FullName, "QproRuntime/models/qpro-stereo-tongue-v13-personal.bin", "unrecognized local companion");
+    Write(Directory.GetParent(extra.Destination)!.FullName, "QproRuntime/models/qpro-stereo-tongue-v15-gate.torchscript.pt", "locally rebuilt compiled model");
+    string optionsHash = Hash(Path.Combine(extra.Destination, "config", "live-options.json"));
+    HubUpdateApply.Apply(extra.Stage, extra.Destination, version);
+    Check(File.Exists(Path.Combine(extra.Destination, "models", "qpro-stereo-tongue-v13-gate.pt")) && File.Exists(Path.Combine(extra.Destination, "models", "qpro-stereo-tongue-v15-gate.pt")), "Unknown or changed local companions must preserve their entire model group.");
+    Check(Hash(Path.Combine(extra.Destination, "config", "live-options.json")) == optionsHash, "A retained selected model was migrated unnecessarily.");
+
+    var provenance = RetirementFixture("retire-no-provenance");
+    string checksumPath = Path.Combine(Directory.GetParent(provenance.Destination)!.FullName, "SHA256SUMS.txt");
+    File.WriteAllLines(checksumPath, File.ReadAllLines(checksumPath).Where(line => !line.Contains("qpro-stereo-tongue-v8-", StringComparison.Ordinal)));
+    HubUpdateApply.Apply(provenance.Stage, provenance.Destination, version);
+    Check(File.Exists(Path.Combine(provenance.Destination, "models", "qpro-stereo-tongue-v8-gate.pt")), "v8 without original package checksums must be preserved.");
+
+    var deduped = RetirementFixture("retire-existing-replacement", "qpro-stereo-tongue-v8-gate.pt");
+    string dedupedRoot = Directory.GetParent(deduped.Destination)!.FullName;
+    foreach (string suffix in new[] { "-gate.pt", "-direction.pt", ".metadata.json" })
+        Write(dedupedRoot, "QproRuntime/models/qpro-stereo-tongue-v21" + suffix, File.ReadAllText(Path.Combine(deduped.Stage, "models", "qpro-stereo-tongue-v15" + suffix)));
+    HubUpdateApply.Apply(deduped.Stage, deduped.Destination, version);
+    Check(JsonNode.Parse(File.ReadAllText(Path.Combine(deduped.Destination, "config", "live-options.json")))!["Model"]!.GetValue<string>() == "qpro-stereo-tongue-v21-gate.pt", "Retired selection did not map to an existing hash-identical developer bundle.");
+    Check(!File.Exists(Path.Combine(deduped.Destination, "models", "qpro-stereo-tongue-v16-gate.pt")), "Deduplication created another developer pair during retirement.");
+
+    var relocatedOld = RetirementFixture("retire-relocated-old-bundle", "qpro-stereo-tongue-v21-gate.pt");
+    string relocatedRoot = Directory.GetParent(relocatedOld.Destination)!.FullName;
+    foreach (string suffix in new[] { "-gate.pt", "-direction.pt", "-gate.torchscript.pt", ".metadata.json" })
+        Write(relocatedRoot, "QproRuntime/models/qpro-stereo-tongue-v21" + suffix, File.ReadAllText(Path.Combine(relocatedOld.Destination, "models", "qpro-stereo-tongue-v15" + suffix)));
+    JsonObject relocatedMetadata = JsonNode.Parse(File.ReadAllText(Path.Combine(relocatedOld.Destination, "models", "qpro-stereo-tongue-v21.metadata.json")))!.AsObject();
+    relocatedMetadata["version"] = 21;
+    relocatedMetadata["sourceVersion"] = 15;
+    Write(relocatedRoot, "QproRuntime/models/qpro-stereo-tongue-v21.metadata.json", relocatedMetadata.ToJsonString());
+    Write(relocatedRoot, "QproRuntime/models/qpro-stereo-tongue-v15.metadata.json", "{\"origin\":\"imported model\",\"displayName\":\"Personal v15\"}");
+    Seal(relocatedRoot);
+    HubUpdateApply.Apply(relocatedOld.Stage, relocatedOld.Destination, version);
+    Check(!File.Exists(Path.Combine(relocatedOld.Destination, "models", "qpro-stereo-tongue-v21-gate.pt")), "An exactly identified old developer bundle at a relocated version was left behind.");
+    Check(File.Exists(Path.Combine(relocatedOld.Destination, "models", "qpro-stereo-tongue-v15-gate.pt")), "A personal imported v15 was removed while retiring the old relocated bundle.");
+    Check(JsonNode.Parse(File.ReadAllText(Path.Combine(relocatedOld.Destination, "config", "live-options.json")))!["Model"]!.GetValue<string>() == "qpro-stereo-tongue-v16-gate.pt", "A relocated old bundle selection did not migrate to the new allocated version.");
+
+    var invalidContract = RetirementFixture("retire-invalid-contract");
+    string invalidRoot = Directory.GetParent(invalidContract.Stage)!.FullName;
+    JsonObject invalidManifest = JsonNode.Parse(File.ReadAllText(Path.Combine(invalidContract.Stage, "release-manifest.json")))!.AsObject();
+    invalidManifest["modelRetirement"]!["models"]![0]!["stem"] = "qpro-stereo-tongue-v99";
+    Write(invalidRoot, "QproRuntime/release-manifest.json", invalidManifest.ToJsonString());
+    Seal(invalidRoot);
+    var invalidBefore = Snapshot(invalidContract.Destination);
+    Reject(() => HubUpdateApply.Apply(invalidContract.Stage, invalidContract.Destination, version), "an arbitrary personal version retirement contract");
+    Check(Same(invalidBefore, Snapshot(invalidContract.Destination)), "An invalid retirement contract changed installed files.");
+
+    var incomplete = RetirementFixture("retire-missing-replacement");
+    File.Delete(Path.Combine(incomplete.Stage, "models", "qpro-stereo-tongue-v15-direction.pt"));
+    Seal(Directory.GetParent(incomplete.Stage)!.FullName);
+    var untouched = Snapshot(incomplete.Destination);
+    Reject(() => HubUpdateApply.Apply(incomplete.Stage, incomplete.Destination, version), "retirement with incomplete replacement");
+    Check(Same(untouched, Snapshot(incomplete.Destination)), "Incomplete replacement retired an old model or changed its selection.");
+
+    foreach (string boundary in new[] { "QproRuntime/config/live-options.json", "QproRuntime/models/qpro-stereo-tongue-v8-gate.pt", "QproRuntime/models/qpro-stereo-tongue-v13.metadata.json", "QproRuntime/models/qpro-stereo-tongue-v15-direction.pt" })
+    {
+        var rollback = RetirementFixture("retire-rollback-" + passed);
+        var before = Snapshot(rollback.Destination);
+        try
+        {
+            HubUpdateApply.Apply(rollback.Stage, rollback.Destination, version, afterFileApplied: (_, relative) =>
+            { if (relative == boundary) throw new IOException("Injected retirement transaction failure"); });
+            throw new Exception("Retirement rollback boundary was not reached.");
+        }
+        catch (HubUpdateApplyException error)
+        {
+            Check(error.RollbackComplete && Same(before, Snapshot(rollback.Destination)), "Retirement rollback did not restore all original weights/settings: " + boundary);
+        }
+    }
+
+    var crash = RetirementFixture("retire-crash");
+    var crashBefore = Snapshot(crash.Destination);
+    int deleteBoundary = 0;
+    // Determine the actual file order on a separate isolated fixture.
+    var order = RetirementFixture("retire-order");
+    HubUpdateApply.Apply(order.Stage, order.Destination, version, afterFileApplied: (count, relative) =>
+    { if (relative == "QproRuntime/models/qpro-stereo-tongue-v13-direction.pt") deleteBoundary = count; });
+    Check(deleteBoundary > 0, "A retirement deletion was absent from the transaction.");
+    Crash(crash, deleteBoundary);
+    Check(HubUpdateApply.RequiresRecovery(crash.Destination), "A crash after retirement must retain an unfinished recovery journal.");
+    HubUpdateApply.RecoverPending(crash.Destination);
+    Check(Same(crashBefore, Snapshot(crash.Destination)), "Interrupted retirement did not recover deleted weights and the saved selection.");
+    Console.WriteLine($"PASS: {passed} bundled model retirement assertions; exact identity, settings migration and durable deletion rollback checked.");
+}
+
 try
 {
+    if (args.Length == 1 && args[0] == "--model-collision-fixtures")
+    {
+        ModelCollisionFixtures();
+        return;
+    }
+    if (args.Length == 1 && args[0] == "--model-retirement-fixtures")
+    {
+        ModelRetirementFixtures();
+        return;
+    }
     var normal = Make("normal");
     var before = Snapshot(normal.Destination);
     HubUpdateApplyResult applied = HubUpdateApply.Apply(normal.Stage, normal.Destination, version);

@@ -26,6 +26,7 @@ internal static class HubUpdateReleaseParser
     internal static readonly Uri LatestApi = new("https://api.github.com/repos/Fwooffy/Qpro-Enhanced-FT-Wireless/releases/latest");
     internal static readonly Uri ReleasesApi = new("https://api.github.com/repos/Fwooffy/Qpro-Enhanced-FT-Wireless/releases?per_page=30");
     private const string RepositoryPath = "/Fwooffy/Qpro-Enhanced-FT-Wireless";
+    private const string CompanionRepositoryPath = "/Fwooffy/Qpro-Companion";
 
     internal static bool TryStableVersion(string text, out Version? version)
     {
@@ -138,7 +139,7 @@ internal static class HubUpdateReleaseParser
                 !TryPrereleaseVersion(tag, out version, out suffix))) || version! <= current)
             return NoNewRelease(includePrereleases);
         Uri releasePage = new($"https://github.com{RepositoryPath}/releases/tag/{Uri.EscapeDataString(tag)}");
-        string title = OptionalText(root, "name", 256) ?? "QproFaceTracking V" + version;
+        string title = OptionalText(root, "name", 256) ?? "Qpro Companion V" + version;
         string notes = OptionalText(root, "body", 100_000) ?? string.Empty;
         if (notes.Length > 32_768) notes = notes[..32_768] + "\n\nRead the complete notes on GitHub.";
         if (!numericTag)
@@ -150,16 +151,17 @@ internal static class HubUpdateReleaseParser
             return new(HubUpdateCheckState.ManualDownloadOnly,
                 "A newer prerelease is available. Its version suffix requires manual download; open its GitHub release page.", manual);
         }
-        var candidates = new List<(string Name, Uri Url, long Size, string? Hash)>();
+        var candidates = new List<(string Name, Uri Url, long Size, string? Hash, bool Companion)>();
         if (!root.TryGetProperty("assets", out JsonElement assets) || assets.ValueKind != JsonValueKind.Array)
             throw new InvalidDataException("GitHub did not provide a release asset list.");
         string versionPattern = Regex.Escape(version!.ToString(3));
-        string assetPattern = @"^QproFaceTracking[ ._-][vV]?" + versionPattern + @"\.zip$";
+        string assetPattern = @"^(QproCompanion|QproFaceTracking)[ ._-][vV]?" + versionPattern + @"\.zip$";
         foreach (JsonElement asset in assets.EnumerateArray())
         {
             UniqueObject(asset);
             string name = Text(asset, "name", 256);
-            if (!Regex.IsMatch(name, assetPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)) continue;
+            Match nameMatch = Regex.Match(name, assetPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            if (!nameMatch.Success) continue;
             if (Text(asset, "state", 32) != "uploaded" || !asset.TryGetProperty("size", out JsonElement sizeValue) ||
                 !sizeValue.TryGetInt64(out long size) || size <= 0 || size > MaximumArchiveBytes) continue;
             if (!Uri.TryCreate(Text(asset, "browser_download_url", 2048), UriKind.Absolute, out Uri? url) ||
@@ -167,8 +169,13 @@ internal static class HubUpdateReleaseParser
             string? digest = OptionalText(asset, "digest", 128);
             string? hash = digest is not null && Regex.IsMatch(digest, @"^sha256:[0-9a-fA-F]{64}$", RegexOptions.CultureInvariant)
                 ? digest[7..].ToLowerInvariant() : null;
-            candidates.Add((name, url, size, hash));
+            bool companion = nameMatch.Groups[1].Value.Equals("QproCompanion", StringComparison.OrdinalIgnoreCase);
+            candidates.Add((name, url, size, hash, companion));
         }
+        // A transition release can publish a legacy alias for older Hubs.
+        // Prefer the new name without treating two assets of that name as safe.
+        if (candidates.Any(candidate => candidate.Companion))
+            candidates.RemoveAll(candidate => !candidate.Companion);
         if (candidates.Count != 1)
         {
             var manual = new HubUpdateRelease(version, tag, title, releasePage, notes, null, null, 0, null, isPrerelease);
@@ -180,14 +187,21 @@ internal static class HubUpdateReleaseParser
         return candidate.Hash is null
             ? new(HubUpdateCheckState.ManualDownloadOnly,
                 "A newer release is available, but GitHub has not supplied its ZIP checksum. Open the release page to download it manually.", release)
-            : new(HubUpdateCheckState.Available, "QproFaceTracking V" + version +
+            : new(HubUpdateCheckState.Available, "Qpro Companion V" + version +
                 (isPrerelease ? " prerelease is available." : " is available."), release);
     }
 
     internal static bool IsAssetUrl(Uri url, string tag, string assetName) =>
         url.Scheme == Uri.UriSchemeHttps && url.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase) &&
         url.IsDefaultPort && url.UserInfo.Length == 0 && url.Query.Length == 0 && url.Fragment.Length == 0 &&
-        Uri.UnescapeDataString(url.AbsolutePath).Equals(RepositoryPath + "/releases/download/" + tag + "/" + assetName, StringComparison.OrdinalIgnoreCase);
+        IsRepositoryAssetPath(Uri.UnescapeDataString(url.AbsolutePath), tag, assetName);
+
+    private static bool IsRepositoryAssetPath(string path, string tag, string assetName)
+    {
+        string releaseAsset = "/releases/download/" + tag + "/" + assetName;
+        return path.Equals(RepositoryPath + releaseAsset, StringComparison.OrdinalIgnoreCase) ||
+            path.Equals(CompanionRepositoryPath + releaseAsset, StringComparison.OrdinalIgnoreCase);
+    }
 
     private static void UniqueObject(JsonElement element)
     {
