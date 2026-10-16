@@ -1,0 +1,26 @@
+[
+  {
+    "language_tag": "en_US",
+    "oculus_touch": "Touch Pro with Qpro thumb-rest input",
+    "/input/system": "Menu button",
+    "/input/trigger": "Physical trigger",
+    "/input/joystick": "Physical joystick",
+    "/input/grip": "Physical grip",
+    "/input/x": "X button",
+    "/input/a": "A button",
+    "/input/y": "Y button",
+    "/input/b": "B button",
+    "/input/thumbrest": "Native thumb-rest touch",
+    "/input/trackpad": "Qpro thumb-rest surface (extra)",
+    "/input/qpro_scroll": "Qpro Companion menu scroll (Swipe mode only)",
+    "/input/skeleton/left": "Left hand skeleton",
+    "/input/skeleton/right": "Right hand skeleton",
+    "/output/haptic": "Controller vibration",
+    "/pose/raw": "Raw controller pose",
+    "/pose/base": "Controller base pose",
+    "/pose/handgrip": "Hand grip pose",
+    "/pose/tip": "Pointer tip pose",
+    "/pose/openxr_aim": "OpenXR aim pose",
+    "/pose/openxr_grip": "OpenXR grip pose"
+  }
+]
