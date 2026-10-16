@@ -1,4 +1,4 @@
-param([string]$FixtureRoot = (Join-Path $PSScriptRoot 'artifacts\release-metadata-fixtures'))
+param([string]$FixtureRoot = (Join-Path $PSScriptRoot 'artifacts\release-metadata-fixtures'), [string]$Dotnet = '')
 
 $ErrorActionPreference = 'Stop'
 function Import-PureFunction([string]$Path, [string]$Name) {
@@ -30,6 +30,34 @@ function Assert-Rejected([scriptblock]$Action, [string]$Context) {
     $script:checks++
 }
 try {
+    $releaseVersion = Get-QproModuleVersion $PSScriptRoot
+    $moduleProject = Join-Path $PSScriptRoot 'vrcft-gaze-bridge\Qpro.GazeBridge.csproj'
+    $hubProject = [xml][IO.File]::ReadAllText((Join-Path $PSScriptRoot 'qpro-hub\QproFaceTracking.Hub.csproj'))
+    $moduleXml = [xml][IO.File]::ReadAllText($moduleProject)
+    $template = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'vrcft-gaze-bridge\module.json')) | ConvertFrom-Json
+    Assert-Equal $releaseVersion ([string]$hubProject.Project.PropertyGroup.Version) 'Hub development version'
+    Assert-Equal $releaseVersion ([string]@($moduleXml.Project.PropertyGroup | Where-Object Version)[0].Version) 'Module development version'
+    Assert-Equal $releaseVersion $template.Version 'Standalone module template version'
+    Assert-Equal ("Qpro Companion " + [char]0x2014 + ' Virtual Desktop') $template.ModuleName 'Standalone module display name'
+    $builder = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'build-release.ps1'))
+    Assert-Equal $true ([regex]::IsMatch($builder, '(?m)^& \$dotnet build .*Qpro\.GazeBridge\.csproj.*"-p:Version=\$Version"')) 'Release module uses the Hub release version argument'
+    $installer = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'install-vrcft-eye-bridge.ps1'))
+    Assert-Equal $true ($installer.Contains('"-p:Version=$QproModuleVersion"')) 'Rebuild uses the packaged release version'
+    $moduleSource = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'vrcft-gaze-bridge\TrackingModule.cs'))
+    Assert-Equal $true ($moduleSource.Contains('"Qpro Companion \u2014 Steam Link"') -and
+        $moduleSource.Contains('"Qpro Companion \u2014 Virtual Desktop"') -and -not $moduleSource.Contains('pupil v0.7')) 'Runtime module display names match the cards'
+    if ($Dotnet) {
+        foreach ($selectedVersion in @('2.4.7', '9.3.1')) {
+            $generated = Join-Path $fixture ('module-' + $selectedVersion)
+            $buildOutput = & $Dotnet msbuild $moduleProject -nologo -target:WriteModuleMetadata "-p:Version=$selectedVersion" "-p:OutputPath=$generated/" 2>&1
+            if ($LASTEXITCODE -ne 0) { throw ($buildOutput -join "`n") }
+            $generatedCard = [IO.File]::ReadAllText((Join-Path $generated 'module.json')) | ConvertFrom-Json
+            Assert-Equal $selectedVersion $generatedCard.Version 'Generated module card uses selected MSBuild version'
+            Assert-Equal $template.ModuleId $generatedCard.ModuleId 'Metadata generation preserves module GUID'
+            Assert-Equal $template.ModuleName $generatedCard.ModuleName 'Metadata generation preserves module name'
+            Assert-Equal 1 @(Get-ChildItem -LiteralPath $generated -File -Recurse).Count 'Metadata-only target produces no DLL or ZIP'
+        }
+    }
     $runtime = Join-Path $fixture 'QproRuntime'
     New-Item -ItemType Directory -Path $runtime | Out-Null
     Assert-Equal '3.0.0' (Get-QproModuleVersion $runtime) 'Explicit development fallback'
@@ -112,7 +140,13 @@ try {
         }
         if ($linkCreated) { Assert-Rejected { Get-QproPublicTestSources $fixture } 'Linked test source directory' }
     } finally {
-        if (Test-Path -LiteralPath $link) { Remove-Item -LiteralPath $link -Force }
+        if (Test-Path -LiteralPath $link) {
+            if ((Get-Item -LiteralPath $link -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                # Windows PowerShell 5.1 Remove-Item can throw on a junction.
+                # Delete only the link, without traversing its target.
+                [IO.Directory]::Delete($link, $false)
+            } else { throw 'The source-export fixture link became an ordinary path.' }
+        }
     }
     Write-Host "Release metadata/source fixtures passed: $checks checks. No module was installed and no release was built."
 } finally {

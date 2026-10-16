@@ -5,7 +5,7 @@ param(
     [string]$AssetRoot = "",
     [string]$VrcftInstallDir = "",
     [string]$ExperimentalTongueModelRoot = "",
-    [string]$CameraCheekModelRoot = "",
+    [string]$DeveloperModelRoot = "",
     [string]$TestNotesPath = "",
     [string]$ControllerInputAssetRoot = ""
 )
@@ -35,6 +35,13 @@ if ($assetRootResolved -and -not (Test-Path -LiteralPath $assetRootResolved -Pat
     throw "Asset root does not exist: $assetRootResolved"
 }
 
+# Refuse a stale/old native stage before deleting any previous release output.
+$controllerAssetRoot = if ($ControllerInputAssetRoot) {
+    [System.IO.Path]::GetFullPath($ControllerInputAssetRoot)
+} else { Join-Path $root 'artifacts\controller-native-build' }
+. (Join-Path $root 'controller-input\native-build-receipt.ps1')
+Assert-QproNativeStage (Join-Path $root 'controller-input') $controllerAssetRoot
+
 if (-not $releaseRoot.StartsWith($distRoot + [System.IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Unsafe release target: $releaseRoot"
 }
@@ -60,11 +67,11 @@ $labelDestination = Join-Path $runtimeRoot "vd-label-bridge\bin\Release\net10.0"
 New-Item -ItemType Directory -Force -Path $labelDestination | Out-Null
 Copy-Item -LiteralPath (Join-Path $labelPublish "Qpro.VirtualDesktopLabelBridge.exe") -Destination $labelDestination
 
-Write-Host "Building the combined VRCFT bridge..."
+Write-Host "Building the Qpro Companion VRCFT modules..."
 $vrcftBuildArgs = @(if (-not [string]::IsNullOrWhiteSpace($VrcftInstallDir)) {
     "-p:VrcftInstallDir=$([System.IO.Path]::GetFullPath($VrcftInstallDir))"
 })
-& $dotnet build (Join-Path $root "vrcft-gaze-bridge\Qpro.GazeBridge.csproj") -c Release -p:DebugType=None @vrcftBuildArgs @restoreArgs
+& $dotnet build (Join-Path $root "vrcft-gaze-bridge\Qpro.GazeBridge.csproj") -c Release -p:DebugType=None "-p:Version=$Version" @vrcftBuildArgs @restoreArgs
 if ($LASTEXITCODE -ne 0) { throw "Building the combined VRCFT bridge failed." }
 $vrcftBinaryDestination = Join-Path $runtimeRoot "vrcft-gaze-bridge\bin\Release\net10.0"
 New-Item -ItemType Directory -Force -Path $vrcftBinaryDestination | Out-Null
@@ -155,13 +162,8 @@ $runtimeFiles = @(
     "pupil_gpu.py",
     "pupil_inference.py",
     "tracking_budget.py",
-    "cheek_camera.py",
-    "cheek_still_capture.py",
-    "prepare_cheek_stills.py",
-    "train_cheek_model.py",
-    "train_cheek_pair.py",
-    "train-latest-cheeks.ps1",
     "lower_face_training.py",
+    "legacy_lower_face_schema.py",
     "pupil_gaze_calibration.py",
     "capture_format.py",
     "calibration.py",
@@ -194,8 +196,6 @@ $runtimeFiles = @(
     "questpro-camera-relay-v8",
     "questpro-camera-injector",
     "calibration\qpro-independent-visual-axis-v2.json",
-    "models\qpro-stereo-tongue-v8-gate.pt",
-    "models\qpro-stereo-tongue-v8-direction.pt",
     "research\patch_seacliff_independent_axes.py",
     "release-manifest.json"
 )
@@ -209,11 +209,9 @@ $packagedManifest | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $package
 # The optional controller runtime is built separately from the .NET face module.
 # Copy an explicit list so compiler caches, debug symbols and reference source
 # cannot enter the runnable archive.
-$controllerAssetRoot = if ($ControllerInputAssetRoot) {
-    [System.IO.Path]::GetFullPath($ControllerInputAssetRoot)
-} else { Join-Path $root 'artifacts\controller-native-build' }
 $controllerSourceFiles = @(
     'controller-input.ps1', 'controller-input\manage.py',
+    'controller-input\dashboard_bindings.py', 'controller-input\vrchat_bindings.py',
     'hybrid\controller.py', 'hybrid\compatibility.json',
     'hybrid\quest_hand_adapter.js', 'hybrid\quest_controller_adapter.js',
     'hybrid\steamvr_skeleton_adapter.js',
@@ -226,6 +224,7 @@ $controllerAssets = @{
     'qpro_controller\bin\win64\driver_qpro_controller.dll' = 'controller-input\addon\bin\win64\driver_qpro_controller.dll'
     'qpro_controller\resources\settings.json' = 'controller-input\addon\resources\settings.json'
     'qpro_controller\resources\input\quest_pro_touchpad.json' = 'controller-input\addon\resources\input\quest_pro_touchpad.json'
+    'qpro_controller\resources\localization\localization.json' = 'controller-input\addon\resources\localization\localization.json'
     'qpro_controller\LICENSE.OpenVR.txt' = 'controller-input\addon\LICENSE.OpenVR.txt'
     'qpro_controller\README.md' = 'controller-input\addon\README.md'
 }
@@ -240,6 +239,9 @@ foreach ($entry in $controllerAssets.GetEnumerator()) {
     $runtimeFiles += $entry.Value
 }
 
+# Model roots are independent of the runtime-file whitelist. Fresh packages
+# must create the destination even when no legacy model was copied first.
+New-Item -ItemType Directory -Force -Path (Join-Path $runtimeRoot 'models') | Out-Null
 if (-not [string]::IsNullOrWhiteSpace($ExperimentalTongueModelRoot)) {
     $experimentalRoot = [System.IO.Path]::GetFullPath($ExperimentalTongueModelRoot)
     $metadataFiles = @(Get-ChildItem -LiteralPath $experimentalRoot -File -Filter 'qpro-stereo-tongue-v*.metadata.json')
@@ -264,38 +266,68 @@ if (-not [string]::IsNullOrWhiteSpace($ExperimentalTongueModelRoot)) {
         $runtimeFiles += "models\$name"
     }
 }
-if (-not [string]::IsNullOrWhiteSpace($CameraCheekModelRoot)) {
-    $cameraModelRoot = [System.IO.Path]::GetFullPath($CameraCheekModelRoot)
-    $cameraMetadataFiles = @(Get-ChildItem -LiteralPath $cameraModelRoot -File -Filter 'qpro-stereo-tongue-v*.metadata.json')
-    if ($cameraMetadataFiles.Count -ne 1) { throw 'The camera cheek model folder must identify exactly one paired model.' }
-    $cameraMetadataFile = $cameraMetadataFiles[0]
-    $cameraMetadata = Get-Content -LiteralPath $cameraMetadataFile.FullName -Raw | ConvertFrom-Json
-    if ($cameraMetadataFile.Name -notmatch '^qpro-stereo-tongue-v(?<version>\d+)\.metadata\.json$') { throw 'Invalid camera cheek model filename.' }
-    $cameraVersion = [int]$Matches.version
-    if ($cameraVersion -le 8 -or $cameraMetadata.version -ne $cameraVersion -or
-        $cameraMetadata.format -ne 'qpro-tongue-model-metadata-v1' -or
-        $cameraMetadata.modelKind -ne 'camera-cheeks-experimental' -or
-        $cameraMetadata.isExperimental -ne $true -or $cameraMetadata.hasCameraCheeks -ne $true -or
-        $cameraMetadata.cheekTraining.frozenTongueParent -ne $true) {
-        throw 'Camera cheek models require explicit experimental metadata and a frozen tongue parent.'
+if (-not [string]::IsNullOrWhiteSpace($DeveloperModelRoot)) {
+    $developerModelRootResolved = [System.IO.Path]::GetFullPath($DeveloperModelRoot)
+    $developerMetadataFiles = @(Get-ChildItem -LiteralPath $developerModelRootResolved -File -Filter 'qpro-stereo-tongue-v*.metadata.json')
+    if ($developerMetadataFiles.Count -ne 1) { throw 'The developer model folder must identify exactly one paired model.' }
+    $developerMetadataFile = $developerMetadataFiles[0]
+    if ($developerMetadataFile.Name -notmatch '^qpro-stereo-tongue-v(?<version>\d+)\.metadata\.json$') { throw 'Invalid developer model filename.' }
+    $developerVersion = [int]$Matches.version
+    $developerMetadata = Get-Content -LiteralPath $developerMetadataFile.FullName -Raw | ConvertFrom-Json
+    if ($developerVersion -le 8 -or $developerMetadata.version -ne $developerVersion -or
+        $developerMetadata.format -ne 'qpro-tongue-model-metadata-v1' -or
+        $developerMetadata.modelKind -ne 'developer-tongue' -or
+        $developerMetadata.origin -ne 'bundled developer model' -or
+        $developerMetadata.bundledDeveloperModel -ne $true -or
+        $developerMetadata.isExperimental -ne $true -or $developerMetadata.hasCameraCheeks -eq $true) {
+        throw 'Developer models require portable developer metadata and a separate version above v8.'
     }
-    # This bundled candidate extends the developer v8 direction model. Keep its
-    # original visibility gate, and include only sanitized public model assets.
-    $cameraGate = Join-Path $cameraModelRoot "qpro-stereo-tongue-v$cameraVersion-gate.pt"
-    $developerGate = Join-Path $runtimeRoot 'models\qpro-stereo-tongue-v8-gate.pt'
-    if (-not (Test-Path -LiteralPath $cameraGate -PathType Leaf) -or
-        (Get-FileHash -LiteralPath $cameraGate -Algorithm SHA256).Hash -ne
-        (Get-FileHash -LiteralPath $developerGate -Algorithm SHA256).Hash) {
-        throw 'The bundled camera cheek candidate must preserve the developer v8 visibility gate.'
-    }
-    foreach ($name in @("qpro-stereo-tongue-v$cameraVersion-gate.pt", "qpro-stereo-tongue-v$cameraVersion-direction.pt", $cameraMetadataFile.Name)) {
-        $source = Join-Path $cameraModelRoot $name
+    # Include only the paired weights and portable classification. Capture
+    # recordings, training caches and evaluation reports stay outside the ZIP.
+    $developerFilesToCopy = @()
+    foreach ($branch in @('gate', 'direction')) {
+        $name = "qpro-stereo-tongue-v$developerVersion-$branch.pt"
+        $source = Join-Path $developerModelRootResolved $name
         $destination = Join-Path $runtimeRoot ("models\" + $name)
-        if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or (Get-Item -LiteralPath $source).Length -eq 0) { throw "Camera cheek model file is missing or empty: $name" }
-        if (Test-Path -LiteralPath $destination) { throw "Camera cheek model would replace an existing model: $name" }
-        Copy-Item -LiteralPath $source -Destination $destination
+        $expectedHash = if ($branch -eq 'gate') { $developerMetadata.modelFiles.gateSha256 } else { $developerMetadata.modelFiles.directionSha256 }
+        if ($expectedHash -notmatch '^[a-f0-9]{64}$' -or
+            -not (Test-Path -LiteralPath $source -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedHash) {
+            throw "The developer $branch checkpoint is missing or does not match its metadata."
+        }
+        if (Test-Path -LiteralPath $destination) { throw "Developer model would replace an existing model: $name" }
+        $developerFilesToCopy += $name
+    }
+    $developerMetadataDestination = Join-Path $runtimeRoot ("models\" + $developerMetadataFile.Name)
+    if (Test-Path -LiteralPath $developerMetadataDestination) { throw "Developer model would replace an existing model: $($developerMetadataFile.Name)" }
+    $developerFilesToCopy += $developerMetadataFile.Name
+    foreach ($name in $developerFilesToCopy) {
+        Copy-Item -LiteralPath (Join-Path $developerModelRootResolved $name) -Destination (Join-Path $runtimeRoot ("models\" + $name))
         $runtimeFiles += "models\$name"
     }
+    $packagedManifest.bundledTongueModel = "qpro-stereo-tongue-v$developerVersion"
+    $packagedManifest.PSObject.Properties.Remove('fallbackTongueModel')
+    # Retire only previously bundled identities, never a user's model merely
+    # because it shares a version number. The updater backs up these removals.
+    $retiredModels = @(
+        @{ stem = 'qpro-stereo-tongue-v8';
+           gateSha256 = '57d9d04f1a569e40836cbb7a7af217986f8b65ffad103ff86bc2a2d07afc35ff';
+           directionSha256 = '1900e8761c9ceaf89069121af1016ba24c33849836a5b7ee94b4dfd9fc7db396';
+           requireOriginalPackage = $true },
+        @{ stem = 'qpro-stereo-tongue-v13';
+           gateSha256 = '57d9d04f1a569e40836cbb7a7af217986f8b65ffad103ff86bc2a2d07afc35ff';
+           directionSha256 = '52797b420f40c4a39d58d3abd10031b8f6ec7f91cfb7568a5bf7d2e1ba3fa07d';
+           modelKind = 'camera-cheeks-experimental'; origin = 'developer tongue with an experimental camera cheek head';
+           hasCameraCheeks = $true },
+        @{ stem = 'qpro-stereo-tongue-v15';
+           gateSha256 = '38e05b6625173cc2c7e612757c59134ae692403c2fcd7c9e630b1cf205577246';
+           directionSha256 = '52797b420f40c4a39d58d3abd10031b8f6ec7f91cfb7568a5bf7d2e1ba3fa07d';
+           modelKind = 'developer-lower-face'; origin = 'bundled developer model';
+           bundledDeveloperModel = $true; hasCameraCheeks = $true }
+    )
+    $packagedManifest | Add-Member -NotePropertyName modelRetirement -NotePropertyValue @{
+        schema = 1; replacementStem = "qpro-stereo-tongue-v$developerVersion"; models = $retiredModels
+    } -Force
 }
 # Check the packaged Python tree, not only the source list. A missing local
 # module can otherwise leave capture working while training fails at import.
@@ -497,5 +529,17 @@ try {
     $releaseZip.Dispose()
 }
 
+# Keep the internal layout and legacy asset for installed updaters. The public
+# download uses the new name; both assets contain exactly the same bytes.
+$publicArchiveName = ($releaseName -replace '^QproFaceTracking', 'QproCompanion') + '.zip'
+$publicArchive = Join-Path $distRoot $publicArchiveName
+if (-not $publicArchive.Equals($archive, [StringComparison]::OrdinalIgnoreCase)) {
+    Copy-Item -LiteralPath $archive -Destination $publicArchive -Force
+    $legacyHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+    if ((Get-FileHash -LiteralPath $publicArchive -Algorithm SHA256).Hash -ne $legacyHash) {
+        throw 'The Qpro Companion download differs from its compatibility alias.'
+    }
+    Write-Host "RELEASE_READY updater-alias=$archive"
+}
 Write-Host "RELEASE_READY folder=$releaseRoot"
-Write-Host "RELEASE_READY zip=$archive"
+Write-Host "RELEASE_READY zip=$publicArchive"
