@@ -141,7 +141,7 @@ try {
     $effectiveBatchSize = if ($device -eq "cpu") { [Math]::Min($BatchSize, 16) } else { $BatchSize }
     Write-Host "TRAIN_DEVICE device=$device batch=$effectiveBatchSize"
     if ($device -eq "cpu") { Write-Warning "CUDA is unavailable. CPU fallback is active; full-dataset training may take hours. NVIDIA users should rerun PC runtime setup after installing the current NVIDIA driver." }
-    $totalStages = if ($sessionMetadata.sessionType -eq 'lower-face-stills-v1') { 3 } else { 2 }
+    $totalStages = 2
     Write-Host "TRAIN_STAGE index=1 total=$totalStages name=visibility epochs=$Epochs device=$device"
     Write-Host "Training the visibility checkpoint on $device"
     & $python .\train_tongue_model.py $cache `
@@ -162,13 +162,8 @@ try {
         --device $device `
         --output $directionOutput
     if ($LASTEXITCODE -ne 0) { throw "Training the direction checkpoint failed." }
-    if ($sessionMetadata.sessionType -eq 'lower-face-stills-v1') {
-        Write-Host "TRAIN_STAGE index=3 total=3 name=cheeks device=$device"
-        & $python .\lower_face_training.py attach --session $latest.FullName --direction $directionOutput --root $trainingRunRoot --version $Version --device $device
-        if ($LASTEXITCODE -ne 0) { throw 'Lower-face cheek training failed. Existing models were kept.' }
-    }
     & $python .\lower_face_training.py publish --staged-root $trainingRunRoot --root $PSScriptRoot --version $Version
-    if ($LASTEXITCODE -ne 0) { throw 'Publishing the trained lower-face model failed. Existing models were kept.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Publishing the trained tongue model failed. Existing models were kept.' }
     Write-Host "MODEL_READY version=$Version gate=$(Join-Path $PSScriptRoot "models\qpro-stereo-tongue-v$Version-gate.pt") direction=$(Join-Path $PSScriptRoot "models\qpro-stereo-tongue-v$Version-direction.pt")"
 } finally {
     try {

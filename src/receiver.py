@@ -24,6 +24,7 @@ from tongue_calibration import TONGUE_STEPS
 from tongue_still_capture import (
     TONGUE_ARC_PROMPTS,
     TONGUE_CORRECTION_PROMPTS,
+    TONGUE_REFINEMENT_PROMPTS,
     TongueStillCaptureSession,
 )
 from label_capture import LabelSidecarRecorder
@@ -101,7 +102,7 @@ def stereo_mouth_strip(strip: np.ndarray, camera_ids: list[int]) -> np.ndarray:
 def format_tracking_health(
     *, camera_fps: float, inference_fps: float, frame_age_ms: float,
     decode_ms: float, prediction=None, tongue_enabled: bool = False,
-    cheek_enabled: bool = False, pupil_result=None, pupil_enabled: bool = False,
+    pupil_result=None, pupil_enabled: bool = False,
     pupil_seen: bool = False, now: float | None = None,
 ) -> str:
     """One periodic snapshot; ages include time since the result completed.
@@ -120,9 +121,6 @@ def format_tracking_health(
         "warming" if prediction is None else "stale" if not fresh or age > 300 else
         "visible" if prediction.visible else "hidden"
     )
-    cheek = "off" if not cheek_enabled else (
-        "warming" if prediction is None else "valid" if fresh and age <= 500 else "stale"
-    )
     pupil_age = -1.0
     if pupil_result is not None:
         pupil_age = pupil_result.age_ms + max(0.0, now - pupil_result.completed_at) * 1000.0
@@ -139,7 +137,7 @@ def format_tracking_health(
         f"transfer_ms={getattr(prediction, 'transfer_ms', -1.0):.3f} "
         f"pipeline_ms={pipeline_ms:.1f} result_age_ms={result_age_ms:.1f} "
         f"dropped_frames={getattr(prediction, 'dropped_frames', 0)} "
-        f"tongue={tongue} cheek={cheek} pupil={pupil} "
+        f"tongue={tongue} pupil={pupil} "
         f"pupil_ms={getattr(pupil_result, 'processing_ms', -1.0):.1f} "
         f"pupil_age_ms={pupil_age:.1f} "
         f"pupil_dropped_frames={getattr(pupil_result, 'dropped_frames', 0)}"
@@ -494,7 +492,7 @@ def main() -> int:
         help="responsive keeps current cadence; balanced/low-cpu sample pupils less often",
     )
     parser.add_argument("--tongue-processing-fps", type=float, default=None,
-                        help="optional tongue/camera-cheek processing cap: 0 or 5–120 FPS")
+                        help="optional tongue processing cap: 0 or 5–120 FPS")
     parser.add_argument("--pupil-processing-fps", type=float, default=None,
                         help="optional pupil processing cap: 0 or 5–120 FPS")
     parser.add_argument(
@@ -517,8 +515,6 @@ def main() -> int:
     parser.add_argument("--tongue-correction-calibration", action="store_true")
     parser.add_argument("--tongue-refinement-calibration", action="store_true")
     parser.add_argument("--tongue-arc-calibration", action="store_true")
-    parser.add_argument("--cheek-still-calibration", action="store_true")
-    parser.add_argument("--cheek-output", action="store_true")
     parser.add_argument("--model")
     parser.add_argument("--model-device", default="auto")
     parser.add_argument("--tongue-model")
@@ -603,10 +599,6 @@ def main() -> int:
         parser.error("--tongue-correction-calibration requires --record")
     if arguments.tongue_refinement_calibration and arguments.record is None:
         parser.error("--tongue-refinement-calibration requires --record")
-    if arguments.cheek_still_calibration and arguments.record is None:
-        parser.error("--cheek-still-calibration requires --record")
-    if arguments.cheek_still_calibration and arguments.no_window:
-        parser.error("--cheek-still-calibration requires the visible prompt window")
     if arguments.tongue_arc_calibration and arguments.record is None:
         parser.error("--tongue-arc-calibration requires --record")
     calibration_modes = sum((
@@ -616,7 +608,6 @@ def main() -> int:
         bool(arguments.tongue_correction_calibration),
         bool(arguments.tongue_refinement_calibration),
         bool(arguments.tongue_arc_calibration),
-        bool(arguments.cheek_still_calibration),
     ))
     if calibration_modes > 1:
         parser.error("choose only one calibration mode")
@@ -633,15 +624,13 @@ def main() -> int:
         parser.error("--model comparison requires live factory labels")
     if arguments.tongue_model and arguments.no_labels:
         parser.error("--tongue-model requires live native TongueOut confidence")
-    if arguments.cheek_output and not arguments.tongue_model:
-        parser.error("--cheek-output requires a trained lower-face model")
     if arguments.tongue_model and (
         arguments.model or arguments.open_source_preview or arguments.hybrid_preview
         or arguments.calibration or arguments.tongue_calibration
         or arguments.tongue_still_calibration or arguments.eye_calibration
         or arguments.tongue_correction_calibration
         or arguments.tongue_refinement_calibration
-        or arguments.tongue_arc_calibration or arguments.cheek_still_calibration
+        or arguments.tongue_arc_calibration
     ):
         parser.error("--tongue-model must run by itself")
     if (arguments.open_source_preview or arguments.hybrid_preview
@@ -679,7 +668,7 @@ def main() -> int:
 
         print(
             f"Tracking processing profile: {tracking_budget.profile}. "
-            f"Tongue/camera cheeks: {describe_rate(tracking_budget.tongue_fps)}; "
+            f"Tongue: {describe_rate(tracking_budget.tongue_fps)}; "
             f"pupils: {describe_rate(tracking_budget.pupil_fps)}. "
             "Camera recording and model resolution are unchanged.", flush=True,
         )
@@ -724,13 +713,13 @@ def main() -> int:
     tongue_still_session: TongueStillCaptureSession | None = None
     calibration_completed = False
     labels_live_reported: bool | None = None
-    manual_reference_reported: tuple[bool, bool] | None = None
+    manual_reference_reported: bool | None = None
     prompt_window_name = (
-        "Quest Pro lower-face calibration"
+        "Quest Pro tongue calibration"
         if (arguments.tongue_calibration or arguments.tongue_still_calibration
             or arguments.tongue_correction_calibration
             or arguments.tongue_refinement_calibration
-            or arguments.tongue_arc_calibration or arguments.cheek_still_calibration)
+            or arguments.tongue_arc_calibration)
         else "Quest Pro whole-face calibration"
     )
     model_window_name = "Quest Pro pilot model validation"
@@ -743,9 +732,7 @@ def main() -> int:
     pupil_broadcaster = None
     pupil_worker = None
     pupil_backend_reported = None
-    cheek_broadcaster = None
     last_pupil_status = 0.0
-    last_cheek_status = 0.0
     last_tongue_status = None
     last_tongue_completed = 0
     last_health_status = fps_started
@@ -795,18 +782,18 @@ def main() -> int:
             elif (arguments.tongue_still_calibration
                   or arguments.tongue_correction_calibration
                   or arguments.tongue_refinement_calibration
-                  or arguments.tongue_arc_calibration
-                  or arguments.cheek_still_calibration):
+                  or arguments.tongue_arc_calibration):
                 journal_path = capture_writer.path.with_suffix(".qpsession.json")
                 if arguments.tongue_still_calibration or arguments.tongue_refinement_calibration:
-                    from cheek_still_capture import LowerFaceCaptureSession
-                    tongue_still_session = LowerFaceCaptureSession(
+                    tongue_still_session = TongueStillCaptureSession(
                         journal_path,
-                        refinement=arguments.tongue_refinement_calibration,
+                        prompts=(TONGUE_REFINEMENT_PROMPTS
+                                 if arguments.tongue_refinement_calibration else None),
+                        session_type=("tongue-stereo-refinement-v2"
+                                      if arguments.tongue_refinement_calibration else "tongue-stereo-stills-v1"),
+                        title=("Quest Pro quick tongue refinement"
+                               if arguments.tongue_refinement_calibration else "Quest Pro manual stereo tongue capture"),
                     )
-                elif arguments.cheek_still_calibration:
-                    from cheek_still_capture import CheekStillCaptureSession
-                    tongue_still_session = CheekStillCaptureSession(journal_path)
                 else:
                     tongue_still_session = TongueStillCaptureSession(
                         journal_path,
@@ -871,16 +858,9 @@ def main() -> int:
                 visibility_mode=arguments.tongue_visibility_mode,
             )
             tongue_broadcaster = TongueBroadcaster(enabled=arguments.tongue_output)
-            if arguments.cheek_output:
-                from cheek_camera import CameraCheekBroadcaster
-                if not {"cheekPuffLeft", "cheekPuffRight"}.issubset(tongue_model_preview.target_names):
-                    raise ValueError("Select a trained tongue-and-cheek camera model before enabling Camera cheek puff")
-                cheek_broadcaster = CameraCheekBroadcaster(enabled=True)
-                print("EXPERIMENTAL_CHEEK_CAMERA_OUTPUT_ON native_fallback=enabled", flush=True)
             tongue_inference_worker = TongueInferenceWorker(
                 tongue_model_preview, tongue_broadcaster,
                 render_preview=not arguments.no_window,
-                cheek_broadcaster=cheek_broadcaster,
                 maximum_fps=tracking_budget.tongue_fps,
             )
             print(
@@ -1023,7 +1003,7 @@ def main() -> int:
             if magic != MAGIC or version != 3 or header_size != HEADER.size:
                 raise ValueError("Unexpected live-stream header")
             camera_ids = camera_ids_from_mask(camera_mask)
-            if (arguments.cheek_still_calibration or arguments.tongue_still_calibration
+            if (arguments.tongue_still_calibration
                     or arguments.tongue_refinement_calibration) and camera_ids not in ([2, 3], [2, 3, 4]):
                 raise ValueError("Lower-face capture requires mouth or face mode (cameras 2 and 3)")
             if pupil_tracker is not None and not {0, 1}.issubset(camera_ids):
@@ -1177,18 +1157,6 @@ def main() -> int:
                     ), flush=True)
                     last_tongue_status = now
                     last_tongue_completed = tongue_prediction.completed_frames
-                if (cheek_broadcaster is not None and tongue_prediction is not None
-                        and now - last_cheek_status >= 2.0):
-                    names = tongue_model_preview.target_names
-                    left = float(tongue_prediction.values[names.index("cheekPuffLeft")])
-                    right = float(tongue_prediction.values[names.index("cheekPuffRight")])
-                    print(
-                        f"CHEEK_CAMERA_STATUS left={left:.3f} right={right:.3f} "
-                        f"inference_ms={tongue_prediction.inference_ms:.1f} "
-                        f"pipeline_ms={tongue_prediction.pipeline_ms:.1f} "
-                        f"dropped_frames={tongue_prediction.dropped_frames}", flush=True,
-                    )
-                    last_cheek_status = now
             if now - last_health_status >= 1.0:
                 health_now = time.perf_counter()
                 completed = (tongue_prediction.completed_frames if tongue_prediction is not None else
@@ -1200,7 +1168,6 @@ def main() -> int:
                     frame_age_ms=(health_now - payload_received_at) * 1000.0,
                     decode_ms=decode_ms, prediction=tongue_prediction,
                     tongue_enabled=bool(tongue_broadcaster is not None and tongue_broadcaster.enabled),
-                    cheek_enabled=bool(cheek_broadcaster is not None and cheek_broadcaster.enabled),
                     pupil_result=pupil_result, pupil_enabled=pupil_worker is not None,
                     pupil_seen=pupil_seen, now=health_now,
                 ), flush=True)
@@ -1328,23 +1295,19 @@ def main() -> int:
                     ),
                 )
             if tongue_still_session is not None:
-                cheek_card = arguments.cheek_still_calibration or getattr(
-                    tongue_still_session, "is_cheek_card", False)
-                labels_ready_now = cheek_card or bool(
+                labels_ready_now = bool(
                     label_recorder is not None
                     and label_recorder.manual_tongue_reference_ready()
                 )
-                if (cheek_card, labels_ready_now) != manual_reference_reported:
+                if labels_ready_now != manual_reference_reported:
                     print(
-                        "LABEL_PREFLIGHT_OK mode=cheek-stills source=pose-cards native_labels=not_required"
-                        if cheek_card else
                         "LABEL_PREFLIGHT_OK mode=manual-stills packets=fresh; "
                         "pose cards provide tongue targets"
                         if labels_ready_now else
                         "LABEL_PREFLIGHT_WAITING mode=manual-stills; "
                         "start the selected tracking app, SteamVR, and VRCFaceTracking"
                     )
-                    manual_reference_reported = (cheek_card, labels_ready_now)
+                    manual_reference_reported = labels_ready_now
                 for calibration_key in shared.take_calibration_keys():
                     if calibration_key == " " and not labels_ready_now:
                         action = "not_ready"
@@ -1402,9 +1365,6 @@ def main() -> int:
                 )
         if tongue_inference_worker is not None:
             tongue_inference_worker.close()
-        if cheek_broadcaster is not None:
-            cheek_broadcaster.close()
-            print("EXPERIMENTAL_CHEEK_CAMERA_OUTPUT_OFF native=restored", flush=True)
         if tongue_broadcaster is not None:
             tongue_broadcaster.close()
             print("EXPERIMENTAL_TONGUE_OUTPUT_OFF stock=restored")
@@ -1423,7 +1383,7 @@ def main() -> int:
         if tongue_still_session is not None:
             tongue_still_session.finish(completed=calibration_completed)
             state = "complete" if calibration_completed else "stopped early but recoverable"
-            print(f"Manual lower-face session {state}: {tongue_still_session.path}")
+            print(f"Manual tongue session {state}: {tongue_still_session.path}")
         if capture_writer is not None:
             capture_writer.close(completed=capture_completed)
             state = "complete" if capture_completed else "recoverable but incomplete"

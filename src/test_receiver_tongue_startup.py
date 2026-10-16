@@ -12,7 +12,6 @@ from unittest import mock
 import receiver
 import tongue_model_preview
 import torch
-from cheek_still_capture import CHEEK_STILL_PROMPTS, LOWER_FACE_REFINEMENT_PROMPTS, LOWER_FACE_STILL_PROMPTS
 from tongue_still_capture import (
     TONGUE_ARC_PROMPTS, TONGUE_CORRECTION_PROMPTS, TONGUE_REFINEMENT_PROMPTS,
     TONGUE_STILL_PROMPTS, TongueStillCaptureSession,
@@ -78,32 +77,40 @@ class ReceiverTongueStartupTests(unittest.TestCase):
             self.assertEqual(journal["samples"], [])
             return journal
 
-    def test_quick_and_full_capture_route_to_combined_lower_face_curricula(self):
+    def test_quick_and_full_capture_use_only_tongue_curricula(self):
         cases = (
-            ("--tongue-refinement-calibration", "lower-face-refinement-v1",
-             TONGUE_REFINEMENT_PROMPTS, LOWER_FACE_REFINEMENT_PROMPTS),
-            ("--tongue-still-calibration", "lower-face-stills-v1",
-             TONGUE_STILL_PROMPTS, LOWER_FACE_STILL_PROMPTS),
+            ("--tongue-refinement-calibration", "tongue-stereo-refinement-v2", TONGUE_REFINEMENT_PROMPTS, 16),
+            ("--tongue-still-calibration", "tongue-stereo-stills-v1", TONGUE_STILL_PROMPTS, 58),
         )
-        for flag, session_type, prefix, expected in cases:
+        for flag, session_type, expected, count in cases:
             with self.subTest(flag=flag):
                 journal = self.capture_startup_journal(flag)
                 self.assertEqual(journal["sessionType"], session_type)
                 self.assertEqual(journal["prompts"], [asdict(card) for card in expected])
-                self.assertEqual(journal["prompts"][:len(prefix)], [asdict(card) for card in prefix])
-                self.assertEqual(journal["prompts"][len(prefix):], [asdict(card) for card in CHEEK_STILL_PROMPTS])
+                self.assertEqual(len(journal["prompts"]), count)
+                self.assertFalse(any("cheekPuffLeft" in card["targets"] for card in journal["prompts"]))
 
-    def test_correction_arc_and_standalone_cheek_keep_their_existing_curricula(self):
+    def test_correction_and_arc_keep_their_existing_curricula(self):
         cases = (
             ("--tongue-correction-calibration", "tongue-stereo-corrections-v1", TONGUE_CORRECTION_PROMPTS),
             ("--tongue-arc-calibration", "tongue-stereo-arc-v3", TONGUE_ARC_PROMPTS),
-            ("--cheek-still-calibration", "cheek-stereo-stills-v1", CHEEK_STILL_PROMPTS),
         )
         for flag, session_type, prompts in cases:
             with self.subTest(flag=flag):
                 journal = self.capture_startup_journal(flag)
                 self.assertEqual(journal["sessionType"], session_type)
                 self.assertEqual(journal["prompts"], [asdict(card) for card in prompts])
+
+    def test_removed_camera_cheek_options_are_rejected_before_startup(self):
+        for option in ("--cheek-output", "--cheek-still-calibration"):
+            with self.subTest(option=option), mock.patch.object(sys, "argv", ["receiver.py", option]), \
+                    mock.patch.object(receiver, "start_mjpeg_server") as server, \
+                    mock.patch.object(receiver.cv2, "setNumThreads"), \
+                    mock.patch.object(sys, "stderr", io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    receiver.main()
+                self.assertEqual(error.exception.code, 2)
+                server.assert_not_called()
 
     def test_stream_gap_stats_separates_headset_and_pc_receive_pauses(self):
         stats = receiver.StreamGapStats(

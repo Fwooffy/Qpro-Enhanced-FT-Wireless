@@ -8,6 +8,8 @@ import torch
 from tongue_image_processing import preprocess_stereo_images
 from tongue_model_preview import LiveTongueModelPreview
 from tongue_calibration import TONGUE_TARGET_NAMES
+from lower_face_training import tongue_parent
+from train_tongue_model import FrozenTongueCheekModel
 
 
 class _RecordingModel(torch.nn.Module):
@@ -75,6 +77,23 @@ class TongueModelPreviewInputTests(unittest.TestCase):
             ).astype(np.float32) / 255.0
         self.assertEqual(preview.input_preprocessing, "raw-v1")
         np.testing.assert_array_equal(models[0].inputs[0].numpy(), original)
+
+    def test_input_allocation_changes_preserve_strided_camera_pixels(self):
+        preview, _models = self.load_preview(self.checkpoint())
+        rng = np.random.default_rng(977)
+        full_strip = rng.integers(0, 256, (400, 2000), dtype=np.uint8)
+        strip = full_strip[:, 800:1600]
+        original = full_strip.copy()
+        for size in (32, 64, 128, 160, 224):
+            for mode in ("raw-v1", "clahe-v1"):
+                with self.subTest(size=size, mode=mode):
+                    resized = np.stack([cv2.resize(strip[:, view * 400:(view + 1) * 400],
+                                                   (size, size), interpolation=cv2.INTER_AREA)
+                                        for view in range(2)])
+                    expected = preprocess_stereo_images(resized, mode).astype(np.float32)[None] / 255.0
+                    actual = preview._inputs(strip, size, mode).numpy()
+                    np.testing.assert_array_equal(actual, expected)
+        np.testing.assert_array_equal(full_strip, original)
 
     def test_each_branch_uses_its_own_preprocessing_contract(self):
         for gate_mode, direction_mode in (("raw-v1", "clahe-v1"), ("clahe-v1", "raw-v1")):
@@ -153,7 +172,7 @@ class _SequenceModel(torch.nn.Module):
         return torch.tensor([next(self.rows)], device=inputs.device)
 
 
-class CombinedTongueCheekPreviewTests(unittest.TestCase):
+class LegacyCombinedTonguePreviewTests(unittest.TestCase):
     tongue_names = list(TONGUE_TARGET_NAMES)
     combined_names = tongue_names + ["cheekPuffLeft", "cheekPuffRight"]
 
@@ -161,9 +180,13 @@ class CombinedTongueCheekPreviewTests(unittest.TestCase):
         names = self.combined_names if direction_names is None else direction_names
         checkpoints = [
             {"targetNames": self.tongue_names, "imageSize": 32, "modelState": {}},
-            {"targetNames": names, "imageSize": 32, "modelState": {}},
+            {"targetNames": names, "imageSize": 32,
+             "architecture": "cheek-augmented-spatial-stereo-resnet-v2",
+             "baseArchitecture": "spatial-stereo-resnet-v2",
+             "modelState": {"parent.fixture": torch.zeros(1)}},
         ]
-        models = [_SequenceModel(gate_rows), _SequenceModel(direction_rows)]
+        models = [_SequenceModel(gate_rows), _SequenceModel([row[:len(self.tongue_names)] for row in direction_rows])]
+        models[1].register_buffer("fixture", torch.zeros(1))
         with (
             mock.patch("tongue_model_preview.torch.load", side_effect=checkpoints),
             mock.patch("tongue_model_preview.create_model", side_effect=models),
@@ -181,18 +204,44 @@ class CombinedTongueCheekPreviewTests(unittest.TestCase):
             row[self.tongue_names.index(name)] = value
         return row.tolist() + ([] if cheeks is None else list(cheeks))
 
-    def test_ten_head_visibility_gate_and_twelve_head_direction_route_separately(self):
+    def test_real_legacy_checkpoint_uses_exact_parent_without_running_cheek_head(self):
+        legacy = FrozenTongueCheekModel("legacy-late-fusion-v1", self.combined_names)
+        checkpoint = {
+            "architecture": "cheek-augmented-legacy-late-fusion-v1",
+            "baseArchitecture": "legacy-late-fusion-v1", "targetNames": self.combined_names,
+            "imageSize": 32, "modelState": legacy.state_dict(),
+        }
+        parent = tongue_parent(checkpoint)
+        with (
+            mock.patch("tongue_model_preview.load_model_checkpoint", side_effect=[checkpoint, parent]),
+            mock.patch("tongue_model_preview.validated_torch_device_name", return_value="cpu"),
+            mock.patch.object(FrozenTongueCheekModel, "cheeks_from_features",
+                              side_effect=AssertionError("Camera cheek head must not run")),
+        ):
+            old_preview = LiveTongueModelPreview("old.pt", device_name="cpu", smoothing=1, visibility_mode="camera")
+            parent_preview = LiveTongueModelPreview("parent.pt", device_name="cpu", smoothing=1, visibility_mode="camera")
+            strip = np.full((400, 800), 80, np.uint8)
+            actual = old_preview.predict(strip, None, [])
+            expected = parent_preview.predict(strip, None, [])
+        np.testing.assert_array_equal(actual.values, expected.values)
+        self.assertEqual(actual.visible, expected.visible)
+        self.assertEqual(actual.fused_visibility, expected.fused_visibility)
+        self.assertEqual(old_preview.target_names, self.tongue_names)
+        self.assertFalse(any(isinstance(module, FrozenTongueCheekModel)
+                             for module in old_preview.model.modules()))
+
+    def test_old_combined_direction_uses_only_original_tongue_targets(self):
         preview = self.load_preview(
             [self.row(visibility=0.9, extension=0.1)],
             [self.row(visibility=0.0, extension=0.7, cheeks=(0.25, 0.75))],
         )
         prediction = preview.predict(np.zeros((400, 800), np.uint8), None, [])
-        self.assertEqual(preview.target_names, self.combined_names)
-        self.assertEqual(prediction.values.shape, (12,))
+        self.assertEqual(preview.target_names, self.tongue_names)
+        self.assertEqual(prediction.values.shape, (10,))
         self.assertTrue(prediction.visible)
         self.assertAlmostEqual(prediction.values[self.tongue_names.index("visibility")], 0.9)
         self.assertAlmostEqual(prediction.values[self.tongue_names.index("extension")], 0.7)
-        np.testing.assert_allclose(prediction.values[-2:], [0.25, 0.75])
+        self.assertNotIn("cheekPuffLeft", preview.target_names)
 
     def test_mismatched_or_reordered_combined_schema_is_rejected(self):
         for names in (
@@ -200,10 +249,10 @@ class CombinedTongueCheekPreviewTests(unittest.TestCase):
             self.tongue_names + ["cheekPuffRight", "cheekPuffLeft"],
             self.combined_names[1:] + self.combined_names[:1],
         ):
-            with self.subTest(names=names), self.assertRaisesRegex(ValueError, "different target schemas"):
+            with self.subTest(names=names), self.assertRaises(ValueError):
                 self.load_preview([], [], names)
 
-    def test_tongue_visibility_hold_does_not_hold_cheek_strengths(self):
+    def test_old_combined_cheek_values_do_not_change_tongue_visibility_hold(self):
         preview = self.load_preview(
             [self.row(visibility=0.9), self.row(visibility=0), self.row(visibility=0)],
             [self.row(cheeks=(0.25, 0.75)),
@@ -217,13 +266,13 @@ class CombinedTongueCheekPreviewTests(unittest.TestCase):
             held = preview.predict(strip, None, [])
         self.assertTrue(held.visible)
         np.testing.assert_array_equal(held.values[:10], first.values[:10])
-        np.testing.assert_allclose(held.values[-2:], [0.8, 0.1])
+        self.assertEqual(held.values.shape, (10,))
         with mock.patch("tongue_model_preview.time.perf_counter", return_value=1.4):
             hidden = preview.predict(strip, None, [])
         self.assertFalse(hidden.visible)
-        np.testing.assert_allclose(hidden.values[-2:], [0.2, 0.9])
+        self.assertEqual(hidden.values.shape, (10,))
 
-    def test_combined_preview_keeps_both_cheek_bars_and_footer_visible(self):
+    def test_legacy_combined_preview_shows_only_tongue_bars(self):
         preview = self.load_preview(
             [self.row()], [self.row(cheeks=(0.25, 0.75))],
         )
@@ -231,19 +280,20 @@ class CombinedTongueCheekPreviewTests(unittest.TestCase):
         with mock.patch("tongue_model_preview.cv2.putText", wraps=cv2.putText) as put_text:
             image = preview.render(prediction)
         labels = {call.args[1]: call for call in put_text.call_args_list}
-        for name in ("cheekPuffLeft", "cheekPuffRight"):
+        self.assertNotIn("cheekPuffLeft", labels)
+        self.assertNotIn("cheekPuffRight", labels)
+        for name in self.tongue_names:
             call = labels[name]
             x, baseline = call.args[2]
             self.assertLess(baseline, image.shape[0])
             self.assertTrue(np.any(image[baseline - 20:baseline + 1, x:x + 200]))
-        last_baseline = labels["cheekPuffRight"].args[2][1]
+        last_baseline = labels[self.tongue_names[-1]].args[2][1]
         footer = next(call for text, call in labels.items() if text.startswith("T toggles"))
         (width, text_height), descent = cv2.getTextSize(
             footer.args[1], footer.args[3], footer.args[4], footer.args[6],
         )
         footer_x, footer_baseline = footer.args[2]
-        # There must be real image space between the last expression's bar
-        # and the footer, rather than drawing the footer over the cheek row.
+        # Keep the footer clear of the last tongue expression.
         footer_top = footer_baseline - text_height
         self.assertGreater(footer_top, last_baseline + 16)
         self.assertLess(footer_baseline + descent, image.shape[0])

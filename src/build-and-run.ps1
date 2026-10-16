@@ -31,13 +31,11 @@ param(
     [switch]$TongueCorrectionCalibration,
     [switch]$TongueRefinementCalibration,
     [switch]$TongueArcCalibration,
-    [switch]$CheekStillCalibration,
     [switch]$ModelPreview,
     [string]$ModelPath = ".\models\qpro-five-camera-pilot.pt",
     [string]$ModelDevice = "auto",
     [switch]$TonguePreview,
     [switch]$EnableTongueOutput,
-    [switch]$EnableCheekOutput,
     [switch]$PupilOutput,
     [ValidateRange(1.0, 3.0)]
     [double]$PupilSensitivity = 1.4,
@@ -185,7 +183,7 @@ if ($needsNativeBuild) {
 
 Push-Location $PSScriptRoot
 try {
-    Write-Host "QproFaceTracking launcher v2.35 (stream port $StreamPort)"
+    Write-Host "Qpro Companion launcher v2.35 (stream port $StreamPort)"
     $sourceConfig = Join-Path $env:LOCALAPPDATA "QproFaceTracking\config\tracking-source.txt"
     $savedSource = if (Test-Path -LiteralPath $sourceConfig -PathType Leaf) {
         (Get-Content -LiteralPath $sourceConfig -Raw).Trim().ToLowerInvariant()
@@ -217,7 +215,7 @@ try {
     }
 
     if ($TongueCalibration) { $CameraMode = "face" }
-    if ($TongueStillCalibration -or $TongueCorrectionCalibration -or $TongueRefinementCalibration -or $TongueArcCalibration -or $CheekStillCalibration) {
+    if ($TongueStillCalibration -or $TongueCorrectionCalibration -or $TongueRefinementCalibration -or $TongueArcCalibration) {
         # Guided stills train on cameras 2 and 3 only. The third face panel
         # adds 50% more wireless data without contributing to tongue targets.
         $CameraMode = "mouth"
@@ -234,7 +232,7 @@ try {
         throw "Pupil output needs both eye cameras. Use -CameraMode eyes or all."
     }
 
-    $recordEnabled = $Record -or $Calibration -or $TongueCalibration -or $TongueStillCalibration -or $TongueCorrectionCalibration -or $TongueRefinementCalibration -or $TongueArcCalibration -or $CheekStillCalibration -or -not [string]::IsNullOrWhiteSpace($RecordPath)
+    $recordEnabled = $Record -or $Calibration -or $TongueCalibration -or $TongueStillCalibration -or $TongueCorrectionCalibration -or $TongueRefinementCalibration -or $TongueArcCalibration -or -not [string]::IsNullOrWhiteSpace($RecordPath)
     $labelsEnabled = ($recordEnabled -or $ModelPreview -or $TonguePreview -or $EyeCalibration -or $HybridPreview) -and -not $NoLabels
     $vrcftRequired = $Calibration -or $TongueCalibration -or $TongueStillCalibration -or $TongueCorrectionCalibration -or $TongueRefinementCalibration -or $TongueArcCalibration -or $ModelPreview -or $TonguePreview -or $PupilOutput -or $EyeCalibration -or $HybridPreview
     if ($TrackingSource -eq "SteamLink" -and $labelsEnabled) {
@@ -294,13 +292,6 @@ try {
     if ($TongueArcCalibration -and ($Calibration -or $TongueCalibration -or $TongueStillCalibration -or $TongueCorrectionCalibration -or $TongueRefinementCalibration -or $ModelPreview -or $TonguePreview -or $OpenSourcePreview -or $HybridPreview -or $EyeCalibration)) {
         throw "Run TongueArcCalibration by itself."
     }
-    if ($CheekStillCalibration -and ($NoWindow -or $RecordSeconds -gt 0)) {
-        throw "CheekStillCalibration requires the visible prompt window and controls its own capture."
-    }
-    if ($CheekStillCalibration -and ($Calibration -or $TongueCalibration -or $TongueStillCalibration -or $TongueCorrectionCalibration -or $TongueRefinementCalibration -or $TongueArcCalibration -or $TonguePreview -or $ModelPreview -or $PupilOutput -or $OpenSourcePreview -or $HybridPreview -or $EyeCalibration)) {
-        throw "Run CheekStillCalibration by itself."
-    }
-    if ($EnableCheekOutput -and -not $TonguePreview) { throw "EnableCheekOutput requires the selected tongue-and-cheek camera model." }
     if ($ModelPreview -and $CameraMode -ne "all") { throw "ModelPreview requires -CameraMode all (the default)." }
     if ($ModelPreview -and $NoWindow) { throw "ModelPreview requires visible comparison windows." }
     if ($ModelPreview -and $NoLabels) { throw "ModelPreview requires factory labels from the selected tracking source." }
@@ -546,7 +537,6 @@ try {
         if ($TongueCorrectionCalibration) { $receiverArguments += "--tongue-correction-calibration" }
         if ($TongueRefinementCalibration) { $receiverArguments += "--tongue-refinement-calibration" }
         if ($TongueArcCalibration) { $receiverArguments += "--tongue-arc-calibration" }
-        if ($CheekStillCalibration) { $receiverArguments += "--cheek-still-calibration" }
     }
     if ($ModelPreview) {
         $resolvedModelPath = (Resolve-Path -LiteralPath $ModelPath).Path
@@ -566,7 +556,6 @@ try {
             $receiverArguments += @("--tongue-direction-model", $resolvedTongueDirectionModelPath)
         }
         if ($EnableTongueOutput) { $receiverArguments += "--tongue-output" }
-        if ($EnableCheekOutput) { $receiverArguments += "--cheek-output" }
     }
     if ($PupilOutput) {
         $receiverArguments += @("--pupil-output", "--pupil-sensitivity", $PupilSensitivity.ToString('0.0', [System.Globalization.CultureInfo]::InvariantCulture))

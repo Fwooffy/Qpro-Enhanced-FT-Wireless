@@ -111,22 +111,27 @@ try {
             $direction = Join-Path $_.DirectoryName "qpro-stereo-tongue-v$v-direction.pt"
             if (Test-Path -LiteralPath $direction) {
                 $experimental = $false
+                $bundledDeveloper = $false
                 $metadataPath = Join-Path $_.DirectoryName "qpro-stereo-tongue-v$v.metadata.json"
                 if (Test-Path -LiteralPath $metadataPath) {
                     $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
                     $experimental = $metadata.isExperimental -eq $true -or $metadata.modelKind -eq 'mustachio-experimental'
+                    $bundledDeveloper = $metadata.bundledDeveloperModel -eq $true -and
+                        $metadata.origin -eq 'bundled developer model' -and
+                        $metadata.modelKind -in @('developer-tongue', 'developer-lower-face')
                 }
-                [pscustomobject]@{ Version=$v; Gate=$_.FullName; Direction=$direction; Experimental=$experimental }
+                [pscustomobject]@{ Version=$v; Gate=$_.FullName; Direction=$direction; Experimental=$experimental; BundledDeveloper=$bundledDeveloper }
             }
         }
     } | Sort-Object Version -Descending)
     if (-not $pairs.Count) { throw "No paired base tongue model was found." }
-    # A bundled experiment must never silently become the automatic parent.
-    # The Hub passes its explicitly selected model, including Mustachio.
+    # The Hub passes its selected parent. When this helper is run directly,
+    # allow the release's Developer model but require explicit selection for
+    # optional experiments such as Mustachio.
     $base = if ($BaseVersion -gt 0) {
         $pairs | Where-Object Version -eq $BaseVersion | Select-Object -First 1
     } else {
-        $pairs | Where-Object { -not $_.Experimental } | Select-Object -First 1
+        $pairs | Where-Object { -not $_.Experimental -or $_.BundledDeveloper } | Select-Object -First 1
     }
     if ($null -eq $base) { throw 'The selected refinement base is missing, or no ordinary base model is available.' }
     Write-Host "Refinement base: tongue model v$($base.Version)"
@@ -184,20 +189,15 @@ try {
     Write-Host "TRAIN_DEVICE device=$device batch=$effectiveBatchSize"
     if ($device -eq "cpu") { Write-Warning "CUDA is unavailable. CPU fallback is active; training can take substantially longer. NVIDIA users should rerun PC runtime setup after installing the current NVIDIA driver." }
 
-    $totalStages = if ($sessionMetadata.sessionType -eq 'lower-face-refinement-v1') { 3 } else { 2 }
+    $totalStages = 2
     Write-Host "TRAIN_STAGE index=1 total=$totalStages name=visibility epochs=$Epochs device=$device"
     & $python .\train_tongue_model.py $gateCache --architecture spatial-stereo-resnet-v2 --checkpoint-focus visibility --initial-checkpoint $trainingGate --learning-rate 0.00005 --epochs $Epochs --batch-size $effectiveBatchSize --device $device --output $gateOutput
     if ($LASTEXITCODE -ne 0) { throw "Refining tongue visibility failed." }
     Write-Host "TRAIN_STAGE index=2 total=$totalStages name=direction epochs=$Epochs device=$device"
     & $python .\train_tongue_model.py $directionCache --architecture spatial-stereo-resnet-v2 --checkpoint-focus direction --initial-checkpoint $trainingDirection --learning-rate 0.00005 --epochs $Epochs --batch-size $effectiveBatchSize --device $device --output $directionOutput
     if ($LASTEXITCODE -ne 0) { throw "Refining tongue direction failed." }
-    if ($sessionMetadata.sessionType -eq 'lower-face-refinement-v1') {
-        Write-Host "TRAIN_STAGE index=3 total=3 name=cheeks device=$device"
-        & $python .\lower_face_training.py attach --session $latest.FullName --direction $directionOutput --root $trainingRunRoot --version $version --device $device
-        if ($LASTEXITCODE -ne 0) { throw 'Lower-face cheek training failed. Original parent model kept.' }
-    }
     & $python .\lower_face_training.py publish --staged-root $trainingRunRoot --root $PSScriptRoot --version $version
-    if ($LASTEXITCODE -ne 0) { throw 'Publishing the trained lower-face model failed. Original model kept.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Publishing the trained tongue model failed. Original model kept.' }
     Write-Host "MODEL_READY version=$version parent=$($base.Version)"
 }
 finally {

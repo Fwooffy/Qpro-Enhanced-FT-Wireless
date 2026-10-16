@@ -13,12 +13,12 @@ import cv2
 import numpy as np
 
 from capture_format import inspect_capture, scan_stereo_mouth_stills
-from cheek_still_capture import CHEEK_TARGET_NAMES, LOWER_FACE_SESSION_TYPES
+from legacy_lower_face_schema import CHEEK_TARGET_NAMES, LOWER_FACE_SESSION_TYPES
 from dataset_inspect import load_labels
 from label_capture import NATIVE_TONGUE_MAPPING, TRACKING_SOURCES, native_tongue_out
 from prepare_training import nearest_label_indices
 from prepare_tongue_training import FACE_HEIGHT
-from prepare_cheek_stills import validate_cheek_session
+from legacy_lower_face_schema import validate_cheek_session
 from tongue_calibration import TONGUE_TARGET_NAMES
 
 

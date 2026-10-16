@@ -84,27 +84,28 @@ class ReceiverPreviewTests(unittest.TestCase):
                                 dropped_frames=2, values=(5.0, 5.0))
         text = format_tracking_health(camera_fps=30.0, inference_fps=20.0,
             frame_age_ms=3.0, decode_ms=.01, prediction=prediction,
-            tongue_enabled=True, cheek_enabled=True, pupil_result=pupil,
+            tongue_enabled=True, pupil_result=pupil,
             pupil_enabled=True, now=10.0)
-        self.assertIn("tongue=stale cheek=valid pupil=valid", text)
+        self.assertIn("tongue=stale pupil=valid", text)
+        self.assertNotIn("cheek=", text)
         self.assertIn("pupil_age_ms=120.0", text)
         prediction.age_ms = 440.0
         text = format_tracking_health(camera_fps=30.0, inference_fps=0.0,
             frame_age_ms=3.0, decode_ms=.01, prediction=prediction,
-            tongue_enabled=True, cheek_enabled=True, pupil_result=pupil,
+            tongue_enabled=True, pupil_result=pupil,
             pupil_enabled=True, now=11.0)
-        self.assertIn("tongue=stale cheek=stale pupil=stale", text)
+        self.assertIn("tongue=stale pupil=stale", text)
 
     def test_health_neutral_pose_is_fresh_and_missing_results_are_explicit(self) -> None:
         prediction = SimpleNamespace(pipeline_ms=20.0, age_ms=10.0, visible=False)
         text = format_tracking_health(camera_fps=24.0, inference_fps=24.0,
             frame_age_ms=1.0, decode_ms=.01, prediction=prediction, tongue_enabled=True)
-        self.assertIn("tongue=hidden cheek=off pupil=off", text)
+        self.assertIn("tongue=hidden pupil=off", text)
         text = format_tracking_health(camera_fps=24.0, inference_fps=0.0,
             frame_age_ms=1.0, decode_ms=.01, tongue_enabled=True, pupil_enabled=True,
             pupil_seen=True)
         self.assertIn("inference_ms=-1.0", text)
-        self.assertIn("tongue=warming cheek=off pupil=stale", text)
+        self.assertIn("tongue=warming pupil=stale", text)
 
     def test_pupil_only_and_first_frame_health_keep_camera_metrics(self) -> None:
         pupil = SimpleNamespace(age_ms=13.0, completed_at=9.99, processing_ms=11.0,
@@ -114,14 +115,14 @@ class ReceiverPreviewTests(unittest.TestCase):
         self.assertEqual(text,
             "TRACKING_HEALTH camera_fps=30.0 inference_fps=28.0 frame_age_ms=0.2 "
             "decode_ms=0.004 preprocess_ms=-1.000 inference_ms=-1.0 transfer_ms=-1.000 "
-            "pipeline_ms=-1.0 result_age_ms=-1.0 dropped_frames=0 tongue=off cheek=off "
+            "pipeline_ms=-1.0 result_age_ms=-1.0 dropped_frames=0 tongue=off "
             "pupil=valid pupil_ms=11.0 pupil_age_ms=23.0 pupil_dropped_frames=1")
         text = format_tracking_health(camera_fps=30, inference_fps=0,
             frame_age_ms=.2, decode_ms=.004, pupil_enabled=True, now=10)
         self.assertEqual(text,
             "TRACKING_HEALTH camera_fps=30.0 inference_fps=0.0 frame_age_ms=0.2 "
             "decode_ms=0.004 preprocess_ms=-1.000 inference_ms=-1.0 transfer_ms=-1.000 "
-            "pipeline_ms=-1.0 result_age_ms=-1.0 dropped_frames=0 tongue=off cheek=off "
+            "pipeline_ms=-1.0 result_age_ms=-1.0 dropped_frames=0 tongue=off "
             "pupil=warming pupil_ms=-1.0 pupil_age_ms=-1.0 pupil_dropped_frames=0")
 
 

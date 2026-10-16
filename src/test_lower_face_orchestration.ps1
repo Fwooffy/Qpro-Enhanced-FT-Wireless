@@ -20,7 +20,7 @@ function ArgumentAfter([string]$flag) { return $Arguments[[Array]::IndexOf($Argu
 if ($Arguments[0] -eq '-c') {
     if ($Arguments[1] -match 'require_rocm_device_name') {
         if ($env:QPRO_TEST_GPU_FAIL -eq '1') { $global:LASTEXITCODE = 1; return }
-        Write-Output 'Cheek training GPU: cuda:1'; return
+        Write-Output 'Tongue training GPU: cuda:1'; return
     }
     if ($Arguments[1] -match 'print\(json.dumps') { Write-Output '[224,224]'; return }
     if ($Arguments[1] -match 'preferred_torch_device_name') { Write-Output 'cpu'; return }
@@ -34,15 +34,8 @@ if ($program -eq 'lower_face_training.py' -and $Arguments[1] -eq 'unwrap') {
 }
 if ($program -eq 'prepare_tongue_stills.py') { return }
 if ($program -eq 'train_tongue_model.py') {
-    [System.IO.File]::WriteAllText((ArgumentAfter '--output'), 'new tongue weights'); return
-}
-if ($program -eq 'lower_face_training.py' -and $Arguments[1] -eq 'attach') {
     if ($env:QPRO_TEST_TRAIN_FAIL -eq '1') { $global:LASTEXITCODE = 1; return }
-    $root = ArgumentAfter '--root'
-    $version = ArgumentAfter '--version'
-    if ([System.IO.Path]::GetFileName($root) -notlike 'lower-face-run-*') { throw 'Attach did not use private staging.' }
-    [System.IO.File]::WriteAllText((Join-Path $root "models\qpro-stereo-tongue-v$version.metadata.json"), '{"hasCameraCheeks":true}')
-    return
+    [System.IO.File]::WriteAllText((ArgumentAfter '--output'), 'new tongue weights'); return
 }
 if ($program -eq 'lower_face_training.py' -and $Arguments[1] -eq 'publish') {
     $root = ArgumentAfter '--root'
@@ -54,19 +47,17 @@ if ($program -eq 'lower_face_training.py' -and $Arguments[1] -eq 'publish') {
     }
     return
 }
-if ($program -eq 'train_cheek_pair.py') {
-    if ($env:QPRO_TEST_TRAIN_FAIL -eq '1') { $global:LASTEXITCODE = 1 }
-    return
-}
 throw ('Unexpected mock command: ' + ($Arguments -join ' '))
 '@
 try {
     foreach ($case in @(
-        @{Name='full-combined'; Script='train-latest-tongue-stills.ps1'; Type='lower-face-stills-v1'; Fail=$false; GpuFail=$false; Attach=$true},
-        @{Name='quick-combined-cpu'; Script='train-latest-tongue-refinement.ps1'; Type='lower-face-refinement-v1'; Fail=$false; GpuFail=$true; Attach=$true},
-        @{Name='full-rollback'; Script='train-latest-tongue-stills.ps1'; Type='lower-face-stills-v1'; Fail=$true; GpuFail=$false; Attach=$true},
-        @{Name='quick-legacy'; Script='train-latest-tongue-refinement.ps1'; Type='tongue-stereo-refinement-v2'; Fail=$false; GpuFail=$true; Attach=$false},
-        @{Name='cheeks-cpu-failure'; Script='train-latest-cheeks.ps1'; Type='cheek-stereo-stills-v1'; Fail=$true; GpuFail=$true; Attach=$false}
+        @{Name='full-combined'; Script='train-latest-tongue-stills.ps1'; Type='lower-face-stills-v1'; Fail=$false; GpuFail=$false},
+        @{Name='quick-combined-cpu'; Script='train-latest-tongue-refinement.ps1'; Type='lower-face-refinement-v1'; Fail=$false; GpuFail=$true},
+        @{Name='full-rollback'; Script='train-latest-tongue-stills.ps1'; Type='lower-face-stills-v1'; Fail=$true; GpuFail=$false},
+        @{Name='full-tongue'; Script='train-latest-tongue-stills.ps1'; Type='tongue-stereo-stills-v1'; Fail=$false; GpuFail=$false},
+        @{Name='quick-legacy'; Script='train-latest-tongue-refinement.ps1'; Type='tongue-stereo-refinement-v2'; Fail=$false; GpuFail=$true},
+        @{Name='quick-developer'; Script='train-latest-tongue-refinement.ps1'; Type='tongue-stereo-refinement-v2'; Fail=$false; GpuFail=$true; Kind='developer-tongue'},
+        @{Name='quick-mustachio'; Script='train-latest-tongue-refinement.ps1'; Type='tongue-stereo-refinement-v2'; Fail=$true; GpuFail=$true; Kind='mustachio-experimental'}
     )) {
         $root = Join-Path $fixtureBase $case.Name
         New-Item -ItemType Directory -Path (Join-Path $root 'models') -Force | Out-Null
@@ -85,6 +76,11 @@ function Get-QproRocmCandidates([string]$Root) {
         @{sessionType=$case.Type; completed=$true} | ConvertTo-Json | Set-Content -LiteralPath $session
         Set-Content -LiteralPath ($session -replace '\.qpsession\.json$', '.qpcap') -Value 'private fixture'
         foreach ($branch in @('gate','direction')) { Set-Content -LiteralPath (Join-Path $root "models\qpro-stereo-tongue-v1-$branch.pt") -Value 'keep original' }
+        if ($case.Kind) {
+            @{isExperimental=$true; modelKind=$case.Kind; origin='bundled developer model';
+                bundledDeveloperModel=($case.Kind -eq 'developer-tongue')} | ConvertTo-Json |
+                Set-Content -LiteralPath (Join-Path $root 'models\qpro-stereo-tongue-v1.metadata.json')
+        }
         foreach ($name in $environmentNames[0..6]) { [Environment]::SetEnvironmentVariable($name,('saved-' + $name),'Process') }
         $env:QPRO_PYTHON = $python
         $env:QPRO_TEST_CALLS = Join-Path $root 'calls.jsonl'
@@ -92,9 +88,7 @@ function Get-QproRocmCandidates([string]$Root) {
         $env:QPRO_TEST_TRAIN_FAIL = if ($case.Fail) { '1' } else { '0' }
         $failed = $false
         try {
-            if ($case.Script -eq 'train-latest-cheeks.ps1') {
-                $output = @(& $script -SessionPath $session -BaseModelPath (Join-Path $root 'models\qpro-stereo-tongue-v1-direction.pt') -GateModelPath (Join-Path $root 'models\qpro-stereo-tongue-v1-gate.pt') -Version 2 -Epochs 1 6>&1)
-            } else { $output = @(& $script -SessionPath $session -Epochs 1 6>&1) }
+            $output = @(& $script -SessionPath $session -Epochs 1 6>&1)
         } catch { $failed = $true }
         Check ($failed -eq $case.Fail) ($case.Name + ': unexpected success/failure')
         foreach ($name in $environmentNames[0..6]) {
@@ -106,14 +100,16 @@ function Get-QproRocmCandidates([string]$Root) {
         $commands = @(Get-Content -LiteralPath $env:QPRO_TEST_CALLS | ForEach-Object { ConvertFrom-Json -InputObject $_ })
         $attach = @($commands | Where-Object { $_ -contains 'attach' })
         $publish = @($commands | Where-Object { $_ -contains 'publish' })
-        if ($case.Attach) { Check ($attach.Count -eq 1) ($case.Name + ': missing cheek stage') }
+        Check ($attach.Count -eq 0) ($case.Name + ': removed cheek trainer was called')
+        $train = @($commands | Where-Object { $_[0] -eq '.\train_tongue_model.py' })
         if ($case.Fail) {
             Check ($publish.Count -eq 0) ($case.Name + ': failed model was published')
             Check (@(Get-ChildItem -LiteralPath (Join-Path $root 'models') -Filter 'qpro-stereo-tongue-v2*').Count -eq 0) ($case.Name + ': failed model left visible files')
         } else {
+            Check ($train.Count -eq 2) ($case.Name + ': expected visibility and direction stages')
+            Check ((@($train | Where-Object { $_ -contains '--initial-checkpoint' }).Count -eq 2) -eq ($case.Script -eq 'train-latest-tongue-refinement.ps1')) ($case.Name + ': selected-parent versus scratch training changed')
             Check ($publish.Count -eq 1) ($case.Name + ': complete model was not published')
             Check (($output -join "`n") -match 'MODEL_READY version=2') ($case.Name + ': no final readiness message')
-            if (-not $case.Attach) { Check ($attach.Count -eq 0) ($case.Name + ': legacy dataset incorrectly trained cheeks') }
         }
         if (Test-Path -LiteralPath (Join-Path $root 'training')) {
             Check (@(Get-ChildItem -LiteralPath (Join-Path $root 'training') -Directory).Count -eq 0) ($case.Name + ': private run directory not cleaned')

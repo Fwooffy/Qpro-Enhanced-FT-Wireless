@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import cv2
@@ -13,6 +14,7 @@ import torch
 import test_label_capture
 
 from capture_format import CaptureWriter, TRANSPORT_HEADER
+from legacy_lower_face_schema import CHEEK_TARGET_NAMES, LOWER_FACE_STILL_PROMPTS
 from developer_tongue_training import (
     ModelPair, _check_cache, _complete_curriculum, curriculum_issues, evaluate_pair,
     fresh_output_dir, load_manifest, promotion_gate, refinement_command,
@@ -27,6 +29,55 @@ from train_tongue_model import StereoTongueModel, parent_checkpoint_metadata
 
 
 class DeveloperTongueTrainingTests(unittest.TestCase):
+    @staticmethod
+    def make_lower_face_cache(root: Path) -> Path:
+        """Old combined captures still provide correctly masked tongue rows."""
+        import prepare_tongue_stills
+
+        capture = root / "lower-face.qpcap"
+        labels = capture.with_suffix(".qplabel.jsonl")
+        journal = capture.with_suffix(".qpsession.json")
+        cache = root / "lower-face-cache"
+        samples = []
+        records = [json.dumps({"type": "schema", "names": ["TongueOut"]})]
+        writer = CaptureWriter(capture)
+        try:
+            for step, card in enumerate(LOWER_FACE_STILL_PROMPTS):
+                # The extra excluded tongue still also requires a native label.
+                for repetition in range(card.minimum_captures + (step == 0)):
+                    frame = len(samples)
+                    timestamp = 1_000_000_000 + frame * 100_000_000
+                    pixel = 10 + frame % 200
+                    payload = bytes([pixel]) * (800 * 400)
+                    header = TRANSPORT_HEADER.pack(
+                        b"QPLIVE3\0", 3, TRANSPORT_HEADER.size, frame + 1, 2,
+                        800, 400, 800, 1, len(payload), 0x0C, 0,
+                    )
+                    writer.write(header, payload, timestamp, timestamp)
+                    samples.append({
+                        "frameIndex": frame, "promptIndex": step, "promptName": card.name,
+                        "excluded": step == 0 and repetition == 0,
+                        "targets": card.targets,
+                    })
+                    if step < len(TONGUE_STILL_PROMPTS):
+                        records.append(json.dumps({
+                            "type": "sample", "arrivalMonotonicNs": timestamp, "values": [0.5],
+                        }))
+        finally:
+            writer.close(completed=True)
+        labels.write_text("\n".join(records) + "\n", encoding="utf-8")
+        journal.write_text(json.dumps({
+            "sessionType": "lower-face-stills-v1", "completed": True,
+            "prompts": [asdict(card) for card in LOWER_FACE_STILL_PROMPTS],
+            "samples": samples, "skippedPrompts": [],
+        }), encoding="utf-8")
+        with mock.patch.object(sys, "argv", [
+            "prepare_tongue_stills.py", str(capture), "--output", str(cache), "--size", "128",
+        ]), mock.patch("builtins.print"):
+            if prepare_tongue_stills.main() != 0:
+                raise AssertionError("Current lower-face preparation failed")
+        return cache
+
     @staticmethod
     def make_cache(root: Path, name: str) -> Path:
         cache = root / f"{name}-cache"
@@ -97,6 +148,128 @@ class DeveloperTongueTrainingTests(unittest.TestCase):
         np.save(cache / "step_ids.npy", np.asarray([0] * 4 + [1] * 4, np.int16))
         np.save(cache / "trainable.npy", np.ones(8, np.bool_))
         return cache
+
+    def test_current_lower_face_cache_checks_source_and_separates_cheeks(self):
+        import developer_tongue_training
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache = self.make_lower_face_cache(root)
+            metadata, names, selected, hashes = _check_cache(cache)
+            self.assertEqual(len(names), 79)
+            self.assertEqual(selected, sum(card.minimum_captures for card in TONGUE_STILL_PROMPTS))
+            self.assertTrue(_complete_curriculum(cache, metadata))
+            self.assertTrue({"cheek_targets", "cheek_trainable"} <= set(hashes))
+            steps = np.load(cache / "step_ids.npy")
+            first_cheek = int(np.flatnonzero(steps == len(TONGUE_STILL_PROMPTS))[0])
+            trainable = np.load(cache / "trainable.npy")
+            self.assertFalse(trainable[0])
+            self.assertFalse(np.any(trainable[first_cheek:]))
+            self.assertTrue(np.all(np.load(cache / "native_tongue_out.npy")[first_cheek:] == 0))
+
+            # Rebuilding the parent's image size retains separate cheek provenance.
+            rebuilt = root / "rebuilt"
+            rebuild_training_cache_from_raw(cache, rebuilt, 192)
+            rebuilt_metadata, _, rebuilt_selected, rebuilt_hashes = _check_cache(rebuilt)
+            self.assertEqual(rebuilt_metadata["imageSize"], 192)
+            self.assertEqual(rebuilt_selected, selected)
+            for key in ("cheek_targets", "cheek_trainable"):
+                self.assertEqual(rebuilt_hashes[key], hashes[key])
+
+            mutations = (
+                ("trainable", first_cheek, True, "Excluded-frame flag"),
+                ("trainable", 0, True, "Excluded-frame flag"),
+                ("cheek_trainable", 0, True, "cheek labels or mask"),
+                ("cheek_targets", (first_cheek, 0), 0.123, "cheek labels or mask"),
+                ("native_tongue_out", first_cheek, 0.5, "Prepared native label"),
+                ("images", (first_cheek, 0, 0, 0), 255, "Prepared image"),
+            )
+            for array_name, index, value, message in mutations:
+                with self.subTest(array=array_name, index=index):
+                    path = cache / f"{array_name}.npy"
+                    original = np.load(path)
+                    altered = original.copy()
+                    altered[index] = value
+                    np.save(path, altered)
+                    with self.assertRaisesRegex(ValueError, message):
+                        _check_cache(cache)
+                    np.save(path, original)
+
+            # An excluded tongue row must still align with the native stream.
+            labels = root / "lower-face.qplabel.jsonl"
+            original_labels = labels.read_text(encoding="utf-8")
+            records = [json.loads(line) for line in original_labels.splitlines()]
+            records[1]["arrivalMonotonicNs"] += 50_000_000
+            labels.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "alignment exceeds 35 ms"):
+                _check_cache(cache)
+            labels.write_text(original_labels, encoding="utf-8")
+
+            with mock.patch.object(developer_tongue_training, "inspect_capture", return_value={
+                "completed": False, "truncated": False,
+            }):
+                with self.assertRaisesRegex(ValueError, "recording is incomplete"):
+                    _check_cache(cache)
+
+    def test_current_full_curriculum_requires_all_tongue_and_cheek_cards(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory)
+            journal = cache / "session.json"
+            samples = []
+            for step, card in enumerate(LOWER_FACE_STILL_PROMPTS):
+                for _ in range(card.minimum_captures):
+                    samples.append({
+                        "frameIndex": len(samples), "promptIndex": step, "promptName": card.name,
+                        "targets": card.targets, "excluded": False,
+                    })
+            steps = np.asarray([item["promptIndex"] for item in samples], dtype=np.int16)
+            trainable = steps < len(TONGUE_STILL_PROMPTS)
+            np.save(cache / "step_ids.npy", steps)
+            np.save(cache / "trainable.npy", trainable)
+            original = {
+                "sessionType": "lower-face-stills-v1", "completed": True,
+                "prompts": [asdict(card) for card in LOWER_FACE_STILL_PROMPTS],
+                "samples": samples, "skippedPrompts": [],
+            }
+            metadata = {"sessionType": "lower-face-stills-v1", "session": str(journal)}
+            journal.write_text(json.dumps(original), encoding="utf-8")
+            self.assertTrue(_complete_curriculum(cache, metadata))
+            for step in (0, 58, 78):
+                with self.subTest(skipped=step):
+                    payload = copy.deepcopy(original)
+                    payload["skippedPrompts"] = [step]
+                    journal.write_text(json.dumps(payload), encoding="utf-8")
+                    self.assertFalse(_complete_curriculum(cache, metadata))
+                with self.subTest(insufficient=step):
+                    payload = copy.deepcopy(original)
+                    first = int(np.flatnonzero(steps == step)[0])
+                    payload["samples"][first]["excluded"] = True
+                    flags = trainable.copy()
+                    flags[first] = False
+                    np.save(cache / "trainable.npy", flags)
+                    journal.write_text(json.dumps(payload), encoding="utf-8")
+                    self.assertFalse(_complete_curriculum(cache, metadata))
+                    np.save(cache / "trainable.npy", trainable)
+            payload = copy.deepcopy(original)
+            payload["prompts"] = payload["prompts"][:58]
+            journal.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertFalse(_complete_curriculum(cache, metadata))
+            payload = copy.deepcopy(original)
+            payload["samples"][-1]["targets"][CHEEK_TARGET_NAMES[0]] = 0.123
+            journal.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertFalse(_complete_curriculum(cache, metadata))
+
+    def test_curriculum_gate_accepts_current_or_legacy_full_but_still_requires_focused(self):
+        sessions = [
+            SimpleNamespace(role=role, metadata={"sessionType": kind}, complete_curriculum=True)
+            for role, full in (("train", "lower-face-stills-v1"), ("holdout", "tongue-stereo-stills-v1"))
+            for kind in (full, "tongue-stereo-arc-v3")
+        ]
+        self.assertEqual(curriculum_issues(sessions), [])
+        sessions = [item for item in sessions if item.metadata["sessionType"] != "tongue-stereo-arc-v3"]
+        self.assertEqual(len(curriculum_issues(sessions)), 2)
+        sessions[0].metadata["sessionType"] = "lower-face-refinement-v1"
+        self.assertEqual(len(curriculum_issues(sessions)), 3)
 
     def test_source_dependent_scalar_integrity_preserves_raw_factory_values(self):
         for source, expected in (("VirtualDesktop", 0.15), ("SteamLink", 0.85), (None, 0.85)):

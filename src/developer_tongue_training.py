@@ -22,10 +22,12 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
-from capture_format import scan_stereo_mouth_stills
+from capture_format import inspect_capture, scan_stereo_mouth_stills
+from legacy_lower_face_schema import CHEEK_TARGET_NAMES, LOWER_FACE_STILL_PROMPTS
 from dataset_inspect import load_labels
 from label_capture import native_tongue_out, require_current_tongue_cache
 from prepare_training import nearest_label_indices
+from legacy_lower_face_schema import validate_cheek_session
 from prepare_tongue_training import FACE_HEIGHT
 from qpro_gpu import validated_torch_device_name
 from tongue_calibration import TONGUE_TARGET_NAMES
@@ -39,9 +41,12 @@ from model_checkpoint import load_model_checkpoint
 
 ALLOWED_SESSION_TYPES = {
     "tongue-stereo-stills-v1",
+    "lower-face-stills-v1",
     "tongue-stereo-corrections-v1",
     "tongue-stereo-arc-v3",
 }
+FULL_SESSION_TYPES = {"tongue-stereo-stills-v1", "lower-face-stills-v1"}
+CHEEK_ARRAY_NAMES = ("cheek_targets", "cheek_trainable")
 ARRAY_NAMES = (
     "images", "targets", "native_tongue_out", "native_expressions",
     "timestamps", "step_ids", "trainable",
@@ -110,6 +115,7 @@ def _read_raw_stereo(
 def _verify_source_frames(
     capture_path: Path, label_path: Path, metadata: dict[str, object],
     arrays: dict[str, np.ndarray],
+    tongue_frames: np.ndarray | None = None,
 ) -> None:
     """Rebuild the model inputs and native labels from the source sidecars."""
     entries, frame_width = scan_stereo_mouth_stills(capture_path)
@@ -121,7 +127,9 @@ def _verify_source_frames(
     label_times = [int(label["arrivalMonotonicNs"]) for label in labels]
     frame_times = [timestamp for _offset, timestamp in entries]
     label_indices, errors_ms = nearest_label_indices(frame_times, label_times)
-    if float(np.max(errors_ms)) > 35.0:
+    if tongue_frames is None:
+        tongue_frames = np.ones(len(entries), dtype=np.bool_)
+    if not np.any(tongue_frames) or float(np.max(errors_ms[tongue_frames])) > 35.0:
         raise ValueError(f"Capture/label alignment exceeds 35 ms: {label_path}")
     if not np.array_equal(arrays["timestamps"], np.asarray(frame_times, dtype=np.int64)):
         raise ValueError(f"Prepared timestamps differ from the raw capture: {capture_path}")
@@ -139,10 +147,13 @@ def _verify_source_frames(
                 if not np.array_equal(arrays["images"][index, view], expected):
                     raise ValueError(f"Prepared image {index} differs from the raw capture: {capture_path}")
             factory = np.asarray(labels[int(label_index)]["values"], dtype=np.float32)
-            native = native_tongue_out(
+            # Cheek-only cards provide no tongue supervision. The current
+            # preparer deliberately records zero for their scalar reference;
+            # the factory stream may stop after the last tongue card.
+            native = (native_tongue_out(
                 labels[int(label_index)], names,
                 tracking_source=metadata.get("nativeTongueSourceOverride"),
-            ) or 0.0
+            ) or 0.0) if tongue_frames[index] else 0.0
             if (len(factory) != len(names)
                     or not np.array_equal(arrays["native_expressions"][index], factory)
                     or not np.isclose(arrays["native_tongue_out"][index], native, atol=1e-6)):
@@ -203,6 +214,12 @@ def _check_cache(cache: Path) -> tuple[dict[str, object], tuple[str, ...], int, 
     samples = journal.get("samples")
     if not isinstance(prompts, list) or not isinstance(samples, list) or len(samples) != frames:
         raise ValueError(f"Capture journal does not match its cache: {session_path}")
+    cheek_offset = None
+    if metadata["sessionType"] == "lower-face-stills-v1":
+        _cheek_samples, cheek_offset = validate_cheek_session(journal, frames)
+        source = inspect_capture(capture_path)
+        if not source["completed"] or source["truncated"]:
+            raise ValueError(f"The lower-face camera recording is incomplete: {capture_path}")
     by_frame = {int(item["frameIndex"]): item for item in samples}
     if set(by_frame) != set(range(frames)):
         raise ValueError(f"Capture journal has duplicate or missing frames: {session_path}")
@@ -211,7 +228,10 @@ def _check_cache(cache: Path) -> tuple[dict[str, object], tuple[str, ...], int, 
         prompt_id = int(sample["promptIndex"])
         if prompt_id < 0 or prompt_id >= len(prompts) or prompt_id != int(steps[index]):
             raise ValueError(f"Prompt index differs between journal and cache: {session_path}")
-        if bool(sample.get("excluded", False)) == bool(trainable[index]):
+        permitted = not bool(sample.get("excluded", False)) and (
+            cheek_offset is None or prompt_id < cheek_offset
+        )
+        if permitted != bool(trainable[index]):
             raise ValueError(f"Excluded-frame flag differs from cache: {session_path}")
         expected = [float(sample.get("targets", {}).get(name, 0.0)) for name in TONGUE_TARGET_NAMES]
         if not np.allclose(targets[index], expected, atol=1e-6):
@@ -219,7 +239,10 @@ def _check_cache(cache: Path) -> tuple[dict[str, object], tuple[str, ...], int, 
     selected = int(np.count_nonzero(trainable))
     if selected != int(metadata.get("trainableFrames", -1)) or selected == 0:
         raise ValueError(f"Trainable frame count is invalid: {cache}")
-    _verify_source_frames(capture_path, label_path, metadata, arrays)
+    tongue_frames = None if cheek_offset is None else steps < cheek_offset
+    if cheek_offset is not None:
+        _verify_cheek_arrays(cache, metadata, by_frame, cheek_offset, frames)
+    _verify_source_frames(capture_path, label_path, metadata, arrays, tongue_frames)
     names = tuple(str(item.get("name", f"Card {index + 1}")) for index, item in enumerate(prompts))
     hashes = {
         "capture": _sha256(capture_path),
@@ -228,7 +251,37 @@ def _check_cache(cache: Path) -> tuple[dict[str, object], tuple[str, ...], int, 
         "images": _sha256(cache / "images.npy"),
         "nativeTongueOut": _sha256(cache / "native_tongue_out.npy"),
     }
+    if cheek_offset is not None:
+        hashes.update({name: _sha256(cache / f"{name}.npy") for name in CHEEK_ARRAY_NAMES})
     return metadata, names, selected, hashes
+
+
+def _verify_cheek_arrays(
+    cache: Path, metadata: dict[str, object], samples: dict[int, dict],
+    cheek_offset: int, frames: int,
+) -> None:
+    """Keep the unused cheek labels separate and accountable to the journal."""
+    if (metadata.get("hasCheekCards") is not True
+            or metadata.get("cheekTargetNames") != list(CHEEK_TARGET_NAMES)
+            or metadata.get("cheekTargetSource") != "prompted-cheek-poses"):
+        raise ValueError(f"Combined cache cheek metadata differs from its curriculum: {cache}")
+    targets, trainable = [
+        np.load(cache / f"{name}.npy", mmap_mode="r", allow_pickle=False)
+        for name in CHEEK_ARRAY_NAMES
+    ]
+    if (targets.shape != (frames, len(CHEEK_TARGET_NAMES)) or targets.dtype != np.float32
+            or trainable.shape != (frames,) or trainable.dtype != np.bool_):
+        raise ValueError(f"Combined cache cheek arrays have an invalid shape or type: {cache}")
+    expected_targets = np.zeros(targets.shape, dtype=np.float32)
+    expected_trainable = np.zeros(frames, dtype=np.bool_)
+    for index, sample in samples.items():
+        if sample["promptIndex"] >= cheek_offset:
+            expected_targets[index] = [sample["targets"][name] for name in CHEEK_TARGET_NAMES]
+            expected_trainable[index] = not sample.get("excluded", False)
+    if (not np.array_equal(targets, expected_targets)
+            or not np.array_equal(trainable, expected_trainable)
+            or int(np.count_nonzero(trainable)) != metadata.get("cheekTrainableFrames")):
+        raise ValueError(f"Combined cache cheek labels or mask differ from the journal: {cache}")
 
 
 def _complete_curriculum(cache: Path, metadata: dict[str, object]) -> bool:
@@ -236,6 +289,7 @@ def _complete_curriculum(cache: Path, metadata: dict[str, object]) -> bool:
     session_type = metadata["sessionType"]
     reference = (
         TONGUE_STILL_PROMPTS if session_type == "tongue-stereo-stills-v1"
+        else LOWER_FACE_STILL_PROMPTS if session_type == "lower-face-stills-v1"
         else TONGUE_ARC_PROMPTS if session_type == "tongue-stereo-arc-v3" else None
     )
     if reference is None:
@@ -246,11 +300,25 @@ def _complete_curriculum(cache: Path, metadata: dict[str, object]) -> bool:
         return False
     step_ids = np.load(cache / "step_ids.npy", mmap_mode="r", allow_pickle=False)
     trainable = np.load(cache / "trainable.npy", mmap_mode="r", allow_pickle=False)
+    cheek_offset = len(TONGUE_STILL_PROMPTS)
+    if session_type == "lower-face-stills-v1":
+        try:
+            validate_cheek_session(journal, len(step_ids))
+        except ValueError:
+            return False
     for index, card in enumerate(reference):
         recorded = prompts[index]
+        permitted = trainable
+        if session_type == "lower-face-stills-v1" and index >= cheek_offset:
+            # These stills are required for a complete 79-card capture but
+            # must never enter tongue training or holdout tongue metrics.
+            permitted = np.zeros(len(step_ids), dtype=np.bool_)
+            for sample in journal["samples"]:
+                if sample["promptIndex"] == index and not sample.get("excluded", False):
+                    permitted[sample["frameIndex"]] = True
         if (recorded.get("name") != card.name
                 or recorded.get("targets", {}) != card.targets
-                or int(np.count_nonzero((step_ids == index) & trainable)) < card.minimum_captures):
+                or int(np.count_nonzero((step_ids == index) & permitted)) < card.minimum_captures):
             return False
     return True
 
@@ -259,11 +327,11 @@ def curriculum_issues(sessions: list[Session]) -> list[str]:
     problems = []
     for role in ("train", "holdout"):
         included = [item for item in sessions if item.role == role]
-        for session_type, label in (
-            ("tongue-stereo-stills-v1", "all 58 current Full cards"),
-            ("tongue-stereo-arc-v3", "all current Focused diagonal and facial-hair cards"),
+        for session_types, label in (
+            (FULL_SESSION_TYPES, "all 58 current tongue Full cards (legacy Full or complete 79-card lower-face Full)"),
+            ({"tongue-stereo-arc-v3"}, "all current Focused diagonal and facial-hair cards"),
         ):
-            if not any(item.metadata["sessionType"] == session_type
+            if not any(item.metadata["sessionType"] in session_types
                        and item.complete_curriculum for item in included):
                 problems.append(f"{role} needs a completed capture with {label}")
     return problems
@@ -656,7 +724,8 @@ def rebuild_training_cache_from_raw(source: Path, destination: Path, size: int) 
         output.flush()
     finally:
         output._mmap.close()
-    for name in ARRAY_NAMES:
+    names = ARRAY_NAMES + (CHEEK_ARRAY_NAMES if metadata["sessionType"] == "lower-face-stills-v1" else ())
+    for name in names:
         if name != "images":
             shutil.copy2(source / f"{name}.npy", destination / f"{name}.npy")
     for key in ("capture", "labels", "session"):

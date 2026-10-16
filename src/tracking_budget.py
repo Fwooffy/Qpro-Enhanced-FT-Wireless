@@ -1,7 +1,7 @@
 """Per-feature inference budgets, separate from camera transport and capture.
 
 Responsive keeps the existing processing cadence. Lower CPU profiles reduce
-only pupil sampling; tongue and camera-cheek predictions still see every pair
+only pupil sampling; tongue predictions still see every pair
 the worker can process. A lower rate changes temporal response and warm-up,
 so it is an explicit performance choice rather than a model accuracy fix.
 """

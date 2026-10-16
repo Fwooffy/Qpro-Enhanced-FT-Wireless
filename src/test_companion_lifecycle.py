@@ -170,7 +170,6 @@ class ReceiverOwnerTests(unittest.TestCase):
         server.assert_not_called()
 
     def run_main(self, owner, connection_factory, *, camera_outputs=False):
-        import cheek_camera
         import pupil_dilation
         import pupil_inference
         import tongue_model_preview
@@ -179,12 +178,12 @@ class ReceiverOwnerTests(unittest.TestCase):
                      "--companion-start-filetime", "133000000000000001"]
         if camera_outputs:
             arguments.extend(["--tongue-model", "unused-test-model.pt", "--tongue-output",
-                              "--cheek-output", "--pupil-output"])
+                              "--pupil-output"])
         labels = mock.Mock(sample_count=0)
         preview = SimpleNamespace(device=SimpleNamespace(type="cpu"),
                                   checkpoint_path="unused-test-model.pt",
                                   direction_checkpoint_path=None,
-                                  target_names=["cheekPuffLeft", "cheekPuffRight"])
+                                  target_names=["visibility", "extension"])
         pupil = SimpleNamespace(backend="cpu", device="cpu", device_name="CPU", backend_notice="")
         server = mock.Mock()
         output = io.StringIO()
@@ -199,7 +198,6 @@ class ReceiverOwnerTests(unittest.TestCase):
               mock.patch.object(tongue_model_preview, "LiveTongueModelPreview", return_value=preview),
               mock.patch.object(tongue_model_preview, "TongueBroadcaster") as tongue,
               mock.patch.object(tongue_model_preview, "TongueInferenceWorker") as inference,
-              mock.patch.object(cheek_camera, "CameraCheekBroadcaster") as cheek,
               mock.patch.object(pupil_dilation, "RelativePupilTracker", return_value=pupil),
               mock.patch.object(pupil_dilation, "PupilBroadcaster"),
               mock.patch.object(pupil_inference, "PupilInferenceWorker") as pupil_worker):
@@ -211,7 +209,6 @@ class ReceiverOwnerTests(unittest.TestCase):
         if camera_outputs:
             tongue.return_value.close.assert_called_once()
             inference.return_value.close.assert_called_once()
-            cheek.return_value.close.assert_called_once()
             pupil_worker.return_value.close.assert_called_once()
             labels.close.assert_called_once()
         return connect

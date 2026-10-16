@@ -26,6 +26,7 @@ from label_capture import AmbiguousTongueSourceError, native_tongue_out
 from tongue_image_processing import preprocess_stereo_images, resolve_input_preprocessing
 from gpu_readback import GPUReadbackCancelled, copy_to_cpu
 from model_checkpoint import load_model_checkpoint
+from lower_face_training import tongue_parent
 from tracking_budget import InferenceCadence
 
 
@@ -185,29 +186,33 @@ def vrcft_tongue_values(
     }
     if not prediction.visible:
         return np.zeros(12, dtype=np.float32)
-    horizontal = float(np.clip(values.get("horizontal", 0.0), -1.0, 1.0))
-    vertical = float(np.clip(values.get("vertical", 0.0), -1.0, 1.0))
-    twist = float(np.clip(values.get("twist", 0.0), -1.0, 1.0))
+    # Clip related channels together instead of dispatching one NumPy
+    # operation per scalar. Float64 keeps the original Python-float math;
+    # conversion to the wire's float32 values still happens at the end.
+    horizontal, vertical, twist = np.clip([
+        values.get("horizontal", 0.0), values.get("vertical", 0.0),
+        values.get("twist", 0.0),
+    ], -1.0, 1.0)
     # Visibility is confidence that the tongue is present, not how far it
     # extends. Using it as TongueOut makes a visible tip jump to full extension.
-    tongue_out = float(np.clip(values.get("extension", 0.0), 0.0, 1.0))
-    return np.asarray(
+    channels = np.asarray(
         [
-            tongue_out,
+            values.get("extension", 0.0),
             max(vertical, 0.0),
             max(-vertical, 0.0),
             max(-horizontal, 0.0),
             max(horizontal, 0.0),
-            float(np.clip(values.get("roll", 0.0), 0.0, 1.0)),
-            float(np.clip(values.get("bend_down", 0.0), 0.0, 1.0)),
-            float(np.clip(values.get("curl_up", 0.0), 0.0, 1.0)),
-            float(np.clip(values.get("squish", 0.0), 0.0, 1.0)),
-            float(np.clip(values.get("flat", 0.0), 0.0, 1.0)),
+            values.get("roll", 0.0),
+            values.get("bend_down", 0.0),
+            values.get("curl_up", 0.0),
+            values.get("squish", 0.0),
+            values.get("flat", 0.0),
             max(-twist, 0.0),
             max(twist, 0.0),
         ],
-        dtype=np.float32,
+        dtype=np.float64,
     )
+    return np.clip(channels, 0.0, 1.0).astype(np.float32)
 
 
 def encode_tongue_packet(values: np.ndarray, enabled: bool) -> bytes:
@@ -216,7 +221,10 @@ def encode_tongue_packet(values: np.ndarray, enabled: bool) -> bytes:
         raise ValueError("A VRCFT tongue packet needs exactly twelve values")
     return TONGUE_PACKET.pack(
         TONGUE_MAGIC, TONGUE_VERSION, int(enabled), 0,
-        *[float(np.clip(value, 0.0, 1.0)) for value in values],
+        # One vector operation replaces twelve scalar NumPy dispatches. Keep
+        # clipping in float64 before the original float32 wire conversion,
+        # including the existing NaN and infinity behavior.
+        *np.clip(values.astype(np.float64), 0.0, 1.0).tolist(),
     )
 
 
@@ -427,8 +435,12 @@ class LiveTongueModelPreview:
         self.checkpoint_path = Path(checkpoint_path).resolve()
         device_name = validated_torch_device_name(torch, device_name)
         self.device = torch.device(device_name)
-        checkpoint = load_model_checkpoint(self.checkpoint_path)
+        # Older personal exports may contain a frozen camera-cheek wrapper.
+        # Use its original tongue tensors only, without evaluating that head.
+        checkpoint = tongue_parent(load_model_checkpoint(self.checkpoint_path))
         self.target_names = list(checkpoint["targetNames"])
+        if any(name in {"cheekPuffLeft", "cheekPuffRight"} for name in self.target_names):
+            raise ValueError("The checkpoint needs a supported tongue-only target schema")
         self.image_size = int(checkpoint["imageSize"])
         self.input_preprocessing = resolve_input_preprocessing(checkpoint)
         self.architecture = str(checkpoint.get("architecture", "legacy-late-fusion-v1"))
@@ -441,10 +453,9 @@ class LiveTongueModelPreview:
         self.direction_input_preprocessing = self.input_preprocessing
         if direction_checkpoint_path:
             self.direction_checkpoint_path = Path(direction_checkpoint_path).resolve()
-            direction_checkpoint = load_model_checkpoint(self.direction_checkpoint_path)
+            direction_checkpoint = tongue_parent(load_model_checkpoint(self.direction_checkpoint_path))
             direction_names = list(direction_checkpoint["targetNames"])
-            cheek_names = ["cheekPuffLeft", "cheekPuffRight"]
-            if direction_names != self.target_names and direction_names != self.target_names + cheek_names:
+            if direction_names != self.target_names:
                 raise ValueError(
                     "Visibility and direction checkpoints use different target schemas"
                 )
@@ -490,7 +501,10 @@ class LiveTongueModelPreview:
         # Match the cache/trainer order. Contrast is part of the checkpoint's
         # input contract, so legacy weights continue to receive raw pixels.
         cameras = preprocess_stereo_images(cameras, preprocessing)
-        normalized = cameras.astype(np.float32)[None] / 255.0
+        # The resized float buffer is owned here. Normalize it in place so
+        # each branch avoids another equally sized float32 allocation.
+        normalized = cameras.astype(np.float32)[None]
+        normalized /= 255.0
         return torch.from_numpy(normalized).to(self.device)
 
     def set_readback_cancelled(self, cancelled) -> None:
@@ -558,11 +572,6 @@ class LiveTongueModelPreview:
             fused, self.threshold, smoothed, completed_at
         )
         output_values = output_values.copy()
-        # A tongue visibility hold must not freeze an unrelated cheek pose.
-        for name in ("cheekPuffLeft", "cheekPuffRight"):
-            if name in self.target_names:
-                index = self.target_names.index(name)
-                output_values[index] = smoothed[index]
         return TonguePrediction(
             values=output_values.copy(),
             native_tongue_out=native,
@@ -579,7 +588,7 @@ class LiveTongueModelPreview:
     ) -> np.ndarray:
         height = max(760, 205 + len(self.target_names) * 46 + 60)
         image = np.zeros((height, 1100, 3), dtype=np.uint8)
-        cv2.putText(image, "Quest Pro personalized lower-face preview", (24, 42),
+        cv2.putText(image, "Quest Pro personalized tongue preview", (24, 42),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.86, (240, 240, 240), 2, cv2.LINE_AA)
         output_text = (
             "EXPERIMENTAL VRCFT TONGUE OUTPUT ON - T disables immediately"
@@ -645,13 +654,11 @@ class TongueInferenceWorker:
         preview: LiveTongueModelPreview,
         broadcaster: TongueBroadcaster,
         render_preview: bool = True,
-        cheek_broadcaster=None,
         maximum_fps: float = 0.0,
     ) -> None:
         self.preview = preview
         self.broadcaster = broadcaster
         self.render_preview = render_preview
-        self.cheek_broadcaster = cheek_broadcaster
         cadence = InferenceCadence(maximum_fps)
         self._cadence = cadence if cadence.limited else None
         self._condition = threading.Condition()
@@ -800,8 +807,6 @@ class TongueInferenceWorker:
                             "in First-time setup, then reopen it and retry.", flush=True,
                         )
                         self._reported_native_source_unknown = True
-                    if self.cheek_broadcaster is not None:
-                        self.cheek_broadcaster.send_prediction(prediction, self.preview.target_names)
                     self._completed_frames += 1
                     self._completed_at = time.perf_counter()
                     prediction = replace(prediction, completed_frames=self._completed_frames)
