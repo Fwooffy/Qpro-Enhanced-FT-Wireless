@@ -142,7 +142,11 @@ try
         if (!absoluteFixture.StartsWith(allowedRoot, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Unsafe fixture cleanup.");
         Directory.Delete(absoluteFixture, true);
     }
-    Console.WriteLine($"{checks} portable model metadata checks passed.");
+    DeveloperModelFixtures.Run(Check);
+    if (args.Length >= 1) DeveloperModelFixtures.RunActualMetadata(args[0], Check);
+    if (args.Length >= 2) LegacyModelIdentityFixtures.Run(args[1], Check);
+    if (args.Length >= 3) LegacyModelIdentityFixtures.RunCameraBundles(args[1], args[2], Check);
+    Console.WriteLine($"{checks} portable model metadata and developer selection checks passed.");
     return 0;
 }
 catch (Exception error)

@@ -8,7 +8,11 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Program.cs" />
+    <Compile Include="DeveloperModelFixtures.cs" />
+    <Compile Include="LegacyModelIdentityFixtures.cs" />
+    <Compile Include="../../qpro-hub/HubLegacyModelIdentity.cs" Link="HubLegacyModelIdentity.cs" />
     <Compile Include="../../qpro-hub/HubModelMetadata.cs" Link="HubModelMetadata.cs" />
+    <Compile Include="../../qpro-hub/HubModelSelection.cs" Link="HubModelSelection.cs" />
     <Compile Include="../../qpro-hub/HubModelPackage.cs" Link="HubModelPackage.cs" />
   </ItemGroup>
 </Project>
