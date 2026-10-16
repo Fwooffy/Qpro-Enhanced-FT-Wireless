@@ -1,6 +1,7 @@
 dist/
 artifacts/
 outputs/
+work/
 **/bin/
 **/obj/
 .venv/
@@ -13,6 +14,8 @@ config/wireless-headset.json
 research/seacliff_eye_model/*.ptl
 *.qpcap
 *.qplabel
+*.qpsession.json
+*.qptonguemodel
 *.npy
 *.npz
 *.jsonl
