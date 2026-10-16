@@ -36,18 +36,18 @@ class GatedOutput:
 
     def __iter__(self):
         if self.first:
-            yield self.first
+            yield from self.first.splitlines(keepends=True)
         self.waiting.set()
         if not self.release.wait(2):
             raise OSError('Fixture output was not released.')
-        yield self.final
+        yield from self.final.splitlines(keepends=True)
 
     def close(self):
         self.closed = True
 
 
 class ReaderProcess(FakeWorker):
-    def __init__(self, output='QPTP_LISTENING address=127.0.0.1 port=27063 rate=60\n', code=None):
+    def __init__(self, output='QPTP_LISTENING address=127.0.0.1 port=27063 rate=60\nQPTP_STOPPED\n', code=None):
         super().__init__(output, code)
         self.waited = False
 
@@ -89,6 +89,9 @@ class ComponentTests(unittest.TestCase):
         hands, addon = module.managed_paths(local)
         module.atomic_json(addon / 'qpro-owner.json', {'format': module.OWNER_FORMAT})
         module.atomic_json(addon / 'resources' / 'settings.json', {'enabled': False, 'smoothingMs': 25})
+        driver = addon / 'bin' / 'win64' / 'driver_qpro_controller.dll'
+        driver.parent.mkdir(parents=True, exist_ok=True)
+        driver.write_bytes(b'fixture-current-controller-dll')
         hands.mkdir(parents=True, exist_ok=True)
         (hands / 'ready.json').write_text('fixture hands environment')
         return hands, addon
@@ -177,16 +180,68 @@ class ComponentTests(unittest.TestCase):
                 module.atomic_json(addon / 'qpro-owner.json', value)
                 self.assertFalse(module.owner_is_valid(addon))
 
-    def run_workers(self, children, hands=True, touchpad=False, stopped=False, parent_closed=None):
+    def test_current_addon_dll_hash_precheck_is_read_only(self):
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+            local = Path(temporary); _, addon = self.create_addon(local)
+            root = local / 'root'; bundled = root / 'controller-input' / 'addon' / 'bin' / 'win64' / 'driver_qpro_controller.dll'
+            bundled.parent.mkdir(parents=True); bundled.write_bytes(b'fixture-current-controller-dll')
+            before = {path: path.read_bytes() for path in local.rglob('*') if path.is_file()}
+            module.verify_addon_current(root, addon)
+            self.assertEqual({path: path.read_bytes() for path in local.rglob('*') if path.is_file()}, before)
+
+    def test_old_and_missing_addon_dlls_fail_before_use_with_reinstall_instruction(self):
+        for state in ('old', 'missing-installed', 'missing-bundle'):
+            with self.subTest(state=state), tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+                local = Path(temporary); _, addon = self.create_addon(local)
+                root = local / 'root'; bundled = root / 'controller-input' / 'addon' / 'bin' / 'win64' / 'driver_qpro_controller.dll'
+                bundled.parent.mkdir(parents=True); bundled.write_bytes(b'fixture-current-controller-dll')
+                installed = addon / 'bin' / 'win64' / 'driver_qpro_controller.dll'
+                if state == 'old': installed.write_bytes(b'fixture-old-controller-dll')
+                elif state == 'missing-installed': installed.unlink()
+                else: bundled.unlink()
+                before = {path: path.read_bytes() for path in local.rglob('*') if path.is_file()}
+                with self.assertRaisesRegex(RuntimeError, 'Close SteamVR, reinstall the controller add-on.*reopen SteamVR'):
+                    module.verify_addon_current(root, addon)
+                self.assertEqual({path: path.read_bytes() for path in local.rglob('*') if path.is_file()}, before)
+
+    def test_old_addon_refuses_before_any_worker_or_headset_probe(self):
+        for standalone in (False, True):
+            with self.subTest(standalone=standalone), tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+                local = Path(temporary); hands, addon = self.create_addon(local)
+                python = hands / '.venv' / 'Scripts' / 'python.exe'; python.parent.mkdir(parents=True); python.touch()
+                root = local / 'root'; bundled = root / 'controller-input' / 'addon' / 'bin' / 'win64' / 'driver_qpro_controller.dll'
+                bundled.parent.mkdir(parents=True); bundled.write_bytes(b'fixture-current-controller-dll')
+                (addon / 'bin' / 'win64' / 'driver_qpro_controller.dll').write_bytes(b'fixture-old-controller-dll')
+                args = SimpleNamespace(hands=True, touchpad=True, parent_stdin=False, stop_file=str(local / 'stop'),
+                                       root=str(root), mode='trackpad', side='both')
+                settings = (addon / 'resources' / 'settings.json').read_bytes()
+                with patch.object(module.subprocess, 'Popen') as launch, patch.object(module, 'command') as execute, \
+                     patch.object(module.socket, 'socket') as udp, contextlib.redirect_stdout(io.StringIO()), \
+                     self.assertRaisesRegex(RuntimeError, 'installed controller add-on DLL does not match'):
+                    if standalone:
+                        module.relay(root, local, Path('fake-adb'), 'quest', local / 'stop', 'trackpad')
+                    else:
+                        module.run(args, local, Path('fake-adb'), 'quest')
+                launch.assert_not_called(); execute.assert_not_called(); udp.assert_not_called()
+                self.assertEqual((addon / 'resources' / 'settings.json').read_bytes(), settings)
+
+    def run_workers(self, children, hands=True, touchpad=False, stopped=False, parent_closed=None, side='both',
+                    mode='trackpad', swipe_gain=None):
         self.activity = io.StringIO()
         with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
             local = Path(temporary)
+            self.create_addon(local)
+            root = local / 'root'
+            bundled = root / 'controller-input' / 'addon' / 'bin' / 'win64' / 'driver_qpro_controller.dll'
+            bundled.parent.mkdir(parents=True)
+            bundled.write_bytes(b'fixture-current-controller-dll')
             hands_path, _ = module.managed_paths(local)
             (hands_path / '.venv' / 'Scripts').mkdir(parents=True)
             (hands_path / '.venv' / 'Scripts' / 'python.exe').touch()
             (hands_path / 'ready.json').touch()
             args = SimpleNamespace(hands=hands, touchpad=touchpad, parent_stdin=False,
-                                   stop_file=str(local / 'stop'), root=str(HERE), mode='trackpad')
+                                   stop_file=str(local / 'stop'), root=str(root), mode=mode, side=side,
+                                   swipe_gain=swipe_gain)
             parent_closed = parent_closed or threading.Event()
             if stopped:
                 parent_closed.set()
@@ -201,12 +256,12 @@ class ComponentTests(unittest.TestCase):
                  if line.startswith('CONTROLLER_CLEANUP ')]
         return json.loads(lines[-1].partition(' ')[2])
 
-    def packet(self, sequence=1, flags=3, x=.25, force=.7, timestamp=100):
+    def packet(self, sequence=1, flags=3, x=.25, force=.7, timestamp=100, right_flags=1):
         return module.PACKET.pack(b'QPTP', 1, 64, sequence, timestamp, flags, x, -.5, force, 50,
-                                  1, 0, 0, 0, 0)
+                                  right_flags, 0, 0, 0, 0)
 
     def run_relay(self, native, stream=None, parent_closed=None, connect_check=None, send_check=None,
-                  input_update=None):
+                  input_update=None, mode='trackpad', side='both', health_update=None, swipe_gain=None):
         self.relay_activity = io.StringIO()
         with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
             local = Path(temporary)
@@ -215,14 +270,21 @@ class ComponentTests(unittest.TestCase):
             reader = root / 'controller-input' / 'qpro-controller-input'
             reader.parent.mkdir(parents=True)
             reader.touch()
+            bundled = root / 'controller-input' / 'addon' / 'bin' / 'win64' / 'driver_qpro_controller.dll'
+            bundled.parent.mkdir(parents=True)
+            bundled.write_bytes(b'fixture-current-controller-dll')
             stop = local / 'stop'
             self.relay_stop = stop
             enabled = []
-            def input_enabled(_addon, state, _mode):
+            self.relay_configurations = []
+            self.relay_swipe_gains = []
+            def input_enabled(_addon, state, _mode, _side, swipe_gain=None):
                 enabled.append(state)
                 self.relay_enabled = enabled
+                self.relay_configurations.append((state, _mode, _side))
+                self.relay_swipe_gains.append(swipe_gain)
                 if input_update:
-                    input_update(_addon, state, _mode)
+                    input_update(_addon, state, _mode, _side)
             forwards = []
             def execute(args, **_kwargs):
                 if args[-1] == 'id':
@@ -240,11 +302,26 @@ class ComponentTests(unittest.TestCase):
                 self.relay_commands.append(args)
                 return execute(args, **kwargs)
             self.sent_packets = []
+            replies = []
             def send(packet, _destination):
+                if packet.startswith(b'QPRO_CTRL_HEALTH_V1 '):
+                    value = dict(protocol='QPRO-CTRL-HEALTH-v1', nonce=packet.decode('ascii').split()[1],
+                                 enabled=bool(enabled and enabled[-1]), settingsValid=True, mode=mode, side=side,
+                                 adoptedSides=[True, True], successfulSides=[True, True], neutral=not bool(enabled and enabled[-1]),
+                                 inputErrors=[0, 0], mouseError=0, restoreErrors=0, settingsRevision=1, appliedRevision=1)
+                    if health_update:
+                        value = health_update(value)
+                    if value is not None:
+                        replies.append((json.dumps(value).encode('utf8'), ('127.0.0.1', 27064)))
+                    return
                 self.sent_packets.append(packet)
                 if send_check:
                     send_check()
-            output = SimpleNamespace(sendto=send, close=lambda: None)
+            def receive(_size):
+                if not replies:
+                    raise BlockingIOError()
+                return replies.pop(0)
+            output = SimpleNamespace(sendto=send, recvfrom=receive, setblocking=lambda _value: None, close=lambda: None)
             with patch.object(module, 'command', side_effect=record_command), \
                  patch.object(module, 'set_input_enabled', side_effect=input_enabled), \
                  patch.object(module.subprocess, 'Popen', return_value=native) as launch, \
@@ -253,7 +330,7 @@ class ComponentTests(unittest.TestCase):
                  contextlib.redirect_stdout(self.relay_activity):
                 self.reader_launch = launch
                 self.reader_connect = socket_connect
-                module.relay(root, local, Path('fake-adb'), 'quest', stop, 'trackpad', parent_closed)
+                module.relay(root, local, Path('fake-adb'), 'quest', stop, mode, parent_closed, side, swipe_gain)
 
     def test_native_readiness_requires_its_exact_flushed_marker(self):
         process = ReaderProcess('QPTP_PROFILE build=fixture\n'
@@ -267,6 +344,82 @@ class ComponentTests(unittest.TestCase):
                 monitor.wait_listening(Path(temporary) / 'stop', threading.Event(), timeout=.01)
             monitor.finish()
         self.assertFalse(monitor.listening.is_set())
+
+    def test_driver_health_requires_fresh_token_sender_types_and_applied_revision(self):
+        value = dict(protocol='QPRO-CTRL-HEALTH-v1', nonce='a' * 32, enabled=False, settingsValid=True,
+                     mode='trackpad', side='both', adoptedSides=[True, False], successfulSides=[True, False],
+                     neutral=True, inputErrors=[0, 0], mouseError=0, restoreErrors=0,
+                     settingsRevision=4, appliedRevision=4)
+        sender = ('127.0.0.1', 27064)
+        self.assertEqual(module.decode_driver_health(json.dumps(value).encode(), sender, 'a' * 32), value)
+        self.assertIsNone(module.decode_driver_health(json.dumps(value).encode(), sender, 'b' * 32))
+        self.assertIsNone(module.decode_driver_health(json.dumps(value).encode(), ('127.0.0.1', 1234), 'a' * 32))
+        for change in ({'neutral': 1}, {'adoptedSides': [True]}, {'inputErrors': [False, 0]},
+                       {'appliedRevision': 5}, {'mouseError': -1}, {'settingsRevision': True}, {'side': 'any'}):
+            with self.subTest(change=change):
+                self.assertIsNone(module.decode_driver_health(json.dumps(dict(value, **change)).encode(), sender, 'a' * 32))
+        duplicate = json.dumps(value)[:-1] + ',"enabled":false}'
+        self.assertIsNone(module.decode_driver_health(duplicate.encode(), sender, 'a' * 32))
+        self.assertIsNone(module.decode_driver_health(b'x' * 1025, sender, 'a' * 32))
+
+    def test_relay_stop_requires_native_disabled_neutral_acknowledgement(self):
+        for change in ({'neutral': False}, {'enabled': True}, {'settingsValid': False},
+                       {'inputErrors': [1, 0]}, {'mouseError': 5}, {'restoreErrors': 1},
+                       {'settingsRevision': 2, 'appliedRevision': 1}, {'nonce': 'stale'}, {'side': 'right'}):
+            with self.subTest(change=change):
+                closed = threading.Event()
+                def stop_after_packet():
+                    closed.set()
+                    return b''
+                ticks = iter(index * .1 for index in range(1000))
+                with patch.object(module.time, 'monotonic', side_effect=lambda: next(ticks)), \
+                     patch.object(module.time, 'sleep'), \
+                     self.assertRaisesRegex(RuntimeError, 'disabled/neutral acknowledgement was not confirmed'):
+                    self.run_relay(ReaderProcess(), RelayStream([self.packet(), stop_after_packet]), parent_closed=closed,
+                                   health_update=lambda value: dict(value, **change))
+                self.assertIn('"reader": "unconfirmed"', self.relay_activity.getvalue())
+
+    def test_relay_confirmed_native_ack_remains_separate_from_sensor_readiness(self):
+        closed = threading.Event()
+        def stop_after_packet():
+            closed.set()
+            return b''
+        self.run_relay(ReaderProcess(), RelayStream([self.packet(), stop_after_packet]), parent_closed=closed)
+        lines = self.relay_activity.getvalue().splitlines()
+        statuses = [json.loads(line.partition(' ')[2]) for line in lines if line.startswith('CONTROLLER_DRIVER_STATUS ')]
+        self.assertIn('TOUCHPAD_READY ', self.relay_activity.getvalue())
+        self.assertTrue(statuses[-1]['neutral'])
+        self.assertFalse(statuses[-1]['enabled'])
+        self.assertIn('"inputs": "disabled"', self.relay_activity.getvalue())
+
+    def test_missing_driver_ack_does_not_skip_reader_or_forward_cleanup(self):
+        native = ReaderProcess(); closed = threading.Event()
+        def stop_after_packet():
+            closed.set()
+            return b''
+        ticks = iter(index * .1 for index in range(1000))
+        with patch.object(module.time, 'monotonic', side_effect=lambda: next(ticks)), \
+             patch.object(module.time, 'sleep'), \
+             self.assertRaisesRegex(RuntimeError, 'disabled/neutral acknowledgement was not confirmed'):
+            self.run_relay(native, RelayStream([self.packet(), stop_after_packet]), parent_closed=closed,
+                           health_update=lambda _value: None)
+        self.assertTrue(native.waited)
+        self.assertIn('QPTP_STOPPED', self.relay_activity.getvalue())
+        self.assertIn(['fake-adb', '-s', 'quest', 'forward', '--remove', 'tcp:27063'], self.relay_commands)
+        self.assertNotIn('"inputs": "disabled"', self.relay_activity.getvalue())
+
+    def test_native_stopped_requires_exact_marker_and_survives_diagnostic_trimming(self):
+        for marker, stopped in (('QPTP_STOPPED\r\n', True),
+                                ('prefix QPTP_STOPPED\n', False),
+                                ('QPTP_STOPPED suffix\n', False)):
+            with self.subTest(marker=marker):
+                process = ReaderProcess(marker + 'later diagnostic\n' * 12)
+                monitor = module.NativeReaderOutput(process)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    monitor.start()
+                    monitor.finish()
+                self.assertEqual(monitor.stopped.is_set(), stopped)
+                self.assertEqual(len(monitor._lines), 8)
 
     def test_native_output_close_failure_is_recorded_and_always_latched(self):
         for started in (True, False):
@@ -303,13 +456,53 @@ class ComponentTests(unittest.TestCase):
         output = ('CONTROLLER_READER {"message": "Native diagnostic: QPTP_SOURCE_UNAVAILABLE"}\n'
                   'CONTROLLER_CLEANUP {"reader": "unconfirmed", "problems": ["fixture cleanup failed"]}\n'
                   'CONTROLLER_ERROR {"message": "cleanup needs attention"}\n')
-        with self.assertRaisesRegex(RuntimeError, 'cleanup was not confirmed.*QPTP_SOURCE_UNAVAILABLE'):
+        with self.assertRaisesRegex(RuntimeError, 'cleanup was not confirmed.*QPTP_SOURCE_UNAVAILABLE') as failure:
             self.run_workers([FakeWorker(output)], hands=False, touchpad=True)
         self.assertFalse(self.aggregate()['confirmed'])
+        self.assertIn('fixture cleanup failed', '; '.join(self.aggregate()['problems']))
+        self.assertIn('fixture cleanup failed', str(failure.exception))
+
+    def test_cleanup_only_problems_survive_aggregate_and_public_error(self):
+        output = 'CONTROLLER_CLEANUP {"reader": "unconfirmed", "problems": ["RESTORE_DENIED"]}\n'
+        with self.assertRaisesRegex(RuntimeError, 'RESTORE_DENIED'):
+            self.run_workers([FakeWorker(output)], hands=False, touchpad=True)
+        self.assertIn('RESTORE_DENIED', '; '.join(self.aggregate()['problems']))
+
+    def test_cleanup_context_has_independent_bounded_capacity(self):
+        worker = module.WorkerOutput(FakeWorker(''), 'hands')
+        for index in range(4):
+            worker._observe('HANDS_DETACHED ' + json.dumps({'reason': 'disconnect-' + str(index)}))
+        worker._observe('HANDS_CLEANUP ' + json.dumps({
+            'confirmed': False, 'problems': ['restore-' + str(index) + 'x' * 1000 for index in range(20)]}))
+        self.assertEqual(len(worker.context_reasons), 4)
+        self.assertEqual(len(worker.cleanup_problems), 8)
+        self.assertTrue(all(len(problem) <= 512 for problem in worker.cleanup_problems))
+        self.assertIn('restore-0', worker.failure_reason)
+        self.assertFalse(worker.cleanup_confirmed)
+        for problems in (True, 'restore', [True, None, 7]):
+            before = list(worker.cleanup_problems)
+            worker._observe('HANDS_CLEANUP ' + json.dumps({'confirmed': False, 'problems': problems}))
+            self.assertEqual(worker.cleanup_problems, before)
+
+    def test_second_worker_spawn_error_survives_unconfirmed_cleanup(self):
+        first = FakeWorker('HANDS_CLEANUP {"confirmed": false, "problems": ["FIRST_RESTORE_FAILED"]}\n')
+        with self.assertRaisesRegex(RuntimeError, 'SECOND_WORKER_SPAWN_FAILED') as failure:
+            self.run_workers([first, OSError('SECOND_WORKER_SPAWN_FAILED')], touchpad=True)
+        self.assertIn('FIRST_RESTORE_FAILED', str(failure.exception))
+        details = '; '.join(self.aggregate()['problems'])
+        self.assertIn('SECOND_WORKER_SPAWN_FAILED', details)
+        self.assertIn('FIRST_RESTORE_FAILED', details)
+        self.assertFalse(self.aggregate()['confirmed'])
+
+    def test_second_worker_spawn_error_keeps_its_type_after_confirmed_cleanup(self):
+        first = FakeWorker('HANDS_CLEANUP {"confirmed": true, "problems": []}\n', code=0)
+        with self.assertRaisesRegex(OSError, 'SECOND_WORKER_SPAWN_FAILED'):
+            self.run_workers([first, OSError('SECOND_WORKER_SPAWN_FAILED')], touchpad=True)
+        self.assertTrue(self.aggregate()['confirmed'])
 
     def test_relay_waits_for_native_marker_before_connecting_or_enabling(self):
         output = GatedOutput(first='QPTP_PROFILE build=fixture\n',
-                             final='QPTP_LISTENING address=127.0.0.1 port=27063 rate=60\n')
+                             final='QPTP_LISTENING address=127.0.0.1 port=27063 rate=60\nQPTP_STOPPED\n')
         native = ReaderProcess(output)
         closed = threading.Event()
         def stop_after_packet():
@@ -338,7 +531,82 @@ class ComponentTests(unittest.TestCase):
         self.reader_connect.assert_not_called()
         self.assertEqual(self.relay_enabled, [False])
         self.assertTrue(native.waited)
+        self.assertIn('"reader": "unconfirmed"', self.relay_activity.getvalue())
+
+    def test_relay_cleanup_requires_native_stop_marker_and_zero_exit(self):
+        for marker, code in (('', 0), ('QPTP_STOPPED\n', 0),
+                             ('', 1), ('QPTP_STOPPED\n', 1), ('QPTP_STOPPED\n', 8)):
+            with self.subTest(marker=marker, code=code):
+                closed = threading.Event()
+                native = ReaderProcess('QPTP_LISTENING address=127.0.0.1 port=27063 rate=60\n' + marker)
+                def wait(timeout):
+                    native.waited = True
+                    native.returncode = code
+                    return code
+                native.wait = wait
+                def stop_during_recv():
+                    closed.set()
+                    return b''
+                if marker and code == 0:
+                    self.run_relay(native, RelayStream([stop_during_recv]), parent_closed=closed)
+                    self.assertIn('"reader": "stopped"', self.relay_activity.getvalue())
+                else:
+                    with self.assertRaisesRegex(RuntimeError, 'cleanup needs attention'):
+                        self.run_relay(native, RelayStream([stop_during_recv]), parent_closed=closed)
+                    self.assertIn('"reader": "unconfirmed"', self.relay_activity.getvalue())
+                self.assertEqual(self.relay_enabled, [False])
+                self.assertTrue(native.waited and native.stdout.closed)
+
+    def test_relay_cleanup_drains_stop_marker_after_native_wait(self):
+        output = GatedOutput(first='QPTP_LISTENING address=127.0.0.1 port=27063 rate=60\n',
+                             final='QPTP_STOPPED\n')
+        self.addCleanup(output.release.set)
+        native = ReaderProcess(output)
+        closed = threading.Event()
+        def wait(timeout):
+            self.assertTrue(output.waiting.wait(1))
+            native.waited = True
+            native.returncode = 0
+            output.release.set()
+            return 0
+        native.wait = wait
+        def stop_during_recv():
+            closed.set()
+            return b''
+        self.run_relay(native, RelayStream([stop_during_recv]), parent_closed=closed)
+        self.assertIn('QPTP_STOPPED', self.relay_activity.getvalue())
         self.assertIn('"reader": "stopped"', self.relay_activity.getvalue())
+
+    def test_relay_forced_reader_termination_never_confirms_cleanup(self):
+        output = GatedOutput(first='QPTP_LISTENING address=127.0.0.1 port=27063 rate=60\n',
+                             final='QPTP_STOPPED\n')
+        self.addCleanup(output.release.set)
+        native = ReaderProcess(output)
+        closed = threading.Event()
+        def wait(timeout):
+            if timeout == 5:
+                raise module.subprocess.TimeoutExpired('fake reader', timeout)
+            native.returncode = 0
+            return 0
+        native.wait = wait
+        native.terminate = output.release.set
+        def stop_during_recv():
+            closed.set()
+            return b''
+        with self.assertRaisesRegex(RuntimeError, 'reader exit was not confirmed'):
+            self.run_relay(native, RelayStream([stop_during_recv]), parent_closed=closed)
+        self.assertIn('QPTP_STOPPED', self.relay_activity.getvalue())
+        self.assertIn('"reader": "unconfirmed"', self.relay_activity.getvalue())
+
+    def test_relay_output_close_failure_vetoes_stop_marker_and_zero_exit(self):
+        native = ReaderProcess()
+        native.stdout = CloseFailureOutput('QPTP_LISTENING address=127.0.0.1 port=27063 rate=60\nQPTP_STOPPED\n')
+        closed = threading.Event()
+        closed.set()
+        with self.assertRaisesRegex(RuntimeError, 'Reader diagnostic output: fixture close failed'):
+            self.run_relay(native, parent_closed=closed)
+        self.assertIn('QPTP_STOPPED', self.relay_activity.getvalue())
+        self.assertIn('"reader": "unconfirmed"', self.relay_activity.getvalue())
 
     def test_relay_eof_before_first_packet_never_enables_inputs(self):
         native = ReaderProcess()
@@ -500,10 +768,108 @@ class ComponentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
             addon = Path(temporary)
             module.atomic_json(addon / 'qpro-owner.json', {'format': module.OWNER_FORMAT})
-            module.atomic_json(addon / 'resources' / 'settings.json', {'smoothingMs': 25, 'enabled': True})
+            module.atomic_json(addon / 'resources' / 'settings.json',
+                               {'smoothingMs': 25, 'enabled': True, 'futureOption': {'keep': [1, 2]}})
             module.set_input_enabled(addon, False, 'joystick')
             saved = json.loads((addon / 'resources' / 'settings.json').read_text())
-            self.assertEqual(saved, {'smoothingMs': 25, 'enabled': False, 'mode': 'joystick'})
+            self.assertEqual(saved, {'smoothingMs': 25, 'enabled': False, 'mode': 'joystick',
+                                     'side': 'both', 'futureOption': {'keep': [1, 2]}})
+
+    def test_selected_side_persists_on_enable_and_disable_without_overwriting_unknown_settings(self):
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+            _, addon = self.create_addon(Path(temporary))
+            path = addon / 'resources' / 'settings.json'
+            module.atomic_json(path, {'smoothingMs': 29, 'futureOption': {'keep': 'exact'}})
+            for side in ('both', 'left', 'right'):
+                for enabled in (True, False):
+                    with self.subTest(side=side, enabled=enabled):
+                        module.set_input_enabled(addon, enabled, 'swipe', side)
+                        self.assertEqual(json.loads(path.read_text()), {
+                            'smoothingMs': 29, 'futureOption': {'keep': 'exact'},
+                            'enabled': enabled, 'mode': 'swipe', 'side': side})
+
+    def test_invalid_side_is_rejected_before_settings_or_workers_are_touched(self):
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+            _, addon = self.create_addon(Path(temporary))
+            settings = addon / 'resources' / 'settings.json'
+            before = settings.read_bytes()
+            for side in ('Both', 'middle', '', None, True, []):
+                with self.subTest(side=side), \
+                     patch.object(module, 'owner_is_valid') as owner, \
+                     patch.object(module, 'command') as command, \
+                     patch.object(module.subprocess, 'Popen') as launch:
+                    with self.assertRaisesRegex(ValueError, 'side must be'):
+                        module.set_input_enabled(addon, True, side=side)
+                    with self.assertRaisesRegex(ValueError, 'side must be'):
+                        module.run(SimpleNamespace(side=side), Path(temporary), Path('fake-adb'), 'quest')
+                    with self.assertRaisesRegex(ValueError, 'side must be'):
+                        module.relay(HERE, Path(temporary), Path('fake-adb'), 'quest', HERE / 'stop',
+                                     'trackpad', side=side)
+                    owner.assert_not_called()
+                    command.assert_not_called()
+                    launch.assert_not_called()
+                    self.assertEqual(settings.read_bytes(), before)
+
+    def test_supervisor_passes_side_to_thumb_rest_worker_only(self):
+        for side in ('both', 'left', 'right'):
+            with self.subTest(side=side):
+                hands = FakeWorker('HANDS_CLEANUP {"confirmed": true, "problems": []}\n', code=0)
+                touchpad = FakeWorker('CONTROLLER_CLEANUP {"reader": "stopped", "inputs": "disabled"}\n', code=0)
+                self.run_workers([hands, touchpad], touchpad=True, stopped=True, side=side)
+                commands = [call.args[0] for call in self.launch.call_args_list]
+                self.assertNotIn('--side', commands[0])
+                self.assertEqual(commands[1][commands[1].index('--side') + 1], side)
+                self.assertTrue(self.aggregate()['confirmed'])
+
+    def test_main_side_choices_default_and_rejection(self):
+        with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
+            for side in (None, 'both', 'left', 'right'):
+                with self.subTest(side=side), \
+                     patch.dict(module.os.environ, {'LOCALAPPDATA': temporary}), \
+                     patch.object(module, 'select_target', return_value='quest'), \
+                     patch.object(module, 'run') as run:
+                    arguments = ['run', '--root', str(HERE), '--touchpad']
+                    if side:
+                        arguments += ['--side', side]
+                    module.main(arguments)
+                    self.assertEqual(run.call_args.args[0].side, side or 'both')
+            with patch.object(module, 'select_target') as select, \
+                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as failure:
+                module.main(['run', '--root', str(HERE), '--side', 'Both'])
+            self.assertEqual(failure.exception.code, 2)
+            select.assert_not_called()
+
+    def test_relay_requires_selected_side_validity_and_keeps_packet_bytes(self):
+        for mode in ('trackpad', 'joystick', 'swipe', 'mouse'):
+            for side, flags, right_flags in (('both', 1, 0), ('both', 0, 1),
+                                             ('left', 1, 0), ('right', 0, 1)):
+                with self.subTest(mode=mode, side=side, flags=flags):
+                    closed = threading.Event()
+                    packet = self.packet(flags=flags, right_flags=right_flags)
+                    def stopped():
+                        closed.set()
+                        return b''
+                    self.run_relay(ReaderProcess(), RelayStream([packet, stopped]),
+                                   parent_closed=closed, mode=mode, side=side)
+                    self.assertEqual(self.sent_packets, [packet])
+                    self.assertEqual(self.relay_configurations, [(True, mode, side), (False, mode, side)])
+                    ready = json.loads(next(line.partition(' ')[2] for line in self.relay_activity.getvalue().splitlines()
+                                            if line.startswith('TOUCHPAD_READY ')))
+                    self.assertEqual(ready['side'], side)
+
+    def test_relay_unselected_side_cannot_enable_input_or_report_ready(self):
+        for side, flags, right_flags in (('left', 0, 1), ('right', 1, 0)):
+            with self.subTest(side=side):
+                closed = threading.Event()
+                def stopped():
+                    closed.set()
+                    return b''
+                self.run_relay(ReaderProcess(),
+                               RelayStream([self.packet(flags=flags, right_flags=right_flags), stopped]),
+                               parent_closed=closed, side=side)
+                self.assertEqual(self.sent_packets, [])
+                self.assertEqual(self.relay_configurations, [(False, 'trackpad', side)])
+                self.assertNotIn('TOUCHPAD_READY ', self.relay_activity.getvalue())
 
     def test_non_object_controller_settings_are_rejected_without_overwriting(self):
         with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
@@ -528,10 +894,10 @@ class ComponentTests(unittest.TestCase):
 
     def test_malformed_settings_do_not_skip_relay_reader_and_forward_cleanup(self):
         update = module.set_input_enabled
-        def corrupt_settings(addon, state, mode):
+        def corrupt_settings(addon, state, mode, side):
             if state:
                 module.atomic_json(addon / 'resources' / 'settings.json', [])
-            update(addon, state, mode)
+            update(addon, state, mode, side)
         native = ReaderProcess()
         stream = RelayStream([self.packet()])
         with self.assertRaisesRegex(RuntimeError, 'cleanup needs attention.*settings must be a JSON object'):
@@ -805,9 +1171,111 @@ class ComponentTests(unittest.TestCase):
     def test_cleanup_failure_keeps_original_operational_reason_visible(self):
         output = ('HANDS_STOP_CAUSE {"error": "original readiness timeout"}\n'
                   'HANDS_CLEANUP_FAILED {"error": "script has been destroyed"}\n')
-        with self.assertRaisesRegex(RuntimeError, 'cleanup was not confirmed.*original readiness timeout'):
+        with self.assertRaisesRegex(RuntimeError, 'cleanup was not confirmed.*original readiness timeout') as failure:
             self.run_workers([FakeWorker(output, code=5)])
         self.assertFalse(self.aggregate()['confirmed'])
+        self.assertIn('script has been destroyed', str(failure.exception))
+        self.assertIn('script has been destroyed', '; '.join(self.aggregate()['problems']))
+
+    def test_detachment_context_survives_before_and_after_the_original_stop_cause(self):
+        detached = 'HANDS_DETACHED ' + json.dumps({
+            'session': 'headset-virtual-desktop', 'process': 100,
+            'reason': 'process-terminated', 'duringCleanup': False,
+            'crashSummary': 'Access violation at C:\\fixture\\private.dmp\nprivate dump',
+            'report': 'raw private dump'}) + '\n'
+        cause = 'HANDS_STOP_CAUSE {"error": "A tracking process disconnected"}\n'
+        cleanup = 'HANDS_CLEANUP_FAILED {"error": "script has been destroyed"}\n'
+        for output in (detached + cause + cleanup, cause + detached + cleanup):
+            with self.subTest(output=output), self.assertRaisesRegex(
+                    RuntimeError, 'Original failure: hands: A tracking process disconnected.*session=headset-virtual-desktop'):
+                self.run_workers([FakeWorker(output, code=5)])
+            report = self.aggregate()
+            self.assertFalse(report['confirmed'])
+            details = report['problems'][0]
+            self.assertIn('process=100', details)
+            self.assertIn('reason=process-terminated', details)
+            self.assertIn('crash=Access violation at [path omitted]', details)
+            self.assertIn('duringCleanup=false', details)
+            self.assertNotIn('private', details)
+            self.assertNotIn('raw', details)
+            self.assertNotIn('C:', details)
+            self.assertEqual(details.count('Detached '), 1)
+
+    def test_stop_cause_nested_detachment_enriches_aggregate_without_a_separate_event(self):
+        output = 'HANDS_STOP_CAUSE ' + json.dumps({
+            'error': 'Original disconnect', 'detached': [
+                {'session': 'steamvr', 'process': 'vrserver.exe', 'reason': 'process-terminated',
+                 'crashSummary': 'Access violation\nprivate report'}]}) + '\n'
+        with self.assertRaisesRegex(RuntimeError, 'Original disconnect.*process=vrserver.exe'):
+            self.run_workers([FakeWorker(output, code=5)])
+        details = self.aggregate()['problems'][0]
+        self.assertIn('session=steamvr', details)
+        self.assertIn('crash=Access violation', details)
+        self.assertNotIn('private', details)
+
+    def test_detachment_diagnostics_are_bounded_and_do_not_confirm_cleanup(self):
+        worker = module.WorkerOutput(FakeWorker(''), 'hands')
+        for index in range(20):
+            worker._observe('HANDS_DETACHED ' + json.dumps({
+                'session': 's' * 200, 'process': 'vrserver.exe',
+                'reason': 'process-terminated-' + str(index), 'crashSummary': 'x' * 1000}))
+        self.assertEqual(len(worker.context_reasons), 4)
+        self.assertLess(len(worker.failure_reason), 2000)
+        self.assertIsNone(worker.cleanup_confirmed)
+        for payload in ('[]', '{"reason": true}', 'invalid-json'):
+            self.assertIsNone(module.failure_reason('HANDS_DETACHED ' + payload))
+
+    def test_long_original_failure_cannot_erase_bounded_detachment_and_cleanup_context(self):
+        output = 'HANDS_STOP_CAUSE ' + json.dumps({'error': 'original failure ' + 'x' * 5000}) + '\n'
+        for index in range(4):
+            output += 'HANDS_DETACHED ' + json.dumps({
+                'session': 'headset-' + str(index), 'process': 10 ** 1000 + index,
+                'reason': 'process-terminated-' + str(index), 'crashSummary': 'c' * 1000}) + '\n'
+        output += 'HANDS_CLEANUP_FAILED ' + json.dumps({
+            'error': 'restore failed', 'phase': 'cleanup:status:optical-hands'}) + '\n'
+        with self.assertRaisesRegex(RuntimeError, 'original failure.*phase=cleanup:status:optical-hands') as failure:
+            self.run_workers([FakeWorker(output, code=5)])
+        details = self.aggregate()['problems'][0]
+        self.assertLess(len(details), 4096)
+        for index in range(4):
+            self.assertIn('session=headset-' + str(index), details)
+            self.assertIn('session=headset-' + str(index), str(failure.exception))
+        self.assertIn('phase=cleanup:status:optical-hands', details)
+
+    def test_nested_detachments_and_phase_survive_long_primary_and_cleanup_errors(self):
+        output = 'HANDS_STOP_CAUSE ' + json.dumps({
+            'error': 'original failure ' + 'x' * 5000,
+            'detached': [{'session': 'nested-' + str(index), 'process': 100 + index,
+                          'reason': 'process-terminated'} for index in range(4)]}) + '\n'
+        output += 'HANDS_CLEANUP_FAILED ' + json.dumps({
+            'error': 'restore failure ' + 'y' * 5000,
+            'phase': 'cleanup:status:optical-hands', 'progressStaleSeconds': 31.5}) + '\n'
+        with self.assertRaisesRegex(RuntimeError, 'original failure.*phase=cleanup:status:optical-hands'):
+            self.run_workers([FakeWorker(output, code=5)])
+        details = '; '.join(self.aggregate()['problems'])
+        for index in range(4):
+            self.assertIn('session=nested-' + str(index), details)
+        self.assertIn('restore failure', details)
+        self.assertIn('progress stale seconds=31.5', details)
+        self.assertTrue(all(len(problem) < 4096 for problem in self.aggregate()['problems']))
+
+    def test_watchdog_phase_survives_an_earlier_failure_and_keeps_cleanup_unconfirmed(self):
+        output = ('HANDS_STOP_CAUSE {"error": "original readiness timeout"}\n'
+                  'HANDS_CLEANUP_FAILED ' + json.dumps({
+                      'error': 'The hand supervisor stopped responding',
+                      'phase': 'cleanup:restoration-status:optical-hands',
+                      'progressStaleSeconds': 31.5, 'lastStatusAgeSeconds': 38.2}) + '\n')
+        with self.assertRaisesRegex(RuntimeError, 'original readiness timeout.*phase=cleanup:restoration-status:optical-hands'):
+            self.run_workers([FakeWorker(output, code=5)])
+        details = self.aggregate()['problems'][0]
+        self.assertIn('progress stale seconds=31.5', details)
+        self.assertIn('last status age seconds=38.2', details)
+        self.assertFalse(self.aggregate()['confirmed'])
+        for value in (True, float('inf'), -1, 10 ** 1000):
+            reason = module.failure_reason('HANDS_CLEANUP_FAILED ' + json.dumps({
+                'error': 'watchdog', 'phase': 'status:optical-hands', 'progressStaleSeconds': value}))
+            self.assertIn('phase=status:optical-hands', reason)
+            self.assertNotIn('progress stale seconds', reason)
 
     def test_missing_malformed_and_failed_cleanup_are_not_confirmed(self):
         success = 'HANDS_CLEANUP {"confirmed": true, "problems": []}\n'

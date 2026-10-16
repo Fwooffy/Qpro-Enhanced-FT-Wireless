@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 from collections import deque
 import hashlib
+import importlib.util
 import json
 import lzma
 import math
@@ -38,6 +39,9 @@ OWNER_FORMAT = 'qpro-controller-addon-v1'
 PACKET = struct.Struct('<4sHHQQIffffIffff')
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 OUTPUT_LOCK = threading.Lock()
+INPUT_SIDES = ('both', 'left', 'right')
+_DASHBOARD_HELPER = None
+_VRCHAT_HELPER = None
 
 
 class WorkerFailure(RuntimeError):
@@ -66,10 +70,65 @@ def forward_output(output):
             print(output, end='' if output.endswith('\n') else '\n', flush=True)
 
 
+def diagnostic_text(value, limit):
+    if not isinstance(value, str):
+        return None
+    value = value.splitlines()[0] if value else ''
+    value = re.sub(r'(?:[A-Za-z]:[\\/]|\\\\|/).*', '[path omitted]', value)
+    value = re.sub(r'[\x00-\x1f\x7f]', '', value).strip()
+    return value[:limit] or None
+
+
+def bounded_reason(value, limit=2048):
+    if not isinstance(value, str):
+        return None
+    return value.strip()[:limit] or None
+
+
+def detachment_reason(result):
+    if not isinstance(result, dict):
+        return None
+    reason = diagnostic_text(result.get('reason'), 80)
+    if reason is None:
+        return None
+    parts = []
+    session = diagnostic_text(result.get('session'), 80)
+    if session:
+        parts.append('session=' + session)
+    process = result.get('process')
+    if type(process) is int and process > 0:
+        parts.append('process=' + (str(process) if process < 10 ** 80 else '[oversized]'))
+    else:
+        process = diagnostic_text(process, 80)
+        if process:
+            parts.append('process=' + process)
+    parts.append('reason=' + reason)
+    summary = diagnostic_text(result.get('crashSummary'), 240)
+    if summary:
+        parts.append('crash=' + summary)
+    if type(result.get('duringCleanup')) is bool:
+        parts.append('duringCleanup=' + str(result['duringCleanup']).lower())
+    return 'Detached ' + ', '.join(parts)
+
+
+def cleanup_phase_reason(result):
+    details = []
+    phase = diagnostic_text(result.get('phase'), 120)
+    if phase:
+        details.append('phase=' + phase)
+    for key, label in (('progressStaleSeconds', 'progress stale seconds'),
+                       ('lastStatusAgeSeconds', 'last status age seconds')):
+        value = result.get(key)
+        if type(value) in (int, float) and 0 <= value <= 1e12 and math.isfinite(value):
+            details.append(label + '=' + str(value))
+    return '; '.join(details) or None
+
+
 def failure_reason(line):
     stage, _, payload = line.partition(' ')
     if stage not in ('HANDS_CHECK', 'HANDS_FAILED', 'HANDS_INCOMPATIBLE',
-                     'HANDS_STOP_CAUSE', 'HANDS_CLEANUP_FAILED', 'CONTROLLER_READER', 'CONTROLLER_ERROR'):
+                     'HANDS_STOP_CAUSE', 'HANDS_DETACHED', 'HANDS_CLEANUP_FAILED',
+                     'CONTROLLER_READER', 'CONTROLLER_ERROR'):
         return None
     try:
         result = json.loads(payload)
@@ -77,6 +136,8 @@ def failure_reason(line):
         return None
     if not isinstance(result, dict):
         return None
+    if stage == 'HANDS_DETACHED':
+        return detachment_reason(result)
     if stage == 'HANDS_CHECK':
         problems = result.get('problems')
         if result.get('compatible') is False and isinstance(problems, list):
@@ -84,7 +145,20 @@ def failure_reason(line):
             return '; '.join(reasons) or None
         return None
     reason = result.get('message' if stage in ('CONTROLLER_ERROR', 'CONTROLLER_READER') else 'error')
-    return reason if isinstance(reason, str) and reason.strip() else None
+    reason = reason if isinstance(reason, str) and reason.strip() else None
+    details = []
+    if stage in ('HANDS_STOP_CAUSE', 'HANDS_CLEANUP_FAILED'):
+        detached = result.get('detached')
+        if isinstance(detached, list):
+            for entry in detached[:4]:
+                detail = detachment_reason(entry)
+                if detail and detail not in details:
+                    details.append(detail)
+    if stage == 'HANDS_CLEANUP_FAILED':
+        phase = cleanup_phase_reason(result)
+        if phase:
+            details.append(phase)
+    return '; '.join(([reason] if reason else []) + details) or None
 
 
 def managed_paths(local: Path):
@@ -99,6 +173,110 @@ def atomic_json(path: Path, data):
     temporary = path.with_name(path.name + '.tmp')
     temporary.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
     temporary.replace(path)
+
+
+def dashboard_helper():
+    # Also supports importing this supervisor by path in the offline fixtures.
+    global _DASHBOARD_HELPER
+    if _DASHBOARD_HELPER is None:
+        path = Path(__file__).with_name('dashboard_bindings.py')
+        spec = importlib.util.spec_from_file_location('qpro_dashboard_bindings', path)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        _DASHBOARD_HELPER = helper
+    return _DASHBOARD_HELPER
+
+
+def vrchat_helper():
+    global _VRCHAT_HELPER
+    if _VRCHAT_HELPER is None:
+        path = Path(__file__).with_name('vrchat_bindings.py')
+        spec = importlib.util.spec_from_file_location('qpro_vrchat_bindings', path)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        _VRCHAT_HELPER = helper
+    return _VRCHAT_HELPER
+
+
+def binding_manual_warning(result, application):
+    if not result.get('automatic', False):
+        report('CONTROLLER_BINDINGS_WARNING', message=result.get('message', 'Binding setup needs attention.'),
+               next='After reopening SteamVR, choose the Qpro Companion menu-scrolling binding for '
+                    + application + ' if you want thumb-rest scrolling. Your existing choices were kept.')
+
+
+def prepare_dashboard(local, tool, addon, previous=None):
+    try:
+        result = dashboard_helper().prepare(local, tool.parents[2], addon, previous)
+        report('CONTROLLER_DASHBOARD_BINDING', **result, activationVerified=False)
+        binding_manual_warning(result, 'the SteamVR dashboard')
+    except (OSError, ValueError, RuntimeError) as error:
+        if previous is not None and (previous / 'resources/input/qpro_dashboard_scroll.json').exists():
+            # A selected file URL can point into the existing add-on. Restore
+            # the whole previous tree through install's transaction if we
+            # cannot migrate it, rather than leave that URL missing or replace
+            # a user-edited binding with an unrelated default.
+            raise RuntimeError('The controller update could not preserve its dashboard binding: '
+                               + str(error) + ' The previous add-on files will be restored.') from error
+        # A binding-format change must not turn successful component setup or
+        # ordinary controller tracking into a failure.
+        report('CONTROLLER_BINDINGS_WARNING', message=str(error),
+               next='Reopen SteamVR after setup. Your existing dashboard and game bindings were kept.')
+
+
+def prepare_vrchat(local, tool, addon, previous=None):
+    try:
+        result = vrchat_helper().prepare(local, tool.parents[2], addon, previous)
+        report('CONTROLLER_VRCHAT_BINDING', **result, activationVerified=False)
+        binding_manual_warning(result, 'VRChat')
+    except (OSError, ValueError, RuntimeError) as error:
+        owned = Path('resources/input/qpro-vrchat-owner.json')
+        if (addon / owned).exists() or (previous is not None and (previous / owned).exists()):
+            # Metadata can precede the final selection update. Let the install
+            # transaction restore its immediate predecessor before removing it.
+            raise RuntimeError('VRChat binding setup could not finish safely: ' + str(error)) from error
+        report('CONTROLLER_BINDINGS_WARNING', message=str(error),
+               next='Your VRChat binding was kept. Choose its Qpro Companion menu-scrolling binding '
+                    'manually after reopening SteamVR if automatic setup is unavailable.')
+
+
+def report_dashboard(addon, enabled, mode, side):
+    try:
+        result = dashboard_helper().status(addon)
+        report('CONTROLLER_DASHBOARD_BINDING', **result, activationVerified=False,
+               scrollSource='enabled' if enabled and mode == 'swipe' else 'neutral', side=side)
+        if enabled and mode == 'swipe':
+            binding_manual_warning(result, 'the SteamVR dashboard')
+    except (OSError, ValueError, RuntimeError) as error:
+        report('CONTROLLER_BINDINGS_WARNING', message=str(error))
+
+
+def report_vrchat(addon, enabled, mode, side):
+    try:
+        result = vrchat_helper().status(addon)
+        report('CONTROLLER_VRCHAT_BINDING', **result, activationVerified=False,
+               scrollSource='enabled' if enabled and mode == 'swipe' else 'neutral', side=side)
+        if enabled and mode == 'swipe':
+            binding_manual_warning(result, 'VRChat')
+    except (OSError, ValueError, RuntimeError) as error:
+        report('CONTROLLER_BINDINGS_WARNING', message=str(error))
+
+
+def rollback_binding_selections(local, tool, addon):
+    failures = []
+    for relative, getter, stage in (
+            ('resources/input/qpro-vrchat-owner.json', vrchat_helper, 'CONTROLLER_VRCHAT_BINDING'),
+            ('resources/input/qpro-dashboard-owner.json', dashboard_helper, 'CONTROLLER_DASHBOARD_BINDING')):
+        if not (addon / relative).exists():
+            continue
+        try:
+            assert_steamvr_closed()
+            result = getter().rollback_install(local, tool.parents[2], addon)
+            report(stage, phase='install-rollback', **result)
+        except (OSError, ValueError, RuntimeError) as error:
+            failures.append(str(error))
+    if failures:
+        raise RuntimeError('; '.join(failures))
 
 
 def owner_is_valid(addon: Path):
@@ -171,6 +349,61 @@ def install(root: Path, local: Path):
         raise RuntimeError('The controller add-on is missing. Extract the complete test ZIP.')
     if addon.exists() and not owner_is_valid(addon):
         raise RuntimeError('The destination exists without a Qpro ownership marker; no files were replaced.')
+    settings_path = addon / 'resources' / 'settings.json'
+    settings_before = None
+    settings = {'enabled': False, 'mode': 'trackpad'}
+    if settings_path.exists():
+        # Match the driver's flat settings schema before downloading or moving
+        # the old tree. A reinstall must retain tuning, not silently reset it.
+        try:
+            if settings_path.is_symlink() or settings_path.is_junction():
+                raise ValueError('the file contains a link')
+            with settings_path.open('rb') as saved:
+                settings_before = saved.read(8193)
+            if len(settings_before) > 8192:
+                raise ValueError('the file exceeds 8192 bytes')
+            def unique_object(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError('duplicate key ' + repr(key))
+                    result[key] = value
+                return result
+            def reject_constant(value):
+                raise ValueError('non-finite value ' + value)
+            settings = json.loads(settings_before.decode('utf-8'), object_pairs_hook=unique_object,
+                                  parse_constant=reject_constant)
+            if not isinstance(settings, dict):
+                raise ValueError('the file must contain a JSON object')
+            def native_float(value):
+                return struct.unpack('<f', struct.pack('<f', value))[0]
+            ranges = {'smoothingMs': (0, 250), 'clickOn': (0, 1), 'clickOff': (0, 1),
+                      'joystickSpan': (.1, 2), 'swipeGain': (.01, 5), 'glideMs': (0, 2000),
+                      'mouseScale': (0, 4000), 'restingSize': (0, 512), 'intentionalForce': (0, 1)}
+            for key, value in settings.items():
+                if key in ('enabled', 'ignoreRestingThumb'):
+                    valid = type(value) is bool
+                elif key == 'mode':
+                    valid = value in ('trackpad', 'joystick', 'swipe', 'mouse')
+                elif key == 'side':
+                    valid = value in INPUT_SIDES
+                elif key in ranges:
+                    low, high = ranges[key]
+                    # Native bounds and stored values are float32, while its
+                    # JSON number is first parsed as double. Preserve that exact
+                    # comparison, including the current .1f minimum boundary.
+                    valid = type(value) in (int, float) and native_float(low) <= value <= native_float(high)
+                else:
+                    raise ValueError('unknown key ' + repr(key))
+                if not valid:
+                    raise ValueError('invalid value for ' + repr(key))
+            if native_float(settings.get('clickOff', .46)) >= native_float(settings.get('clickOn', .64)):
+                raise ValueError('clickOff must be lower than clickOn at native float precision')
+            settings['enabled'] = False
+        except (OSError, UnicodeError, ValueError, RecursionError) as error:
+            raise RuntimeError('Controller settings at ' + str(settings_path) + ' could not be preserved: '
+                               + str(error) + '. The current add-on and settings were kept. '
+                               'Correct this file or restore a valid recovery copy before retrying setup.') from error
     hands.mkdir(parents=True, exist_ok=True)
     report('CONTROLLER_SETUP', phase='verifying-official-downloads', version=FRIDA_VERSION)
     wheel = hands / WHEEL_NAME
@@ -192,6 +425,18 @@ def install(root: Path, local: Path):
                                       'serverSha256': hashlib.sha256(server.read_bytes()).hexdigest()})
     # Preserve a previous owned tree for recovery. Never remove someone else's driver.
     backup = None
+    try:
+        if settings_path.exists():
+            with settings_path.open('rb') as saved:
+                current_settings = saved.read(8193)
+        else:
+            current_settings = None
+    except OSError as error:
+        raise RuntimeError('Controller settings at ' + str(settings_path) + ' could not be rechecked. '
+                           'The current add-on and settings were kept. Retry setup after closing other controller tools.') from error
+    if current_settings != settings_before:
+        raise RuntimeError('Controller settings changed during setup; your current settings were kept. '
+                           'Keep SteamVR closed and retry controller setup.')
     if addon.exists():
         backup = addon.with_name('controller-addon-backup-' + time.strftime('%Y%m%d-%H%M%S'))
         if backup.exists():
@@ -201,10 +446,42 @@ def install(root: Path, local: Path):
         addon.mkdir()
         atomic_json(addon / 'qpro-owner.json', {'format': OWNER_FORMAT})
         shutil.copytree(source, addon, dirs_exist_ok=True)
-        atomic_json(addon / 'resources' / 'settings.json', {'enabled': False, 'mode': 'trackpad'})
+        atomic_json(addon / 'resources' / 'settings.json', settings)
+        assert_steamvr_closed()
+        prepare_dashboard(local, tool, addon, backup)
+        assert_steamvr_closed()
+        prepare_vrchat(local, tool, addon, backup)
+        assert_steamvr_closed()
         command([tool, 'adddriver', str(addon)])
-    except Exception:
+    except Exception as original:
+        if any((addon / relative).exists() for relative in (
+                'resources/input/qpro-vrchat-owner.json', 'resources/input/qpro-dashboard-owner.json')):
+            try:
+                rollback_binding_selections(local, tool, addon)
+            except (OSError, ValueError, RuntimeError) as rollback_error:
+                # Do not destroy the only metadata able to undo a selected file
+                # URL. Preserve this tree before restoring the previous driver.
+                recovery = addon.with_name('controller-addon-failed-' + uuid.uuid4().hex)
+                moved = False
+                try:
+                    addon.rename(recovery)
+                    moved = True
+                    if backup:
+                        backup.rename(addon)
+                except OSError as move_error:
+                    raise RuntimeError('Controller setup failed and its binding selection recovery is unconfirmed. '
+                                       'Keep SteamVR closed. Recovery files remain at '
+                                       + str(recovery if moved else addon) + '. '
+                                       + str(rollback_error) + '; file recovery: ' + str(move_error)) from original
+                raise RuntimeError('Controller setup failed and its binding selection recovery is unconfirmed. '
+                                   'Keep SteamVR closed and send Activity for repair. Recovery files remain at '
+                                   + str(recovery) + '. ' + str(rollback_error)) from original
         if addon.exists() and owner_is_valid(addon):
+            scope = (local / 'QproFaceTracking').resolve()
+            if (addon.resolve().parent != scope or
+                    any(path.is_symlink() or path.is_junction() for path in (addon, *addon.parents))):
+                raise RuntimeError('Controller setup failed; the recovery path contains a link or is outside '
+                                   'the managed folder. No files were removed. Keep SteamVR closed.') from original
             shutil.rmtree(addon)
         if backup:
             backup.rename(addon)
@@ -242,6 +519,23 @@ def uninstall(local: Path):
                                'Keep SteamVR closed and repair the controller add-on before use.') from error
         raise RuntimeError(f'Controller removal failed: {error}. The add-on files were restored. '
                            'SteamVR registration could not be confirmed; repair the controller add-on before use.') from error
+    try:
+        helper = vrchat_helper()
+        if (recovery / helper.OWNER).exists():
+            report('CONTROLLER_VRCHAT_BINDING',
+                   **helper.restore(recovery, local, tool.parents[2], addon))
+    except (OSError, ValueError, RuntimeError) as error:
+        report('CONTROLLER_BINDINGS_WARNING', message=str(error),
+               next='The add-on was unregistered. Its VRChat recovery files were kept; '
+                    'choose Default in SteamVR if the old binding is still selected.')
+    try:
+        helper = dashboard_helper()
+        if (recovery / helper.OWNER).exists():
+            report('CONTROLLER_DASHBOARD_BINDING',
+                   **helper.restore(recovery, local, tool.parents[2], addon))
+    except (OSError, ValueError, RuntimeError) as error:
+        report('CONTROLLER_BINDINGS_WARNING', message=str(error),
+               next='The add-on was unregistered. Its dashboard recovery files were kept.')
     report('CONTROLLER_SETUP', phase='uninstalled', recovery=str(recovery), restart='Reopen SteamVR')
 
 
@@ -277,7 +571,30 @@ def validate_packet(data: bytes, previous: int):
     return values[3]
 
 
-def set_input_enabled(addon: Path, enabled: bool, mode='trackpad'):
+def validate_input_side(side):
+    if side not in INPUT_SIDES:
+        raise ValueError('Thumb-rest input side must be both, left, or right.')
+    return side
+
+
+def validate_swipe_gain(value):
+    if value is None:
+        return None
+    if type(value) not in (int, float) or not .01 <= value <= 5 or not math.isfinite(value):
+        raise ValueError('Swipe sensitivity gain must be a finite number from 0.01 to 5.')
+    return float(value)
+
+
+def parse_swipe_gain(value):
+    try:
+        return validate_swipe_gain(float(value))
+    except (TypeError, ValueError) as error:
+        raise argparse.ArgumentTypeError('Swipe sensitivity gain must be a finite number from 0.01 to 5.') from error
+
+
+def set_input_enabled(addon: Path, enabled: bool, mode='trackpad', side='both', swipe_gain=None):
+    side = validate_input_side(side)
+    swipe_gain = validate_swipe_gain(swipe_gain)
     if not owner_is_valid(addon):
         raise RuntimeError('Install hand/controller components before enabling thumb-rest input.')
     path = addon / 'resources' / 'settings.json'
@@ -289,7 +606,9 @@ def set_input_enabled(addon: Path, enabled: bool, mode='trackpad'):
     if not isinstance(settings, dict):
         raise RuntimeError('The controller add-on settings must be a JSON object. Close SteamVR '
                            'and reinstall the controller add-on before using thumb-rest input.')
-    settings.update(enabled=enabled, mode=mode)
+    settings.update(enabled=enabled, mode=mode, side=side)
+    if mode == 'swipe' and swipe_gain is not None:
+        settings['swipeGain'] = swipe_gain
     atomic_json(path, settings)
 
 
@@ -312,6 +631,7 @@ class NativeReaderOutput:
     def __init__(self, process):
         self.process = process
         self.listening = threading.Event()
+        self.stopped = threading.Event()
         self.closed = threading.Event()
         self.error = None
         self._lines = deque(maxlen=8)
@@ -330,6 +650,8 @@ class NativeReaderOutput:
                 forward_output(line)
                 if line == 'QPTP_LISTENING address=127.0.0.1 port=27063 rate=60':
                     self.listening.set()
+                elif line == 'QPTP_STOPPED':
+                    self.stopped.set()
         except (OSError, ValueError) as error:
             self.error = str(error)
         finally:
@@ -383,9 +705,123 @@ class NativeReaderOutput:
         return False
 
 
-def relay(root: Path, local: Path, adb: Path, target: str, stop_file: Path, mode: str, parent_closed=None):
+def verify_addon_current(root: Path, addon: Path):
+    relative = Path('bin') / 'win64' / 'driver_qpro_controller.dll'
+    bundled = root / 'controller-input' / 'addon' / relative
+    installed = addon / relative
+    action = 'Close SteamVR, reinstall the controller add-on from this build, then reopen SteamVR.'
+    if not bundled.is_file():
+        raise RuntimeError('The bundled controller add-on DLL is missing. Extract the complete current test ZIP. ' + action)
+    if not owner_is_valid(addon) or not installed.is_file():
+        raise RuntimeError('The current controller add-on is not installed in its managed folder. ' + action)
+    def digest(path):
+        value = hashlib.sha256()
+        with path.open('rb') as source:
+            for block in iter(lambda: source.read(256 * 1024), b''):
+                value.update(block)
+        return value.digest()
+    try:
+        if digest(installed) != digest(bundled):
+            raise RuntimeError('The installed controller add-on DLL does not match this build. ' + action)
+    except OSError as error:
+        raise RuntimeError('The installed controller add-on DLL could not be verified: ' + str(error) + '. ' + action) from error
+
+
+def decode_driver_health(data, sender, nonce):
+    if sender != ('127.0.0.1', 27064) or len(data) > 1024:
+        return None
+    try:
+        def unique_pairs(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError('duplicate health key')
+                value[key] = item
+            return value
+        value = json.loads(data, object_pairs_hook=unique_pairs)
+        if not isinstance(value, dict) or value.get('protocol') != 'QPRO-CTRL-HEALTH-v1' or value.get('nonce') != nonce:
+            return None
+        if value.get('mode') not in ('trackpad', 'joystick', 'swipe', 'mouse') or value.get('side') not in INPUT_SIDES:
+            return None
+        for key in ('enabled', 'settingsValid', 'neutral'):
+            if type(value.get(key)) is not bool:
+                return None
+        for key in ('adoptedSides', 'successfulSides'):
+            if not isinstance(value.get(key), list) or len(value[key]) != 2 or any(type(item) is not bool for item in value[key]):
+                return None
+        errors = value.get('inputErrors')
+        if not isinstance(errors, list) or len(errors) != 2 or any(type(item) is not int or not 0 <= item <= 2147483647 for item in errors):
+            return None
+        for key in ('mouseError', 'restoreErrors', 'settingsRevision', 'appliedRevision'):
+            if type(value.get(key)) is not int or not 0 <= value[key] <= 18446744073709551615:
+                return None
+        if value['appliedRevision'] > value['settingsRevision']:
+            return None
+        return value
+    except (ValueError, TypeError, UnicodeError):
+        return None
+
+
+class DriverHealthClient:
+    """Bounded loopback sideband; QPTP bytes and the reader cadence are unchanged."""
+    def __init__(self, output):
+        self.output = output
+        output.setblocking(False)
+        self.reset()
+
+    def reset(self):
+        # A fresh token prevents a queued enabled-session reply from proving Stop.
+        self.nonce = uuid.uuid4().hex
+        self.next_request = 0
+        self.status = None
+
+    def poll(self, interval=1):
+        now = time.monotonic()
+        if now >= self.next_request:
+            self.next_request = now + interval
+            try:
+                self.output.sendto(('QPRO_CTRL_HEALTH_V1 ' + self.nonce).encode('ascii'), ('127.0.0.1', 27064))
+            except OSError:
+                pass
+        received = None
+        for _ in range(8):
+            try:
+                data, sender = self.output.recvfrom(1025)
+            except (BlockingIOError, socket.timeout):
+                break
+            except OSError:
+                break
+            value = decode_driver_health(data, sender, self.nonce)
+            if value is not None:
+                self.status = received = value
+        return received
+
+    def confirm_disabled(self, mode, side, timeout=2):
+        self.reset()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.poll(.25)
+            value = self.status
+            if value and not value['enabled'] and value['settingsValid'] and value['neutral'] \
+                    and value['mode'] == mode and value['side'] == side \
+                    and value['settingsRevision'] == value['appliedRevision'] and value['appliedRevision'] > 0 \
+                    and not any(value['inputErrors']) and not value['mouseError'] and not value['restoreErrors']:
+                report('CONTROLLER_DRIVER_STATUS', **value)
+                return True
+            time.sleep(.05)
+        if self.status:
+            report('CONTROLLER_DRIVER_STATUS', **self.status)
+        return False
+
+
+def relay(root: Path, local: Path, adb: Path, target: str, stop_file: Path, mode: str,
+          parent_closed=None, side='both', swipe_gain=None):
+    side = validate_input_side(side)
+    swipe_gain = validate_swipe_gain(swipe_gain)
+    input_options = {'swipe_gain': swipe_gain} if mode == 'swipe' and swipe_gain is not None else {}
     parent_closed = parent_closed or threading.Event()
     _, addon = managed_paths(local)
+    verify_addon_current(root, addon)
     reader = root / 'controller-input' / 'qpro-controller-input'
     if not reader.is_file():
         raise RuntimeError('The headset reader is missing from the test ZIP.')
@@ -402,12 +838,15 @@ def relay(root: Path, local: Path, adb: Path, target: str, stop_file: Path, mode
     process = None
     stream = None
     output = None
+    driver_health = None
+    enabled = False
     reader_output = None
     forwarded = False
     try:
         command(base + ['forward', '--no-rebind', 'tcp:27063', 'tcp:27063'])
         forwarded = True
         output = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        driver_health = DriverHealthClient(output)
         command(base + ['shell', 'rm', '-f', REMOTE_STOP])
         process = subprocess.Popen(base + ['shell', 'su', '-c', shlex.quote(READER_PATH + ' --profile ' + PROFILE +
                                           ' --port 27063 --rate 60 --stop-file ' + REMOTE_STOP)],
@@ -431,7 +870,6 @@ def relay(root: Path, local: Path, adb: Path, target: str, stop_file: Path, mode
                 return
             raise reader_output.failure('The thumb-rest reader did not connect within 12 seconds.')
         stream.settimeout(.25)
-        enabled = False
         previous = -1
         buffer = bytearray()
         ready = False
@@ -466,25 +904,36 @@ def relay(root: Path, local: Path, adb: Path, target: str, stop_file: Path, mode
                     break
                 fields = PACKET.unpack(packet)
                 last_valid = time.monotonic()
+                selected_valid = ((side in ('both', 'left') and fields[5] & 1)
+                                  or (side in ('both', 'right') and fields[10] & 1))
                 if not enabled:
                     # Neither a listening marker nor a local forward alone is
                     # input data. Require a fresh side before enabling input;
                     # later neutral packets still clear an active controller.
-                    if not (fields[5] & 1 or fields[10] & 1):
+                    if not selected_valid:
                         continue
-                    set_input_enabled(addon, True, mode)
+                    set_input_enabled(addon, True, mode, side, **input_options)
                     enabled = True
+                    report_dashboard(addon, True, mode, side)
+                    report_vrchat(addon, True, mode, side)
                 if stop_file.exists() or parent_closed.is_set():
                     break
                 output.sendto(packet, ('127.0.0.1', 27064))
-                if not ready and (fields[5] & 1 or fields[10] & 1):
-                    report('TOUCHPAD_READY', protocol='QPTP-v1', mode=mode)
+                health = driver_health.poll()
+                if health:
+                    report('CONTROLLER_DRIVER_STATUS', **health)
+                if not ready and selected_valid:
+                    report('TOUCHPAD_READY', protocol='QPTP-v1', mode=mode, side=side)
                     ready = True
     finally:
         original_error = sys.exc_info()[1]
         failures = []
+        reader_exit_code = None
         try:
-            set_input_enabled(addon, False, mode)
+            set_input_enabled(addon, False, mode, side, **input_options)
+            if enabled:
+                report_dashboard(addon, False, mode, side)
+                report_vrchat(addon, False, mode, side)
         except (OSError, ValueError, RuntimeError) as error:
             failures.append(str(error))
         if stream:
@@ -492,6 +941,12 @@ def relay(root: Path, local: Path, adb: Path, target: str, stop_file: Path, mode
                 stream.close()
             except OSError as error:
                 failures.append('Reader socket close: ' + str(error))
+        if enabled and driver_health:
+            try:
+                if not driver_health.confirm_disabled(mode, side):
+                    failures.append('SteamVR add-on disabled/neutral acknowledgement was not confirmed; check Activity before restarting.')
+            except (OSError, ValueError, RuntimeError) as error:
+                failures.append('SteamVR add-on cleanup acknowledgement: ' + str(error))
         if output:
             try:
                 output.close()
@@ -503,13 +958,13 @@ def relay(root: Path, local: Path, adb: Path, target: str, stop_file: Path, mode
             except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                 failures.append(str(error))
             try:
-                process.wait(timeout=5)
+                reader_exit_code = process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 # The reader is read-only and its connection is closed; do not kill
                 # trackingservice or search/kill arbitrary Android processes.
                 try:
                     process.terminate()
-                    process.wait(timeout=3)
+                    reader_exit_code = process.wait(timeout=3)
                 except (OSError, subprocess.SubprocessError) as error:
                     failures.append(str(error))
                 failures.append('The reader exit was not confirmed; check the headset before restarting.')
@@ -521,6 +976,12 @@ def relay(root: Path, local: Path, adb: Path, target: str, stop_file: Path, mode
                 failures.append('The reader diagnostic stream did not close after cleanup.')
             if reader_output.error:
                 failures.append('Reader diagnostic output: ' + reader_output.error)
+        if process:
+            if reader_exit_code != 0:
+                failures.append('Reader/ADB exit: ' + str(reader_exit_code) +
+                                '; native reader shutdown was not confirmed.')
+            if reader_output is None or not reader_output.stopped.is_set():
+                failures.append('The native reader did not report QPTP_STOPPED; its cleanup was not confirmed.')
         try:
             # Remove only the forward we created for this selected target.
             forwards = command([adb, 'forward', '--list'])
@@ -529,7 +990,9 @@ def relay(root: Path, local: Path, adb: Path, target: str, stop_file: Path, mode
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
             failures.append(str(error))
         if failures:
-            report('CONTROLLER_CLEANUP', reader='unconfirmed', problems=failures)
+            problems = (['Original failure: ' + (bounded_reason(str(original_error)) or type(original_error).__name__)]
+                        if original_error else []) + failures
+            report('CONTROLLER_CLEANUP', reader='unconfirmed', problems=problems)
             raise RuntimeError('Controller cleanup needs attention: ' + '; '.join(failures) +
                                (' Original failure: ' + str(original_error) if original_error else ''))
         report('CONTROLLER_CLEANUP', reader='stopped', inputs='disabled')
@@ -541,9 +1004,20 @@ class WorkerOutput:
         self.process, self.name = process, name
         self.cleanup_confirmed = None
         self.output_error = None
-        self.failure_reason = None
+        self._first_failure_reason = None
+        self.context_reasons = []
+        self.cleanup_problems = []
         self.reader = None
         self.reader_started = False
+
+    @property
+    def failure_reason(self):
+        reasons = [self._first_failure_reason] if self._first_failure_reason else []
+        reasons.extend(reason for reason in self.context_reasons
+                       if not self._first_failure_reason or reason not in self._first_failure_reason)
+        reasons.extend('Cleanup: ' + problem for problem in self.cleanup_problems
+                       if not any(problem in reason for reason in reasons))
+        return '; '.join(reasons) or None
 
     def start(self):
         try:
@@ -556,11 +1030,43 @@ class WorkerOutput:
             self.reader_started = self.reader is not None and self.reader.ident is not None
             raise
 
+    def _keep_cleanup_problem(self, value):
+        problem = bounded_reason(value, 512)
+        if problem and problem not in self.cleanup_problems and len(self.cleanup_problems) < 8:
+            self.cleanup_problems.append(problem)
+
+    def _keep_context_reason(self, value):
+        reason = bounded_reason(value, 480)
+        if reason and reason not in self.context_reasons and len(self.context_reasons) < 4:
+            self.context_reasons.append(reason)
+
     def _observe(self, line):
-        if self.failure_reason is None:
-            self.failure_reason = failure_reason(line)
         stage, _, payload = line.partition(' ')
+        reason = failure_reason(line)
+        primary_reason = reason
+        if self.name == 'hands' and stage in ('HANDS_STOP_CAUSE', 'HANDS_CLEANUP_FAILED'):
+            try:
+                result = json.loads(payload)
+            except ValueError:
+                result = None
+            if isinstance(result, dict):
+                primary_reason = result.get('error')
+                if stage == 'HANDS_CLEANUP_FAILED':
+                    self._keep_cleanup_problem(reason)
+                    self._keep_cleanup_problem(cleanup_phase_reason(result))
+                detached = result.get('detached')
+                if isinstance(detached, list):
+                    for entry in detached[:4]:
+                        self._keep_context_reason(detachment_reason(entry))
+        if stage == 'HANDS_DETACHED' and self.name == 'hands':
+            self._keep_context_reason(reason)
+        elif self._first_failure_reason is None:
+            self._first_failure_reason = bounded_reason(primary_reason, 1024)
+        elif stage == 'HANDS_CLEANUP_FAILED' and self.name == 'hands':
+            if reason and 'phase=' in reason:
+                self._keep_context_reason(reason)
         if self.name == 'hands' and stage == 'HANDS_CLEANUP_FAILED':
+            self._keep_cleanup_problem(reason)
             self.cleanup_confirmed = False
             return
         expected = 'HANDS_CLEANUP' if self.name == 'hands' else 'CONTROLLER_CLEANUP'
@@ -568,6 +1074,9 @@ class WorkerOutput:
             return
         try:
             result = json.loads(payload)
+            if isinstance(result, dict) and isinstance(result.get('problems'), list):
+                for value in result['problems'][:8]:
+                    self._keep_cleanup_problem(value)
             if not isinstance(result, dict):
                 confirmed = False
             elif self.name == 'hands':
@@ -609,6 +1118,8 @@ class WorkerOutput:
 
 
 def run(args, local: Path, adb: Path, target: str):
+    side = validate_input_side(getattr(args, 'side', 'both'))
+    swipe_gain = validate_swipe_gain(getattr(args, 'swipe_gain', None))
     if not args.hands and not args.touchpad:
         raise RuntimeError('Select Hands + controllers or Touch Pro thumb-rest input first.')
     if not args.stop_file:
@@ -623,10 +1134,12 @@ def run(args, local: Path, adb: Path, target: str):
         pass
     parent_closed = parent_closed_event(args.parent_stdin)
     root = Path(args.root).resolve()
-    hands, _ = managed_paths(local)
+    hands, addon = managed_paths(local)
     children = []
     exited_before_stop = False
     try:
+        if args.touchpad:
+            verify_addon_current(root, addon)
         if args.hands:
             python = hands / '.venv' / 'Scripts' / 'python.exe'
             if not (hands / 'ready.json').is_file() or not python.is_file():
@@ -640,8 +1153,12 @@ def run(args, local: Path, adb: Path, target: str):
             children.append(worker)
             worker.start()
         if args.touchpad:
-            child = subprocess.Popen([sys.executable, '-u', __file__, 'relay', '--root', str(root),
-                '--adb', str(adb), '--target', target, '--stop-file', str(stop), '--mode', args.mode, '--parent-stdin'],
+            child_arguments = [sys.executable, '-u', __file__, 'relay', '--root', str(root),
+                '--adb', str(adb), '--target', target, '--stop-file', str(stop), '--mode', args.mode,
+                '--side', side, '--parent-stdin']
+            if args.mode == 'swipe' and swipe_gain is not None:
+                child_arguments.extend(['--swipe-gain', str(swipe_gain)])
+            child = subprocess.Popen(child_arguments,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1, creationflags=NO_WINDOW)
             worker = WorkerOutput(child, 'touchpad')
@@ -658,6 +1175,7 @@ def run(args, local: Path, adb: Path, target: str):
                 break
             time.sleep(.1)
     finally:
+        original_error = sys.exc_info()[1]
         failures = []
         try:
             stop.write_text('controller stop requested\n', encoding='utf-8')
@@ -686,18 +1204,26 @@ def run(args, local: Path, adb: Path, target: str):
                     report('CONTROLLER_CLEANUP', workerPid=child.pid, restoration='still-running')
             worker.finish()
             if worker.cleanup_confirmed is not True or child.returncode == 5:
-                failures.append(worker.name + ' worker cleanup was not confirmed (exit '
-                                + str(child.returncode) + ').')
+                detail = worker.name + ' worker cleanup was not confirmed (exit ' + str(child.returncode) + ').'
+                if worker.failure_reason:
+                    detail += ' Original failure: ' + bounded_reason(worker.failure_reason, 3800)
+                failures.append(detail)
+                failures.extend(worker.name + ' cleanup: ' + problem for problem in worker.cleanup_problems)
             if worker.output_error:
                 failures.append(worker.name + ' output: ' + worker.output_error)
+        if failures and original_error:
+            failures.append('Original failure: ' + (bounded_reason(str(original_error)) or type(original_error).__name__))
         report('CONTROLLER_CLEANUP', confirmed=not failures,
                restoration='unconfirmed' if failures else 'confirmed',
                reader='unconfirmed' if failures else 'stopped', problems=failures)
         if failures:
-            reasons = [worker.name + ': ' + worker.failure_reason for worker in children
+            reasons = [worker.name + ': ' + bounded_reason(worker.failure_reason, 3800) for worker in children
                        if worker.failure_reason]
+            if original_error:
+                reasons.append(bounded_reason(str(original_error)) or type(original_error).__name__)
             raise RuntimeError('Controller cleanup was not confirmed. Keep the Hub open and check Activity.'
-                               + (' Original failure: ' + '; '.join(reasons) if reasons else ''))
+                               + (' Original failure: ' + '; '.join(reasons) if reasons else '')
+                               + ' Cleanup problems: ' + '; '.join(failures))
         if sys.exc_info()[0] is None:
             failed = [worker for worker in children if worker.process.returncode != 0]
             if failed:
@@ -722,6 +1248,8 @@ def main(argv=None):
     parser.add_argument('--stop-file')
     parser.add_argument('--parent-stdin', action='store_true')
     parser.add_argument('--mode', choices=['trackpad', 'joystick', 'swipe', 'mouse'], default='trackpad')
+    parser.add_argument('--side', choices=INPUT_SIDES, default='both')
+    parser.add_argument('--swipe-gain', type=parse_swipe_gain)
     args = parser.parse_args(argv)
     local_value = os.environ.get('LOCALAPPDATA')
     if not local_value:
@@ -766,7 +1294,8 @@ def main(argv=None):
         elif args.action == 'run':
             run(args, local, adb, target)
         else:
-            relay(root, local, adb, target, Path(args.stop_file), args.mode, parent_closed_event(args.parent_stdin))
+            relay(root, local, adb, target, Path(args.stop_file), args.mode,
+                  parent_closed_event(args.parent_stdin), args.side, args.swipe_gain)
 
 
 def entry_point(argv=None):
