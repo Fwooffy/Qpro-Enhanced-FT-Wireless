@@ -318,7 +318,7 @@ try {
         throw "Open QproFaceTracking.exe and complete PC runtime setup first. The AMD installer needs its Python 3.12 base, which may be an existing installation or Qpro's private copy."
     }
     if (-not (Test-Path -LiteralPath $qproRequirements)) {
-        throw "The QproFaceTracking release was not found: $QproRoot"
+        throw "The Qpro Companion release was not found: $QproRoot"
     }
     $env:PYTHONPATH = $QproRoot
     # A parent's visibility mask can expose only Ryzen integrated graphics. Clear
@@ -351,7 +351,7 @@ try {
     }
 
     & $qproBasePython -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'
-    if ($LASTEXITCODE -ne 0) { throw 'QproFaceTracking requires Python 3.12 for these AMD wheels.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Qpro Companion requires Python 3.12 for these AMD wheels.' }
 
     $qproRocmEnv = Initialize-QproRocmEnvironment $qproRocmEnv $qproBasePython -ForceReplacement:($qproReplaceCustomizedEnvironment -or $qproReplaceForUpdate)
     $qproRocmPython = Join-Path $qproRocmEnv 'Scripts\python.exe'
@@ -404,7 +404,7 @@ try {
             Invoke-QproRocmPip $qproRocmPython (@('install', '--no-input', '--disable-pip-version-check', '--no-cache-dir') + $qproAmdTorchPackages) 'Installing AMD ROCm PyTorch 2.9.1 failed.' $qproRocmEnv
         }
 
-        Invoke-QproRocmPip $qproRocmPython @('install', '--no-input', '--disable-pip-version-check', '-r', $qproRequirements) 'Installing QproFaceTracking Python requirements failed.' $qproRocmEnv
+        Invoke-QproRocmPip $qproRocmPython @('install', '--no-input', '--disable-pip-version-check', '-r', $qproRequirements) 'Installing Qpro Companion Python requirements failed.' $qproRocmEnv
 
         $qproPackageProbe = Invoke-QproRocmPythonProbe $qproRocmPython $qproPackageProbeCode $qproPackageProbeArguments
         if ($qproExperimental -and $qproPackageProbe.ExitCode -eq 12) {

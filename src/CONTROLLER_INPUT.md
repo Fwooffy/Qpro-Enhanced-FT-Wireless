@@ -1,4 +1,4 @@
-# Experimental Quest Pro hands and controller input
+# Qpro Companion: experimental hands and controller input
 
 This test implements two independently authored paths. It does not reuse the
 QFTPlus gaze code or modify Qpro's face models. These features are **off by
@@ -23,8 +23,9 @@ click. It does not add another tracked controller or send finger data through
 VRCFaceTracking. App bindings determine what the new inputs do.
 
 The UI exposes Trackpad, Relative joystick, Swipe and Desktop mouse modes.
-Mouse mode is an explicit choice. Trigger-slide input and automatic VRChat
-bindings are not included in this first prototype.
+Mouse mode is an explicit choice. Setup can prepare Dashboard and VRChat menu
+scrolling for recognized bindings; other app actions need manual assignments.
+Trigger-slide input is not included.
 
 ## Compatibility
 
@@ -33,15 +34,18 @@ bindings are not included in this first prototype.
 | Headset Virtual Desktop | 1.34.22.0 | Exact version gate; sustained performance unverified |
 | PC Streamer driver | Exact SHA-256 fingerprints in `hybrid/compatibility.json`; signed Streamer 1.34.23 PC driver also inspected | Private PC layout checked independently; no live test of the new PC/headset pair |
 | Python and Android helper | Frida 17.18.0, Windows x64 / Android ARM64 | Official downloads pinned by SHA-256 |
-| Thumb-rest sensor layout | Firmware build `51503870024400340` | Experimental read-only profile; live validation pending |
+| Thumb-rest sensor layout | Firmware build `51503870024400340` | Both thumbs scrolled well at 100% on one headset; Stop restored neutral output and ordinary controls; Desktop mouse felt smoother |
 | Steam Link | Not admitted | Controller identity and optical transport need separate validation |
 
-Enable headset hand tracking and Singularity's **Simultaneous Hands &
-Controllers** switch before starting Qpro hands. Installing Qpro's components
-does not enable either setting. Turn off Singularity's separate Frida Server
-before use. Keep controller firmware current. Body-tracking interaction is
-unverified. A compatible version/fingerprint is an admission check, not proof
-that the feature works on every headset.
+Before starting Qpro hands, enable both **Hand tracking** and **Automatically
+switch between controllers and hands** in Quest **Settings > Hands & eyes**,
+plus Singularity's **Simultaneous Hands & Controllers** switch. Installing
+Qpro's components does not enable these menu settings. The compatibility check
+does not verify the Quest auto-switch menu option; confirm it in the headset.
+Turn off Singularity's separate Frida Server before use. Keep controller
+firmware current. Body-tracking interaction is unverified. A compatible
+version/fingerprint is an admission check, not proof that the feature works on
+every headset.
 
 The first checked headset version remains **Virtual Desktop Android 1.34.22.0**.
 The signed **Streamer 1.34.23** PC driver is admitted separately because its
@@ -65,10 +69,24 @@ does not uninstall the hands runtime components.
 
 ## Setup and use
 
+Controller switches, modes and the compatibility check are on the **Controllers**
+sidebar page, directly below **Facial tracking**. Optional installation stays on
+**First-time setup**. The bottom **Start tracking** / **Stop tracking** bar is
+shared across pages and controls all selected Qpro features.
+
 ### Headset and VRChat settings
 
-1. On the Quest, enable **Hand Tracking** in its hand-tracking settings. On the
-   checked firmware these are under **Settings > Hands & Eyes**. Set the
+Complete the settings below before installing or starting Qpro hands:
+
+| Where | Required setting |
+| --- | --- |
+| Quest **Settings > Hands & eyes** | **Hand tracking: On.** **Automatically switch between controllers and hands: On.** |
+| **Singularity > AIO Tweaks** | **Simultaneous Hands & Controllers: On.** Some versions say **Simultaneous Hands Controllers**. |
+| Virtual Desktop on the Quest **> Streaming** | **Forward tracking data to PC: On.** **Track controllers: On.** |
+| VRChat **Main Menu > Controls** | **Avatars Use Finger Tracking: On.** |
+
+1. On the Quest, enable both **Hand tracking** and **Automatically switch
+   between controllers and hands** in **Settings > Hands & eyes**. Set the
    controllers down and check that the headset sees your empty hands. Keep the
    headset awake, connect USB or wireless ADB, and allow **Shell / ADB Shell**
    root access if Magisk asks.
@@ -85,6 +103,9 @@ does not uninstall the hands runtime components.
 4. In VRChat, enable **Main Menu > Controls > Avatars Use Finger Tracking**.
    This lets SteamVR skeletal input animate the avatar's fingers. See
    [VRChat's Input 2.0 FAQ](https://docs.vrchat.com/docs/input-20-faq).
+5. Before starting Qpro hands, set controllers down and verify ordinary
+   empty-hand tracking. Tap the controllers together twice in Virtual Desktop
+   if needed to enter hand mode. Continue only when fingers move in VRChat.
 
 ### Virtual Desktop settings for the initial finger check
 
@@ -105,7 +126,8 @@ Index emulation. The [VRCFaceTracking Virtual Desktop guide](https://docs.vrcft.
 also documents forwarding and its consent prompt, and explains that disabling
 **Track controllers** removes Quest controllers from SteamVR.
 
-Keep Quest hand tracking and Singularity's simultaneous switch enabled too.
+Keep Quest hand tracking, **Automatically switch between controllers and
+hands**, and Singularity's simultaneous switch enabled too.
 Emulated Vive trackers are optional body tracking, not a requirement for Qpro
 fingers. Start the PC Streamer and connect through Virtual Desktop, then launch
 SteamVR through Virtual Desktop. These settings do not bypass Qpro's exact
@@ -122,7 +144,7 @@ version and driver checks; newer headset builds still need their own profile.
    not edit global Python or `steamvr.vrsettings`. Repeat installation when the
    Hub asks for a repair or update; it is not a step for every session.
 3. Reopen SteamVR through Virtual Desktop. Select **Virtual Desktop** as the
-   Hub's **Streaming app**. On **Live tracking > Hands and controllers**, press
+   **Facial tracking > Your session > Streaming app**. On **Controllers**, press
    **Check hand/controller compatibility**. This reads versions, current-user
    settings and the driver fingerprint; it does not attach or start a Frida
    helper. An unsupported headset version or driver needs a checked profile,
@@ -145,9 +167,11 @@ version and driver checks; newer headset builds still need their own profile.
 
 ### Troubleshooting
 
-- **Only controller gestures:** recheck Quest hand tracking, Singularity's
+- **Only controller gestures:** recheck Quest **Hand tracking** and
+  **Automatically switch between controllers and hands**, Singularity's
   simultaneous switch and VRChat's **Avatars Use Finger Tracking** setting.
-  Keep fingers visible and inspect Activity for `HANDS_READY` or routing errors.
+  Verify ordinary empty-hand tracking first, then keep fingers visible and
+  inspect Activity for `HANDS_READY` or routing errors.
 - **A preliminary setting is false while the switches are on:** the current
   code warns on known inactive hand/multimodal boolean preferences and proceeds
   to verify live optical input. Simultaneous mode must still be `1`. Missing,
@@ -163,10 +187,63 @@ version and driver checks; newer headset builds still need their own profile.
 
 **Thumb-rest input is separate.** Enable **Experimental Touch Pro thumb-rest
 input** only after checking its firmware compatibility, then choose a
-**Thumb-rest mode**. Set the app's trackpad bindings in SteamVR yourself;
-installing the add-on does not create VRChat actions. Forwarded packets alone
+**Thumb-rest mode** and **Apply mode to**: **Left (L)**, **Right (R)** or **Both**.
+The side selection applies only to extra thumb-rest inputs; normal controller
+inputs and optical fingers remain available on both sides. Trackpad follows
+thumb position; Relative joystick centers on the first touch; Swipe follows
+movement speed with release glide. Set extra game actions in SteamVR yourself;
+the menu-scrolling helpers below preserve those actions. Forwarded packets alone
 do not prove SteamVR adopted the input profile. Desktop mouse mode can move the
-Windows pointer.
+Windows pointer instead of extra SteamVR axes. With Both selected, either thumb
+can move the pointer and either held thumb-rest press keeps left-click down.
+
+For **Swipe**, the **Swipe sensitivity** slider appears below the mode and side
+controls. Choose **25%–200%** in 25% steps; **100%** is the default. Lower values
+scroll more slowly; higher values scroll faster. Press
+**Stop tracking**, adjust it, then **Start tracking**. This is a sensitivity
+preference, not sensor calibration; it cannot correct missed sensor samples.
+
+The installed add-on registers its extra controls when SteamVR discovers the
+controllers, so the binding editor can show them before Qpro tracking starts.
+Their values stay neutral until tracking starts with the feature enabled, and
+return to neutral on Stop, stale input or an unselected side.
+
+### SteamVR dashboard scrolling
+
+The add-on installer extends the installed Valve dashboard default with a
+separate thumb-rest scroll source while retaining its ordinary controls. Turn
+on **Experimental Touch Pro thumb-rest input**, select **Swipe**, choose the
+controller side and press **Start tracking**. The dedicated source scrolls only
+in Swipe mode during tracking; it is neutral in other modes and after Stop.
+Keep both controllers awake during the initial thumb-rest check, even with
+**Left (L)** or **Right (R)** selected.
+
+Setup preserves personal binding choices and ordinary controller actions. It
+can select a prepared binding only when it recognizes the installed format and
+can verify SteamVR's current controller binding key. Otherwise, **Activity**
+explains how to select the prepared **Qpro Companion thumb-rest scrolling**
+binding manually. Unsupported or ambiguous choices stay unchanged with a warning.
+Preparation alone does not confirm that SteamVR loaded the binding.
+
+### VRChat menu scrolling
+
+The installer adds the dedicated Swipe source to a copy of a recognized VRChat
+binding. It preserves movement, gestures, buttons and other actions. It can
+select that copy automatically only when it can verify SteamVR's current
+controller binding key. Without one, a recognized default can be prepared and
+**Activity** asks you to select it in SteamVR's VRChat controller bindings.
+Unsupported bindings stay unchanged with a warning.
+
+This prepares VRChat menu scrolling, not universal game bindings. Assign extra
+actions separately to **Qpro thumb-rest surface (extra)** for each app. Reopen
+SteamVR through Virtual Desktop after installation, select **Swipe**, then
+start tracking and test both dashboard and VRChat menus. Other modes, Stop and
+stale input send neutral scroll. Live checks on the admitted profile confirmed
+scrolling in both Dashboard and VRChat. With **Both** and **100%** selected, both
+thumbs scrolled well and ordinary buttons still worked on the checked headset.
+Stop cleared scrolling, with neutral output and ordinary controls confirmed.
+Desktop mouse movement also felt smoother in the live check. Other firmware
+and app bindings need their own checks after installation.
 
 ## Stop and recovery
 

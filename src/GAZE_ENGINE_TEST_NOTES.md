@@ -59,7 +59,7 @@ installation or firmware change was performed while creating this ZIP.
 Extract it into a new folder and follow the included PDF or
 **Docs/RELEASE_INSTRUCTIONS.md**. Use **Check gaze setup**, then **Prepare gaze**
 when the popup recommends the Hub method. Select **Independent Eye Gaze** on
-**Live tracking** and press **Start tracking**. The headset can temporarily
+**Facial tracking** and press **Start tracking**. The headset can temporarily
 freeze while its tracking service restarts. Press **Stop tracking** and wait
 for Activity to confirm recovery.
 

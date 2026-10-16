@@ -1,6 +1,6 @@
 # Optional command helpers
 
-Most setup is available in `../QproFaceTracking.exe` on the **First-time setup** page. These commands remain available for manual troubleshooting. Keep this `Helpers` folder next to `QproRuntime` and `QproFaceTracking.exe`; each command finds the scripts in the neighboring runtime folder.
+Most setup is available in Qpro Companion's **First-time setup** page, opened with `../QproFaceTracking.exe`. These commands remain available for manual troubleshooting. Keep this `Helpers` folder next to `QproRuntime` and `QproFaceTracking.exe`; each command finds the scripts in the neighboring runtime folder.
 
 | Helper | Purpose |
 | --- | --- |

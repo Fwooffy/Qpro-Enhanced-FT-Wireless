@@ -1,10 +1,10 @@
-# QproFaceTracking PDF companion
+# Qpro Companion PDF guide
 
 <!-- Concise print edition. Keep control names and behavior aligned with RELEASE_INSTRUCTIONS.md and the Hub. Each H2 begins a page; the builder checks that it fits. -->
 
 ## Your first session
 
-Use these three cards on **First-time setup**. Optional features can wait until ordinary face tracking works.
+Start with the three cards on **First-time setup**. Complete one step at a time; optional gaze, AMD and controller features can wait.
 
 1. **Connect your Quest Pro.** Start with **USB cable**, approve USB debugging in the headset and allow **Shell / ADB Shell** in Magisk.
 2. **Install the PC runtime.** Press **Install runtime**. Keep the Hub open while its private Python and tracking libraries download. Wait for completion in **Activity**.
@@ -13,7 +13,9 @@ Use these three cards on **First-time setup**. Optional features can wait until 
 > [!TIP] Check the source before adding features
 > Connect through Virtual Desktop or Steam Link and confirm that mouth expressions and blinks move in VRCFaceTracking's preview. An installed module or green app status does not establish live tracking.
 
-Then open **Live tracking**, choose your features and press **Start tracking**. Finish with **Stop tracking** and wait for cleanup in **Activity**.
+Once expressions move, open **Facial tracking**, choose your features and press **Start tracking**. Finish with **Stop tracking** and wait for cleanup in **Activity**.
+
+Already using the independent-gaze Magisk module? When detected, Hub gaze stays off and disabled. Skip **Check gaze setup** and **Prepare gaze**; ordinary face tracking does not need them.
 
 ### Find your next step
 
@@ -22,12 +24,14 @@ Then open **Live tracking**, choose your features and press **Start tracking**. 
 | Required apps and download | [Before you start](#before-you-start) |
 | Streaming app settings | [Virtual Desktop and Steam Link](#virtual-desktop-and-steam-link) |
 | Connect and install | [USB cable](#usb-cable), [Wireless ADB](#wireless-adb), [Runtime and Qpro module](#runtime-and-qpro-module) |
-| Features and calibration | [Live tracking](#live-tracking), [Cheek puff and cheek suck](#cheek-puff-and-cheek-suck), [Personalize](#personalize) |
-| Optional setup and help | [Independent eye gaze](#independent-eye-gaze), [AMD ROCm](#amd-rocm), [Hands and controllers](#hands-and-controllers), [Setup problems](#setup-problems) |
+| Features and tongue training | [Facial tracking](#facial-tracking), [Cheek puff and cheek suck](#cheek-puff-and-cheek-suck), [Personalize](#personalize) |
+| Optional setup and help | [Independent eye gaze](#independent-eye-gaze), [AMD ROCm](#amd-rocm), [Controllers](#controllers), [Setup problems](#setup-problems) |
+
+Read only the optional feature pages you need. The top-right **Contents** link returns here; PDF bookmarks open any topic directly.
 
 ## Before you start
 
-The **Hub** is `QproFaceTracking.exe`. **ADB** connects it to your Quest. The **Qpro module** supplies your selected face-tracking source to VRCFaceTracking.
+**Qpro Companion** is the app; its main window is the **Hub**. **ADB** connects it to your Quest. The **Qpro module** supplies face tracking to VRCFaceTracking.
 
 ### On the Quest Pro
 
@@ -39,14 +43,14 @@ The **Hub** is `QproFaceTracking.exe`. **ADB** connects it to your Quest. The **
 
 Install **SteamVR**, the [latest VRCFaceTracking from Steam](https://store.steampowered.com/app/3329480/VRCFaceTracking/) and your streaming app's PC software. Setup needs internet access and several gigabytes of free space.
 
-1. Download **QproFaceTracking.V3.0.0.zip** from [Releases](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases) when published, or use the supplied release candidate ZIP.
+1. Download **QproCompanion.V3.0.0.zip** from [Releases](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases) when published, or use the supplied release candidate ZIP.
 2. Right-click the ZIP in File Explorer and choose **Extract All**. Keep `QproFaceTracking.exe`, `Helpers` and `QproRuntime` together.
 3. Open `QproFaceTracking.exe`. For OneDrive, first choose **Always keep on this device** for the whole extracted folder.
 
 > [!NOTE] Independent gaze is optional
 > You do not need a gaze Magisk module or the Hub's gaze preparation for ordinary face tracking, tongue tracking or pupil dilation.
 
-ADB is bundled. **Install runtime** supplies private Python, so no global Python installation is needed. GitHub's automatic **Source code** archives are not the ready-to-run app.
+ADB and private Python are supplied. For update compatibility, the executable, app/data folders and `.qptonguemodel` format keep their old names. The legacy **QproFaceTracking.V3.0.0.zip** is the same package for older updaters; use either ZIP. GitHub's **Source code** archives are not the app.
 
 ## Virtual Desktop and Steam Link
 
@@ -64,6 +68,8 @@ Connect the headset app to the [PC Streamer](https://www.vrdesktop.net/). Open *
 
 Start the PC Streamer and connect before opening VRCFaceTracking. Launch **SteamVR through Virtual Desktop**. For fingers, enable VRChat **Main Menu > Controls > Avatars Use Finger Tracking**. Emulated Vive trackers are optional body tracking, not a face-tracking requirement.
 
+For **Hands + controllers**, also enable Quest **Hand tracking** and **Automatically switch between controllers and hands**, plus Singularity's simultaneous switch. See [the complete prerequisites](#controllers).
+
 ### Steam Link
 
 In the headset's **Advanced Settings**, enable **OSC**, **Share eye tracking data** and **Share face tracking data**. Set **OSC Output Port** to **9015**. Use **Install Steam Link module** with VRCFaceTracking closed.
@@ -80,10 +86,12 @@ USB is the easiest first connection. Leave the cable attached and the headset aw
 1. Connect the Quest Pro to the PC and put it on.
 2. In **USB debugging**, choose **Always allow from this computer**, then **Allow**. The Hub cannot approve this headset permission for you.
 3. On **First-time setup**, set **Connection type** to **USB cable**. Qpro verifies the Quest Pro and remembers it.
-4. If root access is unavailable, allow **Shell / ADB Shell** in Magisk. Open **Live tracking > Your session > Show connection and camera settings**, then **Refresh connection status**.
+4. If root access is unavailable, allow **Shell / ADB Shell** in Magisk. Open **Facial tracking > Your session > Show connection and camera settings**, then **Refresh connection status**.
 
 > [!TIP] You should not normally need to unplug USB
 > The USB selection stays in the app's settings. After reopening the Hub, keep the Quest awake and connected. If it stalls, stop tracking and training, then press **Reconnect USB** in **First-time setup**.
+
+**Reconnect USB** first verifies an already working connection. It does not reset a healthy USB headset; offline recovery is attempted only when needed.
 
 | Result | Next step |
 | --- | --- |
@@ -130,7 +138,7 @@ Press **Install runtime** and keep the Hub open. **Activity** reports PowerShell
 
 Qpro uses private Python and works with or without an existing Python installation. You do not need to uninstall another app's Python. NVIDIA CUDA or CPU uses the normal runtime; AMD acceleration is a separate optional step.
 
-Use **Repair runtime** to rebuild damaged tracking packages. **Restore saved runtime** checks saved backups before replacing the current runtime, and keeps a recovery copy. Both actions require tracking, capture and training to be stopped. They preserve models, recordings and Live tracking choices; AMD ROCm has its own separate environment.
+Use **Repair runtime** to rebuild damaged tracking packages. **Restore saved runtime** checks saved backups before replacing the current runtime, and keeps a recovery copy. Both actions require tracking, capture and training to be stopped. They preserve models, recordings and Facial tracking choices; AMD ROCm has its own separate environment.
 
 ### Install your VRCFaceTracking module
 
@@ -139,25 +147,28 @@ Use **Repair runtime** to rebuild damaged tracking packages. **Restore saved run
 3. Press **Install Virtual Desktop module** or **Install Steam Link module**. Only the selected source's button is available. Wait for completion in **Activity**.
 4. Reopen VRCFaceTracking with the source connected. Check that ordinary expressions move in its preview.
 
+Its card is **Qpro Companion — Virtual Desktop** or **Qpro Companion — Steam Link**, using the Hub's release version. Older QproFaceTracking cards remain recognized.
+
 > [!NOTE] What a module check proves
 > **Installed · input unchecked** checks files. Tracking details also show a module heartbeat and recent applied output. Virtual Desktop's native shared memory has no timestamp, so its input age is unknown. Confirm expressions in VRCFaceTracking's preview; heartbeat does not prove avatar movement.
 
 Junctions, symlinks and Windows Cloud Files are supported. For OneDrive, keep the whole app available offline. Recovery copies go under `%LOCALAPPDATA%\QproFaceTracking\module-recovery`; **Activity** gives the exact path.
 
-If the module is damaged or from the wrong source, follow **Activity**, close VRCFaceTracking and reinstall it. **Check headset compatibility** and **Show firmware details** are optional diagnostics, not requirements for ordinary tracking.
+For a damaged/wrong-source module, follow **Activity**, close VRCFaceTracking and reinstall. File-access/verification errors need their specific diagnosis; they do not by themselves establish card damage. **Check headset compatibility** and **Show firmware details** are optional diagnostics.
 
-## Live tracking
+## Facial tracking
 
-Start the streaming app, SteamVR and VRCFaceTracking. Confirm live face input, then open **Live tracking**.
+Start the streaming app, SteamVR and VRCFaceTracking. Confirm live face input, then open **Facial tracking**.
 
 | Section | What it controls |
 | --- | --- |
-| Your session | **Streaming app**, connection/readiness status and **Show connection and camera settings**. |
+| Your session | Compact readiness status, **Streaming app**, and **Show connection and camera settings** for camera options. |
 | Eyes | **Independent eye gaze + convergence**, **Experimental relative pupil dilation (eye cameras)** and **Adjust eyebrow movement**. |
-| Lower-face tracking | **Lower-face model**, **Experimental tongue tracking**, camera cheeks and native cheek controls. |
-| Hands and controllers | Optional experimental fingers and thumb-rest input. |
+| Lower-face tracking | **Tongue model**, tongue output and the native individual cheek puff/suck switches. |
 
-1. Choose your features. For tongue output, select the bundled v8 demo or your personal **Lower-face model** and enable **Experimental tongue tracking**. Selecting a model alone does not enable its output. With Magisk gaze active, keep Hub gaze off.
+Open **Controllers** below **Facial tracking** for controller options. Health and **Show tracking details** are on **Activity > Tracking health**. The bottom **Start tracking** / **Stop tracking** bar controls all selected features.
+
+1. Choose your features. For tongue output, select **Developer tongue model** or your personal **Tongue model** and enable **Experimental tongue tracking**. Selecting a model alone does not enable its output. With Magisk gaze active, keep Hub gaze off.
 2. Press **Start tracking**. **Activity** confirms requested outputs, the loaded model and GPU or CPU backend.
 3. Use **Stop tracking** before changing a model or camera setting, then start again.
 
@@ -168,7 +179,7 @@ Start the streaming app, SteamVR and VRCFaceTracking. Confirm live face input, t
 **Processing profile** defaults to **Responsive (default)**, keeping the current tracking cadence. **Balanced** limits pupil work to 12 eye pairs per second; **Low CPU** limits it to 8. Tongue keeps the camera cadence in every preset. Lower pupil rates mean slower response and warm-up. Choices are saved for the next start.
 
 > [!NOTE] Stop restores native cheeks
-> Tongue, camera cheek and pupil outputs stop. Individual cheek puff/suck also stop, restoring native cheeks. Eyebrow and built-in smirk adjustments can remain through the installed module; Magisk modules stay active.
+> Tongue and pupil outputs stop. Individual cheek puff/suck also stop, restoring native cheeks. Eyebrow and built-in smirk adjustments can remain through the installed module; Magisk modules stay active.
 
 Wait for cleanup in **Activity** before closing. The tongue model runs on the PC, not on the headset.
 
@@ -178,7 +189,7 @@ Ordinary eye tracking comes from the streaming app. Enable only the extra featur
 
 ### Independent eye gaze + convergence
 
-This starts off. If the **Quest Pro Independent Eye Gaze** Magisk module is enabled, leave it off and skip **Check gaze setup** and **Prepare gaze**. The next page covers the temporary Hub method.
+This starts off. When an active gaze Magisk module is detected, it reads **provided by Magisk** and stays off and disabled. Skip **Check gaze setup** and **Prepare gaze**. Pupil, eyebrow and tongue controls work separately. The next page covers the temporary Hub method.
 
 ### Experimental relative pupil dilation (eye cameras)
 
@@ -199,14 +210,14 @@ For poor performance, close unused camera/browser previews. Inspect **Activity**
 
 ## Independent eye gaze
 
-Choose one method. Independent gaze is optional; tongue, camera cheeks and pupils do not require it.
+Choose one method. Independent gaze is optional; tongue and pupils do not require it.
 
 | Method | What to do in the Hub |
 | --- | --- |
-| Enabled gaze Magisk module | Keep **Independent eye gaze + convergence** off. Skip **Check gaze setup** and **Prepare gaze**. |
+| Enabled gaze Magisk module | When detected, Hub gaze stays off and disabled. Skip **Check gaze setup** and **Prepare gaze**; those buttons are disabled too. |
 | Temporary Hub method | Disable the gaze Magisk module and reboot first. Use **Check gaze setup**, then **Prepare gaze**. Enable Hub gaze only if its checks pass. |
 
-The Magisk route lists **Quest Pro Independent Eye Gaze** and **Magisk OverlayFS** in Singularity **Apps/Modules > Magisk repo**. Follow its exact firmware requirements and reboot prompts.
+The Magisk route lists **Quest Pro Independent Eye Gaze** and **Magisk OverlayFS** in Singularity **Apps/Modules > Magisk repo**. Follow its firmware requirements and reboot prompts. After changing the module, reboot, then use **Reconnect USB** or **Check headset compatibility** to refresh detection. A failed check is not proof that no module exists.
 
 For the Hub route, open **First-time setup > Optional independent gaze > Show gaze setup**. The Hub reads that headset's eye model and engine and prepares a temporary model on the PC. **You do not need to supply an engine file.** A build number alone does not establish engine compatibility.
 
@@ -224,103 +235,61 @@ On the optional gaze card, open **Show gaze setup**, then **Show gaze recovery t
 
 ## Cheek puff and cheek suck
 
-These controls in **Live tracking > Lower-face tracking** adjust the streaming app's cheek signals. They are separate from camera cheek prediction.
+The switches in **Facial tracking > Lower-face tracking** adjust your streaming app's native cheek signals. They do not use a camera model or require cheek training.
 
-### Individual cheek puff
+### Individual cheek puff (1/0)
 
-It starts on with **1/0**. Choose **Cheek puff style**:
+Enable it for **1/0** separation. A clear one-sided puff becomes full strength on that side and zero on the other. A deliberate two-cheek puff still moves both.
 
-| Style | Response |
-| --- | --- |
-| Calibrated | Smooth 0-1 strength, including light puffs. Uses the source's personal profile or its bundled baseline. |
-| 1/0 | A clear one-sided puff becomes 1 on that side and 0 on the other. Deliberate two-cheek puffs still move both. |
-| Balanced | Gentler separation that keeps changes in strength without a calibration profile. |
+### Individual cheek suck (1/0)
 
-Developer baselines were measured on one Quest Pro through both streaming apps. They are starting points, not universal fits. Use **Calibrate cheek puff** for a weak or overly strong response.
+Enable it for the same **1/0** separation of the source's separate left/right cheek-suck signals. It does **not** use negative cheek-puff values. A deliberate two-cheek suck still moves both.
 
-### Individual cheek suck
+1. Connect your streaming app and confirm that expressions move in VRCFaceTracking's preview.
+2. Turn on the individual cheek switches you want, then press **Start tracking**.
+3. Try your own left cheek, right cheek, then both. Compare VRCFaceTracking's preview with your avatar.
 
-This uses separate left/right cheek-suck signals, **not negative puff values**. It starts on with **Strong individual (1/0)**. Choose **Balanced** for a softer response, or turn it off for native values.
+> [!TIP] Turn a switch off for native values
+> A disabled switch passes through that source's original puff or suck values. **Stop tracking**, closing the Hub or a Hub crash restores native cheeks. Saved choices remain for next time.
 
-> [!TIP] Native cheeks when tracking is off
-> Adjustments apply only after **Start tracking**. **Stop tracking**, closing the Hub or a Hub crash restores native cheeks. Saved styles/calibration remain for next time. Native cheek adjustments alone do not need camera tracking.
+Native cheek adjustments alone do not need camera tracking, a tongue model or calibration. Keep other camera features off if you only want these cheek adjustments.
 
-With camera cheeks off, turning **Individual cheek puff** off passes original puff values. If VRCFaceTracking separates the sides but the avatar does not, check its cheek parameters and blendshapes.
-
-## Calibrate cheek puff
-
-This short three-pose calibration changes native cheek response. It does not train cameras or require tongue recording.
-
-1. Wear the headset with your streaming app connected. Its matching Qpro module must be tracking in VRCFaceTracking. Qpro camera tracking need not be running.
-2. On **Live tracking > Lower-face tracking**, press **Calibrate cheek puff** beside **Cheek puff style**. Wait for **Live cheek feed is ready**.
-3. Relax both cheeks. Press **Capture relaxed cheeks** and hold for three seconds.
-4. Puff only your own **left** cheek. Keep the right relaxed, press **Capture left cheek** and hold for three seconds. Relax afterward.
-5. Puff only your own **right** cheek. Keep the left relaxed, press **Capture right cheek** and hold for three seconds.
-
-> [!NOTE] Use your own left and right
-> Left is the side of your left hand. Keep your jaw comfortable and avoid smiling. Follow the written pose label rather than treating the camera image as a mirror.
-
-### Saving and retrying
-
-After all three poses pass, the window saves your profile, selects **Calibrated** and enables **Individual cheek puff**. Its input is the module's **Balanced** cheek strengths. Press **Start tracking** to apply your response.
-
-Repeat weak, unstable or two-cheek samples. Fix a paused/wrong-source feed first. Closing before completion keeps the existing profile. Virtual Desktop and Steam Link have **separate personal profiles**.
-
-Earlier three-pose profiles still work. Four-pose test profiles stay saved but are not used; the bundled baseline is used until a new three-pose calibration passes. Close VRCFaceTracking before updating its module.
-
-## Camera cheek puff
-
-Camera cheeks predict separate strengths from mouth images. This is an experimental alternative to native cheek adjustment.
-
-### Select a combined model
-
-The bundled **Developer tongue + cheeks · highly experimental · v13** is an optional developer v8 copy with cheek outputs trained on one wearer. Its original tongue weights are unchanged. Another face or fit may need personal recording.
-
-1. Choose a combined model under **Live tracking > Lower-face tracking > Lower-face model**.
-2. Enable **Camera cheek puff (experimental)**. Selecting the model alone does not enable cheek output.
-3. Stop and restart tracking. Read the cheek-source message and **Activity** to confirm output ON and the intended model.
-
-> [!WARNING] Native calibration does not train camera cheeks
-> **Calibrate cheek puff** only calibrates the source's native values. Camera cheeks do not use that profile or **Cheek puff style**; their strengths come from the model.
-
-### Train a combined copy
-
-**Quick refinement** and **Full dataset** include cheek cards. For cheeks alone, open **Personalize > Experimental tongue + cheeks model > Show advanced cheek training**. Choose **Parent tongue model**, press **1. Record cheek camera poses**, select the recording under **Completed cheek camera dataset**, then press **2. Train tongue + cheeks copy**.
-
-This freezes the tongue model while learning cheeks; the original stays saved. Check the new copy with fresh relaxed, left, right, both and gentle puffs before relying on it.
-
-Camera cheeks can run with tongue off. Turning them off or losing their feed returns to the selected native cheek style while Qpro runs. **Stop tracking** restores original cheeks.
+If the preview separates the sides but the avatar does not, check its cheek parameters and blendshapes. Small false native cheek values can still appear during other expressions; the module cannot guarantee perfect cheek detection for every face.
 
 ## Personalize
 
-Open **Personalize** in the sidebar; its page heading is **Lower-face calibration**. Record, train, then select the result.
+Open **Personalize** in the sidebar; its page heading is **Tongue training/refinement**. Record, train, then select the result.
 
 | Capture mode | What it records |
 | --- | --- |
-| Quick refinement | **37 cards**, about **15-30 minutes**: 16 tongue cards plus 21 cheek camera cards. |
-| Focused diagonals + facial hair | **22 tongue-only cards**, about **15-30 minutes**. Diagonals and matched hidden/visible poses. |
-| Full dataset | **79 cards**, about **60-120 minutes**: 58 tongue plus 21 cheek cards. Take breaks. |
+| Quick refinement | **16 tongue cards** for a copy of the selected model. |
+| Focused diagonals + facial hair | **22 tongue cards**, about **15-30 minutes**. Diagonals and matched hidden/visible poses. |
+| Full dataset | **58 tongue cards** for a new personal model. Take breaks. |
 
-1. For Quick or Focused, first choose the model to extend under **Live tracking > Lower-face tracking > Lower-face model**. Full creates a new personal model instead.
+1. For Quick or Focused, first choose the model to extend under **Facial tracking > Lower-face tracking > Tongue model**. Full creates a new personal model instead.
 2. Quick uses **1. Record refinement** and **2. Train personalized copy**. **Show focused and full captures** reveals the other modes.
 3. Hold each pose. Press **SPACE** once per still; save at least the displayed minimum before **ENTER** advances.
 4. Under **Recording to train**, choose your completed recording and press that mode's training button. Wait for completion in **Activity**.
-5. Select the result under **Lower-face model**, then stop and restart tracking.
+5. Select the result under **Tongue model**, then stop and restart tracking.
 
 > [!TIP] Capture varied stills, not a moving pose
-> Hold one pose per still. Vary jaw/headset position slightly between stills. Include hidden tongue, diagonals, gentle puffs and non-puff expressions. Cheek labels use the requested pose, so a weak native signal does not block them.
+> Hold one pose per still. Vary jaw/headset position slightly between stills. Include hidden tongue, visible extension strengths and diagonals. Capture smiles and other hidden-tongue poses too, so they are not mistaken for tongue movement.
 
 Tongue cards need fresh VRCFaceTracking input, even while values remain steady. Held-out training checks use the same recording; a fresh recording or live test still matters.
 
 ## Models and facial hair
 
-The bundled starting model is **Developer-trained tongue model · v8 demo**. Model names can change after renaming/import; choose your intended entry under **Lower-face model**.
+**Developer tongue model** is the default on a fresh setup. Updates keep personal/imported selections; retired bundled choices switch to the new developer model. It adds a visibility detector trained with clean-shaven recordings while retaining the original developer tongue direction outputs.
+
+A separate recording after reseating the same wearer's headset showed fewer missed detections with native fusion. One small tongue tip during a smile was still missed. Some older bearded poses worsened; broader wearer and facial-hair testing remain pending. Start with **Tongue visibility > Weighted camera + native**; **Camera only** can produce false detections.
+
+**Developer tongue model** and **Mustachio** are the two bundled choices. Personal imports and refinements remain available. Local model numbers can change during updates or imports; choose the friendly name under **Tongue model**.
 
 ### Mustachio
 
-**Mustachio · highly experimental · v9** combines developer v8 with a focused capture from one bearded and moustached wearer. Broader facial-hair and independent clean-shaven tests are pending; it may work worse for some people.
+**Mustachio · highly experimental · v9** combines the earlier developer tongue model with a focused capture from one bearded and moustached wearer. Broader facial-hair and independent clean-shaven tests are pending; it may work worse for some people.
 
-Select it on **Live tracking**, then restart. Contrast processing is automatic. Quick/Focused can extend it, keeping the experimental label after export/import or renaming. Full makes a new personal model.
+Select it on **Facial tracking**, then restart. Contrast processing is automatic. Quick/Focused can extend it, keeping the experimental label after export/import or renaming. Full makes a new personal model.
 
 > [!WARNING] Hair cannot be removed by training
 > Keep facial hair/bandages as normally worn. Check both camera views during visible poses and record hidden poses too. Contrast processing cannot reveal a completely covered tongue or invent hidden pixels.
@@ -329,7 +298,7 @@ Select it on **Live tracking**, then restart. Contrast processing is automatic. 
 
 Export backups and import working **V2.0 or newer** `.qptonguemodel` files. Pre-V2.0 models need recapture/retraining. Exports contain weights, not camera recordings. You can refine an imported model with **new** recordings; exports cannot reconstruct its original captured poses.
 
-**Activity** names the loaded model. Use **Lower-face tracking > Show camera settings > Motion smoothing** to soften extension/retraction. **Tongue visibility > Camera only** can help native-gate flicker but is not a guarantee for obscured poses.
+**Activity** names the loaded model. Use **Lower-face tracking > Show camera settings > Motion smoothing** to soften extension/retraction. Start with **Tongue visibility > Weighted camera + native**. Use **Camera only** only after checking for false detections and obscured poses.
 
 ### Delete a saved recording
 
@@ -359,15 +328,15 @@ The 10.1 recipe passed offline checks, not a live installation in this review. S
 
 ## Updates
 
-The Hub checks for a newer stable release when it opens. Installation waits for your click.
+The Hub checks for a newer stable release when it opens. **Update available** offers **View update** for details or **Later** to dismiss. It waits until the Hub is active and idle, and appears once per release per session. Neither choice installs anything.
 
-1. Click **Check updates** or **Update available** at the top right to read release notes.
+1. Use **View update** or the top-right **Update available** link to read release notes. After **Later**, that link keeps the checked details, including after a temporary network failure. **Check updates** checks manually.
 2. Stop tracking, then click **Update**. The ZIP checksum and packaged files are verified. Cancelling the download leaves the current app unchanged.
 3. Click **Restart and update**. App files are replaced in the **same folder**, then the Hub reopens. Start tracking yourself when ready.
 4. Open **Components**, review its changes and click **Update components** for installed modules/private runtimes that need updating.
 
 > [!TIP] Your setup stays with you
-> Models, recordings, enabled options and connections are preserved. A colliding bundled model does not replace your existing pair. Updates do not start tracking automatically.
+> Personal models, recordings, enabled options and connections are preserved. Retired bundled choices switch to the new developer model. A personal pair keeps its number and selection; the new model uses another number if needed. Updates do not start tracking automatically.
 
 ### Update choices
 
@@ -381,43 +350,108 @@ Close VRCFaceTracking and wait for its module process to exit before a module up
 
 Updates retain the streaming app and ROCm track. They do not enable optional components you never installed or change another app's Python. Errors stop remaining updates. Recovery copies are kept; ROCm retains its verified environment until new GPU checks pass. Allow extra disk space.
 
-## Hands and controllers
+## Controllers
+
+Open **Controllers** in the sidebar for the hand/controller compatibility check, feature switches and modes. Installation stays on **First-time setup**; the shared bottom bar starts/stops selected features.
 
 **Experimental hands + controllers** tracks real fingers while holding Touch Pro. Pose, buttons and haptics still come from controllers. It is **Virtual Desktop only**, separate from the face module and off by default.
 
-1. Enable Quest hand tracking in **Settings > Hands & Eyes** on the checked firmware. With controllers down, check that empty hands track.
-2. In **Singularity > AIO Tweaks**, enable **Simultaneous Hands & Controllers** (some versions say **Simultaneous Hands Controllers**). Leave it on. Disable Singularity's separate **Frida Server** to avoid a competing helper.
-3. Finish **Install runtime**. **Close SteamVR** and wait for exit. Open **First-time setup > Optional hands and controllers > Show hands setup and uninstall**, then **Install hand/controller components**.
-4. In headset Virtual Desktop **Streaming**, enable **Forward tracking data to PC** and **Track controllers**; leave **Emulate Index controllers** off for the first check. Accept the tracking permission.
-5. Connect through Virtual Desktop and launch SteamVR from its menu. Use SteamVR VRChat with **Main Menu > Controls > Avatars Use Finger Tracking** on.
-6. Use **Live tracking > Hands and controllers > Check hand/controller compatibility**. If admitted, enable **Experimental hands + controllers** and press **Start tracking**. Leave thumb-rest input off initially.
+### Turn on these settings first
+
+| Where | Required setting |
+| --- | --- |
+| Quest **Settings > Hands & eyes** | **Hand tracking: On.** **Automatically switch between controllers and hands: On.** |
+| **Singularity > AIO Tweaks** | **Simultaneous Hands & Controllers: On.** Some versions say **Simultaneous Hands Controllers**. |
+| Virtual Desktop on the Quest **> Streaming** | **Forward tracking data to PC: On.** **Track controllers: On.** Accept the tracking-data permission. |
+| VRChat **Main Menu > Controls** | **Avatars Use Finger Tracking: On.** Use the SteamVR version of VRChat. |
+
+For the initial check, keep Virtual Desktop **Emulate Index controllers** off. Turn off Singularity's separate **Frida Server** so it does not compete with Qpro's helper.
+
+> [!WARNING] Auto-switch is a separate prerequisite
+> Quest hand tracking and Singularity's simultaneous switch do not replace **Automatically switch between controllers and hands**. Qpro does not enable or verify that menu option for you; check it in the headset.
+
+Before starting Qpro hands, connect Virtual Desktop and verify ordinary empty-hand tracking with controllers set down. If needed, tap the controllers together twice to enter hand mode. Continue only when fingers move in VRChat.
+
+Next: [install and start the feature](#set-up-hands-controllers). USB ADB alone does not start a Virtual Desktop VR session.
+
+## Set up hands + controllers
+
+First complete [the prerequisite settings](#controllers). Keep all those switches enabled while using this feature.
+
+### Install once
+
+1. Finish **Install runtime**. **Close SteamVR** and wait for it to exit.
+2. Open **First-time setup > Optional hands and controllers > Show hands setup and uninstall**, then press **Install hand/controller components**. Keep the Hub open until **Activity** reports completion.
+3. Connect through Virtual Desktop, then launch SteamVR from its menu. Reopen VRChat.
+
+Installation downloads verified Frida 17.18.0 into Qpro's private environment and registers its add-on. Repeat only when the Hub asks for repair or update.
+
+For thumb-rest sessions, Qpro hash-checks the installed add-on DLL against this build before input workers start. If it differs, **close SteamVR**, reinstall the controller add-on from the current build, then reopen SteamVR through Virtual Desktop. Matching files on disk is a precheck, not proof that SteamVR loaded that driver.
+
+### Start each session
+
+1. Choose **Virtual Desktop** under **Facial tracking > Your session > Streaming app**. Open **Controllers** and press **Check hand/controller compatibility**.
+2. Green **Hand/controller prechecks passed** means versions/settings passed; it does not confirm live input or performance. Red is blocked; yellow is unchecked/waiting. Follow the result's next step.
+3. Turn on **Experimental hands + controllers** and press **Start tracking**. Leave **Experimental Touch Pro thumb-rest input** off for this first finger check; it is separate.
+4. Hold the controllers with your hands visible to the headset cameras. Move individual fingers and check **both** hands in VRChat while movement and buttons still work.
 
 > [!WARNING] Experimental performance
 > A live test showed optical fingers with held controllers but caused a substantial FPS drop. The current revision still needs a sustained check. If the game lags or SteamVR becomes unstable, stop and leave this option off.
 
-Installation downloads verified Frida 17.18.0 into Qpro's private environment and registers its add-on. It does not enable your Quest, Singularity or VRChat switches. USB ADB alone does not start a Virtual Desktop VR session.
+**Only controller gestures?** Recheck Quest **Automatically switch between controllers and hands**, hand tracking, Singularity's simultaneous switch and VRChat finger tracking. Verify ordinary empty-hand tracking, then retry with fingers in camera view.
+
+Finish with **Stop tracking** and wait for confirmed cleanup. [The next page](#hands-checks-and-thumb-rest-input) explains readiness, compatibility failures and removal.
 
 ## Hands checks and thumb-rest input
 
-A version check is the first gate. Moving real fingers with both controllers is the live check.
-
 ### Current compatibility boundary
 
-The admitted headset version is **Virtual Desktop 1.34.22.0**, with an exact checked PC driver. The original and inspected **1.34.23 beta PC driver** are admitted separately. **Headset Virtual Desktop 1.34.23.0 is not yet admitted.**
+**Headset Virtual Desktop 1.34.22.0** and checked PC drivers, including **1.34.23 beta PC driver**, are admitted. **Headset 1.34.23.0 is not admitted.**
 
-Unsupported versions, unreadable settings or controller layouts refuse startup. Reinstallation cannot add a missing profile. Preliminary hand preferences can appear inactive before simultaneous mode starts; known inactive values warn, then Qpro requires fresh optical input. Do not edit preferences by hand.
+Unsupported versions or layouts block startup; reinstalling cannot add support. Follow Activity for settings warnings; do not edit headset preferences by hand.
 
 ### Confirm and stop
 
-`HANDS_READY` in **Activity** reports optical data routed to **at least one** held controller. Check **both** hands: individual fingers should move while pose/buttons work. Controller-button fist, point and open gestures are not optical proof.
+**Live optical fingers received** / `HANDS_READY` confirms fresh optical data routed to **at least one** held controller. Check **both** real hands in VRChat; button gestures do not prove optical fingers.
 
-Press **Stop tracking** and wait for confirmed cleanup. If restoration is unconfirmed, keep the feature off, close SteamVR, restart headset Virtual Desktop and reopen SteamVR. Keep the log.
+**Thumb-rest input received** / `TOUCHPAD_READY` means selected-side sensor packets reached PC loopback. `CONTROLLER_DRIVER_STATUS` reports settings, adopted sides, input calls and errors. Neither proves bindings or avatar movement.
+
+**Stop tracking:** wait for confirmed hands restoration and fresh disabled/neutral driver output, without held mouse presses or errors. Reader exit alone is insufficient. If cleanup is unconfirmed, keep input off and follow Activity's recovery steps.
 
 ### Experimental Touch Pro thumb-rest input
 
-This separate option adds SteamVR trackpad input. Its first sensor profile is limited to build **51503870024400340** and has not been tested live. Open **Show hand and controller details** for **Thumb-rest mode**: **Trackpad**, **Relative joystick**, **Swipe** or **Desktop mouse**. Mouse mode moves the Windows pointer. Configure SteamVR bindings for the app.
+Sensor profile **51503870024400340** has a live check on one headset; other firmware remains unverified. Directly below the two feature switches, choose **Thumb-rest mode** and **Apply mode to**: **Left (L)**, **Right (R)** or **Both**. This affects extra inputs only; keep both controllers awake for the initial check.
 
-To remove it, close SteamVR, press **Uninstall controller add-on** on **First-time setup**, then reopen SteamVR. A recovery copy stays. This removes the thumb-rest add-on, not the hands runtime or Singularity's switch. See [the controller guide](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/blob/main/src/CONTROLLER_INPUT.md).
+| Thumb-rest mode | What it does |
+| --- | --- |
+| Trackpad | Follows your thumb's position. |
+| Relative joystick | Centers on first touch; lift your thumb to reset. |
+| Swipe | Scrolls with movement speed and a short glide on release. |
+| Desktop mouse | Moves the Windows pointer; pressing the rest gives a left-click. With Both, movement is summed and either thumb can hold the click. |
+
+The **Swipe sensitivity** slider appears only in Swipe mode: **25%–200%**, in 25% steps, with **100%** as the default. Lower scrolls more slowly; higher scrolls faster. **Stop tracking**, adjust, then **Start tracking**. This is a sensitivity preference, not sensor calibration.
+
+## SteamVR scrolling and controller recovery
+
+The installed add-on registers extra controls when SteamVR discovers the controllers, before Qpro tracking starts. Their values stay neutral while tracking is off. Reopen SteamVR through Virtual Desktop after installing the add-on.
+
+### Extra application actions
+
+Assign **Qpro thumb-rest surface (extra)** to additional game actions in SteamVR's binding editor. **SteamVR binding instructions** in Qpro explains this. No premade game assignments replace your bindings; actions depend on each application's support.
+
+### Dashboard and VRChat menus
+
+**Dashboard scrolling:** setup adds a scroll source, preserving ordinary controls. Personal dashboard choices stay selected. Use **Swipe** during tracking; other modes and Stop send neutral scroll. If needed, select **Qpro Companion thumb-rest scrolling** manually as Activity explains.
+
+**VRChat menu scrolling:** setup extends a recognized binding. Automatic selection requires an existing binding selection the installer can verify; otherwise select the prepared binding manually. Preparation is not proof of live scrolling. Unrecognized formats or ambiguous choices stay unchanged with a warning.
+
+On the checked headset, **Both / 100%** scrolled well in Dashboard and VRChat, with ordinary buttons working. Desktop mouse movement also felt smoother. Stop cleared scrolling and restored neutral output without errors or remaining workers. Other firmware and app bindings need their own checks.
+
+### Stop or remove the add-on
+
+Press **Stop tracking** and wait for Activity to confirm cleanup. Keep the app open if restoration is unconfirmed. Desktop mouse should release its click, and ordinary controls should keep working.
+
+To remove thumb-rest input, close SteamVR. Open **First-time setup > Optional hands and controllers**, expand **Show hands setup and uninstall**, then press **Uninstall controller add-on**. Reopen SteamVR afterward. Recovery copies stay; hands components and Singularity are unchanged. See [the controller guide](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/blob/main/src/CONTROLLER_INPUT.md).
 
 ## Return to ordinary tracking
 
@@ -425,7 +459,7 @@ Stopping a session, removing a PC module and disabling headset gaze are differen
 
 | What you want | What to do |
 | --- | --- |
-| Native cheek puff/suck | **Stop tracking**. With camera cheeks off, disable the individual cheek switches for native values during a session too. |
+| Native cheek puff/suck | **Stop tracking**. Disable the individual cheek switches for native values during a session too. |
 | Native eyebrows | Turn **Adjust eyebrow movement** off. |
 | Remove Qpro's whole face mapping | Stop, close VRCFaceTracking and **Uninstall Qpro module**. Reopen with exactly one official source module. |
 | Restore a recorded Hub gaze session | Stop, then **Recover Qpro gaze** and read its result. |
@@ -468,10 +502,9 @@ Check source, module, camera, model and avatar before retraining.
 | Symptom | What to check |
 | --- | --- |
 | Tongue drops out or loses accuracy | Check loaded model, output state and freshness in **Activity**. Stale frames need performance attention; fresh hidden poses may need refinement. Try a known working model. |
-| Both camera cheeks work but one side does not | Confirm a combined model and **Camera cheek puff (experimental)**. Restart and check output ON. Another face or fit may need camera cheek recording. |
-| Native cheek calibration waits/rejects | Check source and **Live cheek feed is ready**. Keep the headset on, avoid smiling and repeat weak/unstable samples. |
+| Both avatar cheeks move together | Confirm the individual cheek switch and a running Qpro session. If VRCFaceTracking separates the sides, check the avatar's cheek parameters/blendshapes. |
 | Pupils jump or lag | Lower **Pupil response**, check backend/frame age, close unused previews and reduce other camera work. |
-| Hands lag or only button gestures | Stop if FPS drops. Recheck required switches, exact Virtual Desktop version and `HANDS_READY`; inspect both real fingers. |
+| Hands lag or only button gestures | Stop if FPS drops. Recheck [the required switches](#controllers), including Quest auto-switch, exact Virtual Desktop version and `HANDS_READY`; inspect both real fingers. |
 
 ### Send useful diagnostics
 

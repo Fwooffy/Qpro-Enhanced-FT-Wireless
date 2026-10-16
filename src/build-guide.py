@@ -57,7 +57,8 @@ TOKEN = re.compile(r"\[([^\]]+)\]\(([^)]+)\)|\*\*([^*]+)\*\*|`([^`]+)`|\*([^*]+)
 
 
 def normalized(text: str) -> str:
-    return text.translate(str.maketrans({"\u2011": "-", "\u2013": "-", "\u2014": "-",
+    # Helvetica supports the em dash used in the module's exact display name.
+    return text.translate(str.maketrans({"\u2011": "-", "\u2013": "-",
         "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u00d7": "x"}))
 
 
@@ -150,9 +151,9 @@ class CoverMark(Flowable):
 
 
 class GuideDoc(BaseDocTemplate):
-    def __init__(self, version: str, titles: list[str]):
-        super().__init__(str(OUTPUT), pagesize=A4, leftMargin=MARGIN, rightMargin=MARGIN,
-                         topMargin=88, bottomMargin=66, title=f"QproFaceTracking {version} - Setup and feature guide",
+    def __init__(self, version: str, titles: list[str], output: Path = OUTPUT):
+        super().__init__(str(output), pagesize=A4, leftMargin=MARGIN, rightMargin=MARGIN,
+                         topMargin=88, bottomMargin=66, title=f"Qpro Companion {version} - Setup and feature guide",
                          author="Fwooffy", subject="Rooted Quest Pro setup, features and recovery", pageCompression=1)
         self.version, self.titles, self.records = version, titles, []
         self.addPageTemplates(PageTemplate("guide", frames=[Frame(MARGIN, FRAME_BOTTOM, WIDTH, HEIGHT,
@@ -168,10 +169,19 @@ class GuideDoc(BaseDocTemplate):
         c.rect(MARGIN, PAGE_H - 56, 34, 3, fill=1, stroke=0)
         c.setFont("Helvetica-Bold", 9)
         c.setFillColor(WHITE)
-        c.drawString(MARGIN, PAGE_H - 33, "QPRO HUB  /  SETUP & FEATURE GUIDE")
+        c.drawString(MARGIN, PAGE_H - 33, "QPRO COMPANION  /  SETUP & FEATURE GUIDE")
         c.setFont("Helvetica", 9)
         c.setFillColor(MUTED)
-        c.drawRightString(PAGE_W - MARGIN, PAGE_H - 33, self.version)
+        c.drawRightString(PAGE_W - MARGIN, PAGE_H - 25, self.version)
+        if doc.page > 2:
+            c.setFont("Helvetica", 8)
+            c.setFillColor(ACCENT)
+            c.drawRightString(PAGE_W - MARGIN, PAGE_H - 40, "Contents")
+            # A direct link is easier to find than the viewer's bookmark panel.
+            link_width = c.stringWidth("Contents", "Helvetica", 8)
+            c.linkRect("Back to contents", "your-first-session",
+                       (PAGE_W - MARGIN - link_width, PAGE_H - 42,
+                        PAGE_W - MARGIN, PAGE_H - 32), relative=0, thickness=0)
         c.setStrokeColor(BORDER)
         c.setLineWidth(.5)
         c.line(MARGIN, 47, PAGE_W - MARGIN, 47)
@@ -254,41 +264,44 @@ def page_content(section: dict, number: int):
 def cover(version: str):
     cover_title = ParagraphStyle("cover title", parent=TITLE, fontSize=32, leading=38)
     return [paragraph("QUEST PRO  /  ROOTED HEADSET", KICKER), Spacer(1, 10),
-            paragraph("QproFaceTracking", cover_title), paragraph("Set up once.\nChoose what you track.", TITLE),
+            paragraph("Qpro Companion", cover_title), paragraph("Set up once.\nChoose what you track.", TITLE),
             paragraph(f"{version} release candidate\nUSB or wireless ADB - Virtual Desktop or Steam Link", DECK),
             CoverMark(), Spacer(1, 24), paragraph("Start here", H3),
             paragraph("Get ordinary face tracking moving first. Then add tongue tracking, cheek controls, "
                       "pupil dilation or other optional features at your own pace."),
             *note("WARNING", "Required before setup", "A **rooted Meta Quest Pro** and the latest "
                   "**VRCFaceTracking from Steam**. Other Quest models and unrooted headsets are not supported."),
-            paragraph("This guide follows the Hub's menu and button names. Click underlined text for links, "
-                      "or use the PDF bookmarks to jump to a topic.", SMALL)]
+            paragraph("Follow the three setup steps on the next page. After ordinary face tracking works, "
+                      "read the pages for the optional features you choose. Underlined links, the Contents "
+                      "link and PDF bookmarks help you move between topics.", SMALL)]
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--audit", type=Path, help="Write actual page headings for review")
+    parser.add_argument("--output", type=Path, default=OUTPUT, help="Save a review without replacing the bundled guide")
     args = parser.parse_args()
-    match = re.search(r"^# QproFaceTracking (V\d+\.\d+\.\d+)", REFERENCE.read_text(encoding="utf-8"))
+    match = re.search(r"^# Qpro Companion (V\d+\.\d+\.\d+)", REFERENCE.read_text(encoding="utf-8"))
     if not match:
-        raise ValueError("The text guide must declare a three-part QproFaceTracking version")
+        raise ValueError("The text guide must declare a three-part Qpro Companion version")
     version = match[1]
     pages = sections(SOURCE.read_text(encoding="utf-8"))
-    titles = ["QproFaceTracking"] + [item["title"] for item in pages]
+    titles = ["Qpro Companion"] + [item["title"] for item in pages]
     if len(set(map(slug, titles))) != len(titles):
         raise ValueError("Page headings must be unique for internal links")
     story = cover(version)
     for i, section in enumerate(pages, 2):
         story.append(PageBreak())
         story.extend(page_content(section, i))
-    doc = GuideDoc(version, titles)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    doc = GuideDoc(version, titles, args.output)
     doc.build(story)
     if doc.page != len(titles):
         raise ValueError(f"Expected {len(titles)} guide pages, got {doc.page}; review overflow")
     if args.audit:
         args.audit.parent.mkdir(parents=True, exist_ok=True)
         args.audit.write_text(json.dumps({"version": version, "pages": doc.page, "headings": doc.records}, indent=2), encoding="utf-8")
-    print(f"Built {doc.page} pages: {OUTPUT}")
+    print(f"Built {doc.page} pages: {args.output}")
 
 
 if __name__ == "__main__":

@@ -1,13 +1,13 @@
 # Third-party notices and release boundary
 
-QproFaceTracking is independent research and is not affiliated with or endorsed by
+Qpro Companion is independent research and is not affiliated with or endorsed by
 Meta, Virtual Desktop, VRCFaceTracking, VRChat, Project Babble, or EyeTrackVR.
 
 - The release bundles the minimal official Android SDK Platform-Tools files needed
   for ADB. Google's accompanying `platform-tools/NOTICE.txt` is included unchanged.
   SteamVR, Virtual Desktop, and VRCFaceTracking remain external software.
 - The release bundles the official CPython 3.12.10 64-bit NuGet archive
-  solely to create QproFaceTracking's private per-user runtime. Its unmodified
+  solely to create Qpro Companion's private per-user runtime. Its unmodified
   license is included at `python-runtime/LICENSE.txt`, and its source URL and
   SHA-256 are recorded in `python-runtime/README.txt`.
   PyTorch, OpenCV, and NumPy are downloaded into that private runtime during setup

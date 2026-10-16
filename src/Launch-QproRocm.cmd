@@ -12,7 +12,7 @@ if not exist "%QPRO_HUB%" (
 )
 tasklist /FI "IMAGENAME eq QproFaceTracking.exe" /NH 2>NUL | find /I "QproFaceTracking.exe" >NUL
 if not errorlevel 1 (
-  echo QproFaceTracking is already open. Close it first, then run this launcher.
+  echo Qpro Companion is already open. Close it first, then run this launcher.
   pause
   exit /b 1
 )

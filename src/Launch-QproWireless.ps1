@@ -10,7 +10,7 @@ if (-not (Test-Path -LiteralPath $adb) -or -not (Test-Path -LiteralPath $hub)) {
     throw "The Hub or bundled Android Platform-Tools are missing. Extract the full ZIP again."
 }
 if (Get-Process -Name QproFaceTracking -ErrorAction SilentlyContinue) {
-    throw "Close the existing QproFaceTracking Hub before starting the wireless launcher."
+    throw "Close the existing Qpro Companion before starting the wireless launcher."
 }
 
 if ([string]::IsNullOrWhiteSpace($AdbTarget)) {
@@ -47,5 +47,5 @@ if ($rootExit -ne 0 -or $rootProbe -notmatch 'uid=0\(root\)') {
 $env:ANDROID_SERIAL = $AdbTarget
 $env:QPRO_ADB_TARGET = $AdbTarget
 $env:QPRO_ADB = $adb
-Write-Host "Starting QproFaceTracking with wireless Quest $AdbTarget..."
+Write-Host "Starting Qpro Companion with wireless Quest $AdbTarget..."
 Start-Process -FilePath $hub -WorkingDirectory (Split-Path -Parent $hub)
