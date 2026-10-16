@@ -30,7 +30,7 @@ if ($Rebuild) {
         -not (Test-Path -LiteralPath (Join-Path $VrcftInstallDir "VRCFaceTracking.SDK.dll") -PathType Leaf)) {
         throw "For -Rebuild, pass -VrcftInstallDir with your Steam VRCFaceTracking installation containing its SDK DLL. Release users do not need to rebuild."
     }
-    & dotnet build $project -c Release "-p:VrcftInstallDir=$([System.IO.Path]::GetFullPath($VrcftInstallDir))"
+    & dotnet build $project -c Release "-p:Version=$QproModuleVersion" "-p:VrcftInstallDir=$([System.IO.Path]::GetFullPath($VrcftInstallDir))"
     if ($LASTEXITCODE -ne 0) { throw "Building the Qpro module failed." }
 }
 if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "The prebuilt Qpro module is missing. Re-extract the complete release ZIP." }
@@ -63,8 +63,8 @@ try {
     New-Item -ItemType Directory -Path $stageDirectory | Out-Null
     $stageDll = Join-Path $stageDirectory $identity.Dll
     Copy-Item -LiteralPath $source -Destination $stageDll
-    $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
-    if ((Get-FileHash -LiteralPath $stageDll -Algorithm SHA256).Hash -ne $sourceHash) { throw "The staged Qpro DLL failed its SHA-256 check." }
+    $sourceHash = Get-QproFileHash $source
+    if ((Get-QproFileHash $stageDll) -ne $sourceHash) { throw "The staged Qpro DLL failed its SHA-256 check." }
     # VRCFT metadata uses MD5 for FileHash. Qpro's own transaction checks use
     # SHA-256; the two hashes describe different contracts.
     $metadata = [ordered]@{
@@ -73,13 +73,13 @@ try {
         Version = $QproModuleVersion
         IsLocal = $true
         AuthorName = "Fwooffy"
-        ModuleName = "QproFaceTracking - " + $identity.Name
+        ModuleName = $identity.DisplayName
         ModuleDescription = "Quest Pro face tracking from " + $identity.Name + " with opt-in Qpro gaze, tongue, cheek and pupil outputs."
-        UsageInstructions = "Select " + $identity.Name + " in Qpro Hub. Use one source module at a time. Start VRCFaceTracking after installing; start optional live overrides in Qpro Hub."
+        UsageInstructions = "Select " + $identity.Name + " in Qpro Companion. Use one source module at a time. Start VRCFaceTracking after installing; start optional live overrides in Qpro Companion."
         DownloadUrl = $null
         ModulePageUrl = "https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless"
         DllFileName = $identity.Dll
-        FileHash = (Get-FileHash -LiteralPath $stageDll -Algorithm MD5).Hash.ToLowerInvariant()
+        FileHash = (Get-QproFileHash $stageDll "MD5").ToLowerInvariant()
     }
     [System.IO.File]::WriteAllText((Join-Path $stageDirectory "module.json"), ($metadata | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
     [System.IO.File]::WriteAllText($stageToken, $identity.Token, [System.Text.UTF8Encoding]::new($false))

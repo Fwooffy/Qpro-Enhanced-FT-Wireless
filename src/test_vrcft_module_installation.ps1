@@ -67,7 +67,9 @@ try {
     $metadata = Read-QproModuleManifest (Join-Path $vdFolder "module.json")
     Assert-Test ($metadata.ModuleId -eq $QproVirtualDesktopId -and $metadata.IsLocal -eq $true -and
         $metadata.AuthorName -eq "Fwooffy" -and $metadata.Version -eq "3.0.0" -and
-        $metadata.DllFileName -eq "000-Qpro.VirtualDesktop.dll" -and $metadata.ModuleName -eq "QproFaceTracking - Virtual Desktop") "The new module card has the wrong Qpro identity."
+        $metadata.DllFileName -eq "000-Qpro.VirtualDesktop.dll" -and
+        $metadata.ModuleName -ceq ("Qpro Companion " + [char]0x2014 + " Virtual Desktop") -and
+        $metadata.UsageInstructions.Contains("Qpro Companion") -and -not $metadata.UsageInstructions.Contains("Qpro Hub")) "The new module card has the wrong Qpro identity or branding."
     Assert-Test ($null -eq $metadata.DownloadUrl -and $null -eq $metadata.InstallationState -and
         $metadata.FileHash -eq (Get-FileHash -LiteralPath $vdDll -Algorithm MD5).Hash.ToLowerInvariant()) "The metadata uses an upstream identity, stale state or wrong FileHash."
     Assert-Test (@(Get-ChildItem -LiteralPath $customLibs -File -Filter "*.dll").Count -eq 0 -and
@@ -76,7 +78,9 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $runtime "release-manifest.json"), '{"name":"QproFaceTracking","version":"2.4.7"}')
     & $install -TrackingSource SteamLink
     Assert-Test (-not (Test-Path -LiteralPath $vdFolder) -and (Test-Path -LiteralPath $slFolder)) "Source switching left both own GUID modules installed."
-    Assert-Test ((Read-QproModuleManifest (Join-Path $slFolder "module.json")).Version -eq "2.4.7") "The module card did not use its packaged release version."
+    $steamLinkMetadata = Read-QproModuleManifest (Join-Path $slFolder "module.json")
+    Assert-Test ($steamLinkMetadata.Version -eq "2.4.7" -and
+        $steamLinkMetadata.ModuleName -ceq ("Qpro Companion " + [char]0x2014 + " Steam Link")) "The module card did not use its packaged release version or Qpro Companion branding."
     Assert-Test ((Get-Content -LiteralPath (Join-Path $localData "QproFaceTracking\config\tracking-source.txt") -Raw) -eq "steam-link") "Source selection was not committed."
     [System.IO.File]::WriteAllText((Join-Path $runtime "release-manifest.json"), '{invalid')
     Expect-Failure { & $install -TrackingSource VirtualDesktop } "release manifest could not be read"
@@ -87,6 +91,88 @@ try {
     & $uninstall
     Assert-Test (@(Get-QproModuleInventory $customLibs).Count -eq 0) "Uninstallation left a Qpro module active."
     Remove-Item -LiteralPath (Join-Path $runtime "release-manifest.json")
+
+    # Hidden files are still module files. Inventory, ownership checks and
+    # historical recovery must agree with the complete backup hash inventory.
+    foreach ($sourceName in @("VirtualDesktop", "SteamLink")) {
+        & $install -TrackingSource $sourceName
+        $hiddenIdentity = Get-QproModuleIdentity $sourceName
+        $hiddenFolder = Join-Path $customLibs $hiddenIdentity.Id
+        $hiddenDll = Join-Path $hiddenFolder $hiddenIdentity.Dll
+        (Get-Item -LiteralPath $hiddenDll -Force).Attributes = (Get-Item -LiteralPath $hiddenDll -Force).Attributes -bor [IO.FileAttributes]::Hidden
+        $null = Assert-QproInstalledModule $sourceName $customLibs (Join-Path $dllParent "Qpro.GazeBridge.dll")
+        $hiddenHashes = Get-QproTreeHashes $customLibs $true
+        $global:QproFixtureVrcftOpen = $true
+        try {
+            Expect-Failure { & $uninstall } "Close VRCFaceTracking"
+            Expect-Failure { & $install -TrackingSource $sourceName } "Close VRCFaceTracking"
+            Assert-QproSameTree $customLibs $true $hiddenHashes
+        } finally { $global:QproFixtureVrcftOpen = $false }
+        & $uninstall
+        Assert-Test (-not (Test-Path -LiteralPath $hiddenFolder) -and
+            @(Get-QproModuleInventory $customLibs).Count -eq 0) "A hidden Qpro DLL prevented complete uninstallation."
+        & $install -TrackingSource $sourceName
+        (Get-Item -LiteralPath $hiddenDll -Force).Attributes = (Get-Item -LiteralPath $hiddenDll -Force).Attributes -bor [IO.FileAttributes]::Hidden
+        & $install -TrackingSource $sourceName
+        $null = Assert-QproInstalledModule $sourceName $customLibs (Join-Path $dllParent "Qpro.GazeBridge.dll")
+        & $uninstall
+    }
+    $hiddenForeign = Join-Path $customLibs "364463b7-c2b0-40ce-86b2-fc6d5f22a998"
+    New-Item -ItemType Directory -Path $hiddenForeign | Out-Null
+    $hiddenForeignDll = Join-Path $hiddenForeign "CopiedQpro.dll"
+    $hiddenForeignCard = Join-Path $hiddenForeign "module.json"
+    [IO.File]::WriteAllText($hiddenForeignCard, '{"ModuleName":"Unrelated fixture module"}')
+    Copy-Item -LiteralPath $FixtureDll -Destination $hiddenForeignDll
+    (Get-Item -LiteralPath $hiddenForeignDll -Force).Attributes = [IO.FileAttributes]::Hidden
+    & $uninstall
+    Assert-Test (-not (Test-Path -LiteralPath $hiddenForeignDll) -and
+        [IO.File]::ReadAllText($hiddenForeignCard) -eq '{"ModuleName":"Unrelated fixture module"}') "A hidden copied Qpro DLL remained installed or its foreign metadata was removed."
+
+    & $install -TrackingSource VirtualDesktop
+    $hiddenUnknown = Join-Path $vdFolder "UnknownFixture.dll"
+    Copy-Item -LiteralPath ([object].Assembly.Location) -Destination $hiddenUnknown
+    (Get-Item -LiteralPath $hiddenUnknown -Force).Attributes = [IO.FileAttributes]::Hidden
+    $hiddenHashes = Get-QproTreeHashes $customLibs $true
+    Expect-Failure { & $uninstall } "unknown DLL"
+    Expect-Failure { & $install -TrackingSource SteamLink } "unknown DLL"
+    Assert-QproSameTree $customLibs $true $hiddenHashes
+    Remove-Item -LiteralPath $hiddenUnknown -Force
+    & $uninstall
+
+    $hiddenCompeting = Join-Path $hiddenForeign "VirtualDesktop.dll"
+    Copy-Item -LiteralPath ([object].Assembly.Location) -Destination $hiddenCompeting
+    (Get-Item -LiteralPath $hiddenCompeting -Force).Attributes = [IO.FileAttributes]::Hidden
+    Expect-Failure { & $install -TrackingSource VirtualDesktop } "Another Virtual Desktop or Steam Link module"
+    Assert-Test (Test-Path -LiteralPath $hiddenCompeting) "A hidden competing source module was removed."
+    Remove-Item -LiteralPath $hiddenCompeting -Force
+
+    $hiddenResearch = Join-Path $runtime "research"
+    $hiddenBackup = Join-Path $hiddenResearch "vrcft-official-virtual-desktop-backup"
+    $hiddenOfficialId = "91a90618-b020-4064-8832-809b2ca2b3bc"
+    New-Item -ItemType Directory -Path $hiddenBackup | Out-Null
+    [IO.File]::WriteAllText((Join-Path $hiddenBackup "module.json"), ('{"ModuleId":"' + $hiddenOfficialId + '"}'))
+    Copy-Item -LiteralPath ([object].Assembly.Location) -Destination (Join-Path $hiddenBackup "OfficialFixture.dll")
+    $hiddenBackupDll = Join-Path $hiddenBackup "HiddenQpro.dll"
+    Copy-Item -LiteralPath $FixtureDll -Destination $hiddenBackupDll
+    (Get-Item -LiteralPath $hiddenBackupDll -Force).Attributes = [IO.FileAttributes]::Hidden
+    $hiddenHashes = Get-QproTreeHashes $hiddenBackup $true
+    Expect-Failure { & $uninstall } "saved-module recovery needs attention"
+    Assert-QproSameTree $hiddenBackup $true $hiddenHashes
+    Assert-Test (-not (Test-Path -LiteralPath (Join-Path $customLibs $hiddenOfficialId))) "A hidden Qpro DLL was restored as an official module."
+    Remove-Item -LiteralPath $hiddenBackupDll -Force
+    (Get-Item -LiteralPath $hiddenBackup -Force).Attributes = [IO.FileAttributes]::Hidden
+    & $uninstall
+    $hiddenOfficialTarget = Join-Path $customLibs $hiddenOfficialId
+    Assert-Test ((Test-Path -LiteralPath $hiddenOfficialTarget) -and
+        -not (Test-Path -LiteralPath $hiddenBackup)) "A hidden verified official backup was ignored."
+    # Keep this fixture's restored module outside active CustomLibs so it cannot
+    # compete with the later installation scenarios. No files are deleted.
+    (Get-Item -LiteralPath $hiddenOfficialTarget -Force).Attributes = [IO.FileAttributes]::Directory
+    Move-Item -LiteralPath $hiddenOfficialTarget -Destination (Join-Path $fixtureRoot "verified-hidden-official")
+    $reviewedHiddenResearch = Join-Path $fixtureRoot "reviewed-hidden-research"
+    Assert-QproDirectChild $hiddenResearch $runtime
+    Assert-QproDirectChild $reviewedHiddenResearch $fixtureRoot
+    Move-Item -LiteralPath $hiddenResearch -Destination $reviewedHiddenResearch
 
     # The user may launch the release from a junction or synced-folder alias.
     # Only the packaged source follows it; recovery lives in regular local data.
@@ -303,7 +389,7 @@ try {
     & $uninstall
     Assert-Test ((Test-Path -LiteralPath (Join-Path $customLibs ($QproLegacyModuleId + "\LegacyOfficialFixture.dll"))) -and
         @(Get-QproModuleInventory $customLibs).Count -eq 0) "Restored official legacy files were mistaken for a Qpro module."
-    Write-Host "PASS: linked release sources, strict destination/recovery paths, own GUID cards, source switching, migration, rollback, backup fallback, unresolved-recovery reporting, legacy restoration and model/config preservation. Fixture: $fixtureRoot"
+    Write-Host "PASS: hidden DLL inventory/ownership/recovery, linked release sources, strict destination/recovery paths, own GUID cards, source switching, migration, rollback, backup fallback, unresolved-recovery reporting, legacy restoration and model/config preservation. Fixture: $fixtureRoot"
 } finally {
     $global:QproFixtureVrcftOpen = $false
     $env:APPDATA = $oldAppData

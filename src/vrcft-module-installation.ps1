@@ -44,9 +44,21 @@ function Get-QproModuleVersion([string]$RuntimeRoot, [string]$SourceVersion = "3
 
 function Get-QproModuleIdentity([string]$TrackingSource) {
     if ($TrackingSource -eq "SteamLink") {
-        return @{ Id = $QproSteamLinkId; Dll = "000-Qpro.SteamLink.dll"; Token = "steam-link"; Name = "Steam Link" }
+        return @{ Id = $QproSteamLinkId; Dll = "000-Qpro.SteamLink.dll"; Token = "steam-link"; Name = "Steam Link"; DisplayName = ("Qpro Companion " + [char]0x2014 + " Steam Link") }
     }
-    return @{ Id = $QproVirtualDesktopId; Dll = "000-Qpro.VirtualDesktop.dll"; Token = "virtual-desktop"; Name = "Virtual Desktop" }
+    return @{ Id = $QproVirtualDesktopId; Dll = "000-Qpro.VirtualDesktop.dll"; Token = "virtual-desktop"; Name = "Virtual Desktop"; DisplayName = ("Qpro Companion " + [char]0x2014 + " Virtual Desktop") }
+}
+
+function Get-QproAcceptedModuleNames([string]$SourceName) {
+    # Branding does not change module ownership. Accept old cards with the same
+    # source identity so an otherwise current installation needs no repair.
+    return @(
+        ("Qpro Companion " + [char]0x2014 + " " + $SourceName),
+        ("Qpro Companion " + [char]0x2013 + " " + $SourceName),
+        ("Qpro Companion - " + $SourceName),
+        ("QproFaceTracking " + [char]0x2013 + " " + $SourceName),
+        ("QproFaceTracking - " + $SourceName)
+    )
 }
 
 function Assert-QproDirectChild([string]$Path, [string]$Parent) {
@@ -219,7 +231,24 @@ function Read-QproModuleManifest([string]$Path) {
         throw "The module manifest is a link or is too large and was left untouched: $Path"
     }
     try { return [System.IO.File]::ReadAllText($item.FullName) | ConvertFrom-Json -ErrorAction Stop }
-    catch { throw "The module manifest could not be read and was left untouched: $Path" }
+    catch { throw "The module manifest could not be read and was left untouched: $Path. $($_.Exception.Message)" }
+}
+
+function Get-QproFileHash([string]$Path, [ValidateSet("MD5", "SHA256")][string]$Algorithm = "SHA256") {
+    # Get-FileHash is a module-exported function in Windows PowerShell 5.1.
+    # A launcher inheriting another PowerShell's module path may not have it.
+    $stream = $null
+    $hasher = $null
+    try {
+        $hasher = if ($Algorithm -eq "MD5") { [Security.Cryptography.MD5]::Create() } else { [Security.Cryptography.SHA256]::Create() }
+        $stream = [IO.File]::OpenRead($Path)
+        return ([BitConverter]::ToString($hasher.ComputeHash($stream))).Replace('-', '')
+    } catch {
+        throw "Qpro module verification could not hash '$Path' ($Algorithm): $($_.Exception.Message)"
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+        if ($null -ne $hasher) { $hasher.Dispose() }
+    }
 }
 
 function Get-QproModuleInventory([string]$CustomLibs) {
@@ -235,7 +264,9 @@ function Get-QproModuleInventory([string]$CustomLibs) {
             if ($null -eq $manifest -or [string]$manifest.ModuleId -ne $item.Name) {
                 throw "The Qpro module directory has no matching ownership manifest and was left untouched: $($item.FullName)"
             }
-            $dlls = @(Get-ChildItem -LiteralPath $item.FullName -File -Filter "*.dll")
+            # Hidden DLLs are part of the complete backup inventory, so
+            # ownership checks must include them too.
+            $dlls = @(Get-ChildItem -LiteralPath $item.FullName -File -Filter "*.dll" -Force)
             # The historical registry slot can contain its restored official
             # module. Its readable non-Qpro assemblies are not ours to retire.
             if ($item.Name -eq $QproLegacyModuleId -and $dlls.Count -gt 0 -and
@@ -265,7 +296,7 @@ function Get-QproModuleInventory([string]$CustomLibs) {
         # Ad-hoc copies sometimes use an official module's directory or DLL
         # filename. Remove only assembly-verified Qpro files, keeping its metadata
         # and every other file in that foreign directory.
-        foreach ($dll in Get-ChildItem -LiteralPath $item.FullName -File -Filter "*.dll") {
+        foreach ($dll in Get-ChildItem -LiteralPath $item.FullName -File -Filter "*.dll" -Force) {
             if ((Get-QproAssemblyIdentity $dll.FullName) -eq "Qpro.GazeBridge") {
                 Assert-QproPathWithoutLinks $dll.FullName
                 [pscustomobject]@{ Path = $dll.FullName; Relative = (Join-Path $item.Name $dll.Name); Directory = $false; Copied = $true }
@@ -310,14 +341,18 @@ function Assert-QproInstalledModule(
     if ($competing.Count -gt 0) {
         throw "Another Virtual Desktop or Steam Link face module is installed at $($competing -join '; '). Remove that other source module through VRCFaceTracking, close VRCFaceTracking, then retry. Qpro left those files unchanged."
     }
-    if (@(Get-ChildItem -LiteralPath $folder -File -Filter "*.dll").Count -ne 1) {
+    if (@(Get-ChildItem -LiteralPath $folder -File -Filter "*.dll" -Force).Count -ne 1) {
         throw "The module folder contains an unexpected DLL: $folder. $repair"
     }
     $cardPath = Join-Path $folder "module.json"
+    # File access and hashing failures are verification errors, not evidence
+    # that a valid module card needs reinstalling.
+    Assert-QproPathWithoutLinks $cardPath
+    $card = Read-QproModuleManifest $cardPath
+    try { $json = if ($null -ne $card) { [System.IO.File]::ReadAllText($cardPath).Trim() } else { "" } }
+    catch { throw "The Qpro module card could not be read for verification: $($_.Exception.Message) No module files were changed." }
+    $installedMd5 = Get-QproFileHash $installed "MD5"
     try {
-        Assert-QproPathWithoutLinks $cardPath
-        $card = Read-QproModuleManifest $cardPath
-        $json = if ($null -ne $card) { [System.IO.File]::ReadAllText($cardPath).Trim() } else { "" }
         # ConvertFrom-Json can discard duplicate fields in Windows PowerShell.
         # Walk validated JSON tokens to keep the Hub's card checks consistent.
         $names = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
@@ -340,16 +375,18 @@ function Assert-QproInstalledModule(
             $card.DllFileName -isnot [string] -or $card.DllFileName -cne $identity.Dll -or
             $card.IsLocal -isnot [bool] -or -not $card.IsLocal -or
             $card.AuthorName -isnot [string] -or $card.AuthorName -cne "Fwooffy" -or
-            $card.ModuleName -isnot [string] -or $card.ModuleName -cne ("QproFaceTracking - " + $identity.Name) -or
+            $card.ModuleName -isnot [string] -or $card.ModuleName -cnotin @(Get-QproAcceptedModuleNames $identity.Name) -or
             $card.Version -isnot [string] -or -not [System.Version]::TryParse($card.Version, [ref]$version)) {
             throw "The module card does not match the selected Qpro source."
         }
         # FileHash is VRCFaceTracking's MD5 card field. SHA-256 below compares
         # the installed binary with this app, including same-version test builds.
         if ($card.FileHash -isnot [string] -or $card.FileHash -notmatch '^[0-9a-fA-F]{32}$' -or
-            $card.FileHash -ne (Get-FileHash -LiteralPath $installed -Algorithm MD5).Hash) {
+            $card.FileHash -ne $installedMd5) {
             throw "The installed DLL does not match its module card's file hash."
         }
+    } catch [System.Management.Automation.CommandNotFoundException] {
+        throw "Qpro module verification cannot run in this PowerShell environment: $($_.Exception.Message) No module files were changed."
     } catch {
         throw "The installed Qpro module card needs repair: $($_.Exception.Message) $repair"
     }
@@ -358,20 +395,19 @@ function Assert-QproInstalledModule(
         (Get-QproAssemblyIdentity $PackagedModule -ReadableSource) -ne "Qpro.GazeBridge") {
         throw "This app's packaged Qpro module is missing or unreadable. Extract the complete release ZIP, then retry."
     }
-    if ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne
-        (Get-FileHash -LiteralPath $PackagedModule -Algorithm SHA256).Hash) {
+    if ((Get-QproFileHash $installed) -ne (Get-QproFileHash $PackagedModule)) {
         throw "The installed Qpro DLL differs from this app's module, even if both show the same version number. $repair"
     }
     return [System.IO.Path]::GetFullPath($installed)
 }
 
 function Get-QproTreeHashes([string]$Path, [bool]$Directory, [switch]$ReadableSource) {
-    if (-not $Directory) { return @{ "." = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash } }
+    if (-not $Directory) { return @{ "." = Get-QproFileHash $Path } }
     Assert-QproRegularTree $Path -ReadableSource:$ReadableSource
     $hashes = @{}
     $prefix = [System.IO.Path]::GetFullPath($Path).TrimEnd('\') + '\'
     foreach ($file in Get-ChildItem -LiteralPath $Path -File -Recurse -Force) {
-        $hashes[$file.FullName.Substring($prefix.Length)] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+        $hashes[$file.FullName.Substring($prefix.Length)] = Get-QproFileHash $file.FullName
     }
     return $hashes
 }
@@ -454,7 +490,7 @@ function Find-QproCompetingSourceModules([string]$CustomLibs, [object[]]$Invento
             if ($item.Name -in @("2a8c8080-2a76-46af-bf76-1da7c0127ef8", "91a90618-b020-4064-8832-809b2ca2b3bc")) { $item.FullName }
             continue
         }
-        $dlls = @(Get-ChildItem -LiteralPath $item.FullName -File -Filter "*.dll" | Where-Object { $_.FullName -notin $ownedFiles })
+        $dlls = @(Get-ChildItem -LiteralPath $item.FullName -File -Filter "*.dll" -Force | Where-Object { $_.FullName -notin $ownedFiles })
         if ($dlls.Count -eq 0) { continue }
         $manifestPath = Join-Path $item.FullName "module.json"
         $manifest = $null

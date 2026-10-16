@@ -59,7 +59,7 @@ function Restore-SavedOfficialModule([string]$BackupPath, [string]$ModuleId) {
         }
     }
     $manifest = Read-QproModuleManifest (Join-Path $BackupPath "module.json")
-    $dlls = @(Get-ChildItem -LiteralPath $BackupPath -File -Filter "*.dll")
+    $dlls = @(Get-ChildItem -LiteralPath $BackupPath -File -Filter "*.dll" -Force)
     if ($null -eq $manifest -or [string]$manifest.ModuleId -ne $ModuleId -or $dlls.Count -eq 0) {
         Write-Host "The historical backup has no verified official module identity; it remains at $BackupPath for review."
         return "unverified"
@@ -102,7 +102,7 @@ function Restore-SavedOfficialModule([string]$BackupPath, [string]$ModuleId) {
 $restored = 0
 $recoveryIssues = @()
 if (Test-Path -LiteralPath $research -PathType Container) {
-    $officialBackups = @(Get-ChildItem -LiteralPath $research -Directory |
+    $officialBackups = @(Get-ChildItem -LiteralPath $research -Directory -Force |
         Where-Object { $_.Name -match '^vrcft-official-virtual-desktop-backup(?:-\d{8}-\d{6}|-[0-9a-f]{32})?$' } |
         Sort-Object LastWriteTimeUtc -Descending)
     if ($officialBackups.Count -gt 0) {

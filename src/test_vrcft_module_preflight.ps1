@@ -45,6 +45,12 @@ function Expect-SourceConflict([scriptblock]$Action, [string]$OtherPath) {
         $message.Contains("Remove that other source module through VRCFaceTracking") -and
         $message.Contains("left those files unchanged")) "A competing source had no actionable preflight warning."
 }
+function Expect-VerificationFailure([scriptblock]$Action, [string]$Expected) {
+    $message = $null
+    try { $null = & $Action } catch { $message = $_.Exception.Message }
+    Assert-Test (-not [string]::IsNullOrWhiteSpace($message) -and $message.Contains($Expected) -and
+        -not $message.Contains("card needs repair") -and -not $message.Contains("First-time setup")) "A verification dependency/file-access failure was reported as a damaged module card: $message"
+}
 function Remove-FixtureTree([string]$Path) {
     # Never delete a computed test path until its absolute scope is verified.
     $full = [IO.Path]::GetFullPath($Path)
@@ -91,6 +97,23 @@ try {
     # deliberately absent from the probe.
     $launcherProbe = [scriptblock]::Create(('param([string]$FixtureRuntime, [string]$TrackingSource, [bool]$vrcftRequired = $true)' + "`n" +
         '$PSScriptRoot = $FixtureRuntime' + "`n" + $block.Extent.Text))
+    $isolatedProbe = Join-Path $fixtureRoot "isolated-preflight.ps1"
+    [IO.File]::WriteAllText($isolatedProbe, @'
+param([string]$Helper, [string]$TrackingSource, [string]$CustomLibs, [string]$PackagedModule)
+$ErrorActionPreference = 'Stop'
+# Load the ordinary JSON/filesystem commands, then remove only the exported
+# hash function and prevent it being restored from any module search path.
+Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1')
+$null = Get-Command Get-Item
+Remove-Item Function:\Get-FileHash
+$PSModuleAutoLoadingPreference = 'None'
+$env:PSModulePath = Join-Path $PSScriptRoot 'empty-modules'
+if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) { throw 'The isolated probe still has Get-FileHash.' }
+. $Helper
+$verified = Assert-QproInstalledModule $TrackingSource $CustomLibs $PackagedModule
+if (-not $verified) { throw 'The isolated preflight did not verify the fixture module.' }
+[Console]::WriteLine('PASS isolated module path without Get-FileHash')
+'@)
 
     foreach ($source in @("VirtualDesktop", "SteamLink")) {
         Reset-Fixture $source
@@ -105,6 +128,87 @@ try {
         $null = & $launcherProbe $runtime $source
         Assert-QproSameTree $customLibs $true $before
         Assert-Test $true "$source GUID-folder installation was not accepted unchanged."
+        Assert-Test ($identity.DisplayName -ceq ("Qpro Companion " + [char]0x2014 + " " + $identity.Name)) "A new module card omitted Qpro Companion branding."
+        foreach ($displayName in @(
+            ("Qpro Companion " + [char]0x2014 + " " + $identity.Name),
+            ("Qpro Companion " + [char]0x2013 + " " + $identity.Name),
+            ("Qpro Companion - " + $identity.Name),
+            ("QproFaceTracking " + [char]0x2013 + " " + $identity.Name),
+            ("QproFaceTracking - " + $identity.Name)
+        )) {
+            $legacyCard = $metadata | ConvertFrom-Json
+            $legacyCard.ModuleName = $displayName
+            [IO.File]::WriteAllText($metadataPath, ($legacyCard | ConvertTo-Json -Depth 5))
+            try {
+                $null = Assert-Preflight $source
+                $null = & $launcherProbe $runtime $source
+                Assert-Test $true "A supported exact module display name was rejected: $displayName"
+            } finally { [IO.File]::WriteAllText($metadataPath, $metadata) }
+        }
+        foreach ($displayName in @(
+            ("Qpro Companion " + [char]0x2014 + " " + $(if ($source -eq "VirtualDesktop") { "Steam Link" } else { "Virtual Desktop" })),
+            ("Qpro Companion " + [char]0x2014 + " " + $identity.Name + " extra"),
+            ("Qpro companion " + [char]0x2014 + " " + $identity.Name),
+            ("Other " + [char]0x2014 + " " + $identity.Name),
+            ("QproFaceTracking " + [char]0x2014 + " " + $identity.Name)
+        )) {
+            $invalidNameCard = $metadata | ConvertFrom-Json
+            $invalidNameCard.ModuleName = $displayName
+            [IO.File]::WriteAllText($metadataPath, ($invalidNameCard | ConvertTo-Json -Depth 5))
+            try {
+                Expect-Failure { Assert-Preflight $source } "An unsupported or wrong-source module name"
+                Expect-Failure { & $launcherProbe $runtime $source } "An unsupported or wrong-source module name in launcher"
+            } finally { [IO.File]::WriteAllText($metadataPath, $metadata) }
+        }
+
+        # A hidden Windows PowerShell launcher can lack the module-exported
+        # Get-FileHash function. Neither preflight nor transaction hashes may
+        # depend on resolving that function.
+        $originalFileHash = (Get-Command Get-FileHash).ScriptBlock
+        function Get-FileHash { throw [System.Management.Automation.CommandNotFoundException]::new("Fixture: Get-FileHash is unavailable.") }
+        try {
+            $null = Assert-Preflight $source
+            $null = & $launcherProbe $runtime $source
+            Assert-QproSameTree $customLibs $true $before
+            Assert-Test $true "$source preflight depended on the missing Get-FileHash function."
+        } finally { Set-Item -LiteralPath Function:\Get-FileHash -Value $originalFileHash }
+
+        $probeOutput = Join-Path $fixtureRoot ("isolated-" + $source + ".txt")
+        $probeError = Join-Path $fixtureRoot ("isolated-" + $source + ".error.txt")
+        $probeArguments = @('-NoProfile', '-NonInteractive', '-File', ('"' + $isolatedProbe + '"'),
+            '-Helper', ('"' + (Join-Path $runtime 'vrcft-module-installation.ps1') + '"'),
+            '-TrackingSource', $source, '-CustomLibs', ('"' + $customLibs + '"'),
+            '-PackagedModule', ('"' + $packagedModule + '"'))
+        $probe = Start-Process -FilePath (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') `
+            -ArgumentList $probeArguments -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $probeOutput -RedirectStandardError $probeError
+        Assert-Test ($probe.ExitCode -eq 0 -and [IO.File]::ReadAllText($probeOutput).Contains('PASS isolated module path without Get-FileHash')) ("Windows PowerShell 5.1 isolated preflight failed: " + [IO.File]::ReadAllText($probeError))
+
+        $originalQproHash = (Get-Command Get-QproFileHash).ScriptBlock
+        function Get-QproFileHash { throw [IO.IOException]::new("Fixture hash read failure.") }
+        try { Expect-VerificationFailure { Assert-Preflight $source } "Fixture hash read failure" }
+        finally { Set-Item -LiteralPath Function:\Get-QproFileHash -Value $originalQproHash }
+
+        # Lock the card only after its second manifest parse: the subsequent
+        # verification read used to be inside the card-repair catch-all.
+        $originalManifestReader = (Get-Command Read-QproModuleManifest).ScriptBlock
+        $script:fixtureCardReads = 0
+        $script:fixtureCardLock = $null
+        function Read-QproModuleManifest([string]$Path) {
+            $value = & $originalManifestReader $Path
+            if ($Path -eq $metadataPath) {
+                $script:fixtureCardReads++
+                if ($script:fixtureCardReads -eq 2) {
+                    $script:fixtureCardLock = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+                }
+            }
+            return $value
+        }
+        try { Expect-VerificationFailure { Assert-Preflight $source } "could not be read for verification" }
+        finally {
+            if ($null -ne $script:fixtureCardLock) { $script:fixtureCardLock.Dispose(); $script:fixtureCardLock = $null }
+            Set-Item -LiteralPath Function:\Read-QproModuleManifest -Value $originalManifestReader
+        }
+        Assert-QproSameTree $customLibs $true $before
 
         # Native source DLLs are identified by names/cards, never loaded. Test
         # the shared preflight and the real launcher guard with both Qpro sources.
@@ -301,6 +405,15 @@ try {
         Expect-Failure { & $launcherProbe $runtime $source } "The launcher's loose legacy module"
         Remove-Item -LiteralPath $loose
     }
+
+    $emptyFile = Join-Path $fixtureRoot "empty-hash-fixture"
+    [IO.File]::WriteAllBytes($emptyFile, [byte[]]@())
+    Assert-Test ((Get-QproFileHash $emptyFile "MD5") -eq "D41D8CD98F00B204E9800998ECF8427E") "The MD5 card digest changed."
+    Assert-Test ((Get-QproFileHash $emptyFile) -eq "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855") "The SHA-256 verification digest changed."
+    $exclusive = [IO.File]::Open($emptyFile, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try { Expect-VerificationFailure { Get-QproFileHash $emptyFile } "could not hash" }
+    finally { $exclusive.Dispose() }
+    Assert-Test ((Get-QproFileHash $emptyFile) -eq "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855") "A failed hash kept the fixture locked."
 
     # No tracking feature means this launcher guard must not require a module.
     Remove-FixtureTree $customLibs

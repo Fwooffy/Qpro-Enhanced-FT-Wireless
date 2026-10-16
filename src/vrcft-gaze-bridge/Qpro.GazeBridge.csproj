@@ -31,13 +31,45 @@
   <ItemGroup>
     <Compile Include="../shared/EyebrowPreference.cs" Link="EyebrowPreference.cs" />
     <Compile Include="../shared/CheekPuffCalibrationProfile.cs" Link="CheekPuffCalibrationProfile.cs" />
-    <Compile Include="../shared/CheekPuffTelemetry.cs" Link="CheekPuffTelemetry.cs" />
-    <Compile Include="../shared/DeveloperCheekPuffBaseline.cs" Link="DeveloperCheekPuffBaseline.cs" />
     <None Update="module.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
-  <Target Name="PackageModule" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
+  <UsingTask TaskName="WriteQproModuleCard" TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <TemplateFile ParameterType="System.String" Required="true" />
+      <DestinationFile ParameterType="System.String" Required="true" />
+      <ReleaseVersion ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.Text" />
+      <Using Namespace="System.Text.RegularExpressions" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        var versionPattern = new Regex(@"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$");
+        if (!versionPattern.IsMatch(ReleaseVersion)) {
+            Log.LogError("The module card version must be stable major.minor.patch.");
+            return false;
+        }
+        var json = File.ReadAllText(TemplateFile);
+        var field = new Regex("\"Version\"\\s*:\\s*\"[^\"]*\"");
+        if (field.Matches(json).Count != 1) {
+            Log.LogError("The module card template must have exactly one Version field.");
+            return false;
+        }
+        File.WriteAllText(DestinationFile, field.Replace(json, "\"Version\": \"" + ReleaseVersion + "\""), new UTF8Encoding(false));
+      ]]></Code>
+    </Task>
+  </UsingTask>
+  <Target Name="WriteModuleMetadata" AfterTargets="Build">
+    <!-- The assembly, standalone card and Hub installer use the release version. -->
+    <MakeDir Directories="$(OutputPath)" />
+    <WriteQproModuleCard TemplateFile="$(MSBuildProjectDirectory)\module.json"
+                         DestinationFile="$(OutputPath)module.json" ReleaseVersion="$(Version)" />
+  </Target>
+  <Target Name="PackageModule" AfterTargets="Build" DependsOnTargets="WriteModuleMetadata"
+          Condition="'$(Configuration)' == 'Release' and '$(BuildModuleZip)' != 'false'">
     <PropertyGroup>
       <PackageFolder>$(OutputPath)package</PackageFolder>
       <PackageFile>$(OutputPath)Qpro.GazeBridge.zip</PackageFile>

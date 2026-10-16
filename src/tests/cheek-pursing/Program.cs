@@ -14,7 +14,7 @@ try
     // These are synthetic channel-isolation checks, not a recording of a
     // real pursing false positive. Read only an anonymous test map: never
     // initialize the module, open VirtualDesktop.BodyState, or bind its ports.
-    foreach (string style in new[] { "Off", "Balanced", "Strong", "Calibrated" })
+    foreach (string style in new[] { "Off", "Strong" })
     {
         using var fixture = new Fixture(style);
         foreach (int mouthIndex in new[] { 34, 35, 36, 37, 38, 39, 40, 41, 48, 49, 50 })
@@ -125,8 +125,6 @@ sealed class Fixture : IDisposable
         Assembly assembly = typeof(TrackingModule).Assembly;
         Set("_cheekPuffMode", Enum.Parse(assembly.GetType("Qpro.GazeBridge.CheekPuffMode")!, style));
         Set("_cheekSuckMode", Enum.Parse(assembly.GetType("Qpro.GazeBridge.CheekSuckMode")!, "Off"));
-        Set("_cheekPuffCalibration", Activator.CreateInstance(assembly.GetType("Qpro.Shared.CheekPuffCalibration")!,
-            [.03f, .4f, .02f, .5f]));
         Set("_nextCheekPuffModeCheckTick", long.MaxValue);
         Set("_nextCheekSuckModeCheckTick", long.MaxValue);
         _module.Status = ModuleState.Active;

@@ -1,7 +1,5 @@
 using System.Buffers.Binary;
 using System.IO.MemoryMappedFiles;
-using System.Net;
-using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
 using Microsoft.Extensions.Logging;
@@ -37,44 +35,33 @@ internal static class CheekSessionModuleChecks
             near(fixture.SavedPuffModeIsStrong ? 1 : 0, 1, source + ": Stop preserves saved puff preference");
             near(fixture.SavedSuckModeIsStrong ? 1 : 0, 1, source + ": Stop preserves saved suck preference");
 
-            fixture.Camera(.81f, .21f);
-            fixture.Frame(weights, 10);
-            Check(.09f, .09f, .18f, .02f, "orphan camera packets cannot override inactive session");
-
-            fixture.Active = true;
-            fixture.Frame(weights, 240);
-            fixture.Frame(weights, 100);
-            Check(1, 1, 1, 0, "new session reuses saved preference");
-            fixture.Camera(.73f, .31f);
-            fixture.Frame(weights, 10);
-            Check(.73f, .31f, 1, 0, "camera packet works in active session");
-
-            fixture.Active = false;
-            fixture.Frame(weights, 140);
-            Check(.09f, .09f, .18f, .02f, "Stop discards a still-fresh camera override");
             fixture.Active = true;
             fixture.Frame(weights, 250);
             fixture.Frame(weights, 100);
-            Check(1, 1, 1, 0, "restart cannot replay pre-Stop camera values");
+            Check(1, 1, 1, 0, "new session reuses saved preference");
 
-            fixture.Camera(.88f, .26f);
-            fixture.Frame(weights, 10);
-            Check(.88f, .26f, 1, 0, "camera override acquired before native feed loss");
             fixture.Active = false;
-            fixture.Frame(weights, 140, nativeAvailable: false);
-            near(Shape(UnifiedExpressions.CheekPuffLeft), 0, source + ": missing native source clears last camera left");
-            near(Shape(UnifiedExpressions.CheekPuffRight), 0, source + ": missing native source clears last camera right");
+            fixture.Frame(weights, 150);
+            Check(.09f, .09f, .18f, .02f, "Stop restores both native puff and suck");
+            fixture.Active = true;
+            fixture.Frame(weights, 250);
+            fixture.Frame(weights, 100);
+            Check(1, 1, 1, 0, "restart reapplies native 1/0 preferences");
+
+            fixture.Active = false;
+            fixture.Frame(weights, 150, nativeAvailable: false);
+            near(Shape(UnifiedExpressions.CheekPuffLeft), 0, source + ": missing native source clears adjusted puff left");
+            near(Shape(UnifiedExpressions.CheekPuffRight), 0, source + ": missing native source clears adjusted puff right");
             near(Shape(UnifiedExpressions.CheekSuckLeft), 0, source + ": missing native source clears adjusted suck left");
             near(Shape(UnifiedExpressions.CheekSuckRight), 0, source + ": missing native source clears adjusted suck right");
-            fixture.Camera(.99f, .99f);
             fixture.Frame(weights, 25, nativeAvailable: false);
-            near(Shape(UnifiedExpressions.CheekPuffLeft), 0, source + ": orphan camera cannot refill cleared left");
-            near(Shape(UnifiedExpressions.CheekPuffRight), 0, source + ": orphan camera cannot refill cleared right");
+            near(Shape(UnifiedExpressions.CheekPuffLeft), 0, source + ": unavailable source cannot refill cleared left");
+            near(Shape(UnifiedExpressions.CheekPuffRight), 0, source + ": unavailable source cannot refill cleared right");
             fixture.Frame(weights, 10);
             Check(.09f, .09f, .18f, .02f, "native source recovery remains unmodified");
 
-            // Adjusted native cheeks also need releasing when their source
-            // disappears; this case has never received a camera packet.
+            // Stop must release adjusted values even when the source has
+            // disconnected before it can supply a native replacement.
             using var nativeOnly = new SessionFixture(steamLink) { Active = true };
             nativeOnly.Frame(weights, 0);
             nativeOnly.Frame(weights, 100);
@@ -83,7 +70,7 @@ internal static class CheekSessionModuleChecks
             nativeOnly.Frame(weights, 150, nativeAvailable: false);
             Check(0, 0, 0, 0, "Stop with unavailable native feed releases all adjusted cheeks");
 
-            foreach ((bool active, string style) in new[] { (false, "Strong"), (true, "Off"), (true, "Balanced"), (true, "Strong") })
+            foreach ((bool active, string style) in new[] { (false, "Strong"), (true, "Off"), (true, "Strong") })
             {
                 using var loss = new SessionFixture(steamLink, style) { Active = active };
                 loss.Frame(Weights(.37f, .12f, .6f, .1f), 0);
@@ -98,26 +85,16 @@ internal static class CheekSessionModuleChecks
                 near(Shape(UnifiedExpressions.CheekSuckLeft), .234f, source + ": released native suck slot is not repeatedly overwritten");
             }
 
-            using var queued = new SessionFixture(steamLink);
+            using var individual = new SessionFixture(steamLink);
             float[] unilateral = Weights(.38f, .27f, .6f, .1f);
-            queued.Frame(unilateral, 0);
-            queued.Camera(.81f, .49f);
-            queued.Active = true;
-            queued.Frame(unilateral, 250);
-            near(Shape(UnifiedExpressions.CheekPuffLeft), 1, source + ": queued inactive camera left cannot activate on Start");
-            near(Shape(UnifiedExpressions.CheekPuffRight), 0, source + ": queued inactive camera right cannot activate on Start");
-            queued.Active = false;
-            queued.Frame(unilateral, 250);
-            for (int packet = 0; packet < 600; packet++) queued.Camera(.83f, .57f);
-            queued.Active = true;
-            queued.Frame(unilateral, 250);
-            near(Shape(UnifiedExpressions.CheekPuffRight), 0, source + ": bounded transition drain withholds backlog");
-            queued.Frame(unilateral, 10);
-            near(Shape(UnifiedExpressions.CheekPuffRight), 0, source + ": remaining backlog stays discarded");
-            queued.Camera(.72f, .22f);
-            queued.Frame(unilateral, 10);
-            near(Shape(UnifiedExpressions.CheekPuffLeft), .72f, source + ": fresh camera left accepted after draining");
-            near(Shape(UnifiedExpressions.CheekPuffRight), .22f, source + ": fresh camera right accepted after draining");
+            individual.Frame(unilateral, 0);
+            individual.Active = true;
+            individual.Frame(unilateral, 250);
+            near(Shape(UnifiedExpressions.CheekPuffLeft), 1, source + ": stronger left puff reaches 1");
+            near(Shape(UnifiedExpressions.CheekPuffRight), 0, source + ": weaker right puff is suppressed");
+            individual.Active = false;
+            individual.Frame(unilateral, 250);
+            Check(.38f, .27f, .6f, .1f, "Stop returns unilateral input to its native values");
 
             void Check(float puffLeft, float puffRight, float suckLeft, float suckRight, string label)
             {
@@ -149,8 +126,6 @@ internal static class CheekSessionModuleChecks
         private readonly MemoryMappedViewAccessor _view;
         private readonly bool _steamLink;
         private readonly ParsePacket? _steamParser;
-        private readonly UdpClient _cameraInput;
-        private readonly UdpClient _cameraSender = new(AddressFamily.InterNetwork);
         private readonly object _strongPuff;
         private readonly object _strongSuck;
         private long _time = Environment.TickCount64;
@@ -189,10 +164,6 @@ internal static class CheekSessionModuleChecks
                 Set("_steamSource", source);
                 _steamParser = sourceType.GetMethod("ParseDatagram", Private)!.CreateDelegate<ParsePacket>(source);
             }
-            _cameraInput = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
-            _cameraInput.Client.Blocking = false;
-            _cameraInput.Client.ReceiveBufferSize = 1024 * 1024;
-            Set("_cheekCameraSocket", _cameraInput);
             _module.Status = ModuleState.Active;
         }
 
@@ -222,18 +193,6 @@ internal static class CheekSessionModuleChecks
             _module.Update();
         }
 
-        internal void Camera(float left, float right)
-        {
-            byte[] packet = new byte[16];
-            "QPCO"u8.CopyTo(packet);
-            packet[4] = 1;
-            packet[5] = 1;
-            BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(8, 4), left);
-            BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(12, 4), right);
-            _cameraSender.Send(packet, (IPEndPoint)_cameraInput.Client.LocalEndPoint!);
-            if (!_cameraInput.Client.Poll(1_000_000, SelectMode.SelectRead)) throw new TimeoutException("Synthetic camera packet did not arrive.");
-        }
-
         private static byte[] Osc(string address, float value)
         {
             byte[] text = Encoding.ASCII.GetBytes(address);
@@ -248,7 +207,7 @@ internal static class CheekSessionModuleChecks
 
         private object? Get(string name) => typeof(TrackingModule).GetField(name, Private)!.GetValue(_module);
         private void Set(string name, object? value) => typeof(TrackingModule).GetField(name, Private)!.SetValue(_module, value);
-        public void Dispose() { _module.Teardown(); _cameraSender.Dispose(); }
+        public void Dispose() { _module.Teardown(); }
         private delegate bool ParsePacket(ReadOnlySpan<byte> packet, long tick);
     }
 }

@@ -74,13 +74,7 @@ public sealed class TrackingModule : ExtTrackingModule
     private UdpClient? _gazeSocket;
     private UdpClient? _tongueSocket;
     private UdpClient? _pupilSocket;
-    private UdpClient? _cheekCameraSocket;
-    private readonly CheekCameraReceiver _cheekCamera = new();
-    private bool _cheekCameraTransportReady = true;
     private UdpClient? _steamLabelSocket;
-    private UdpClient? _cheekTelemetrySocket;
-    private static readonly IPEndPoint CheekTelemetryEndpoint = new(IPAddress.Loopback, CheekPuffTelemetry.Port);
-    private long _nextCheekTelemetryTick;
     private SteamOscSource? _steamSource;
     private bool _useSteamLink;
     private long _nextSteamLabelTick;
@@ -94,8 +88,6 @@ public sealed class TrackingModule : ExtTrackingModule
     private bool _needsExpression;
     private CheekPuffMode _cheekPuffMode = CheekPuffMode.Strong;
     private readonly CheekPuffTracker _cheekPuffTracker = new();
-    private CheekPuffCalibration? _cheekPuffCalibration;
-    private string? _cheekPuffCalibrationOrigin;
     private long _nextCheekPuffModeCheckTick;
     private CheekSuckMode _cheekSuckMode = CheekSuckMode.Strong;
     private readonly CheekSuckTracker _cheekSuckTracker = new();
@@ -164,13 +156,11 @@ public sealed class TrackingModule : ExtTrackingModule
         _cheekSessionActive = false;
         _nextCheekSessionCheckTick = 0;
         _nextCheekPuffModeCheckTick = 0;
-        _cheekPuffCalibration = null;
-        _cheekPuffCalibrationOrigin = null;
         ModuleInformation = new ModuleMetadata
         {
             Name = _useSteamLink
-                ? "Quest Pro + Steam Link face/tongue/pupil"
-                : "Quest Pro gaze + Virtual Desktop face/tongue/pupil v0.7"
+                ? "Qpro Companion \u2014 Steam Link"
+                : "Qpro Companion \u2014 Virtual Desktop"
         };
 
         if (_useSteamLink)
@@ -224,27 +214,8 @@ public sealed class TrackingModule : ExtTrackingModule
             Logger.LogError(error, "Could not bind the local Quest Pro pupil port {Port}", PupilPort);
         }
 
-        try
-        {
-            _cheekCameraSocket = new UdpClient(new IPEndPoint(IPAddress.Loopback, CheekCameraReceiver.Port));
-            _cheekCameraSocket.Client.Blocking = false;
-        }
-        catch (SocketException error)
-        {
-            Logger.LogError(error, "Could not bind the local Quest Pro camera cheek port {Port}", CheekCameraReceiver.Port);
-        }
-
         if (!_useSteamLink)
             TryOpenMap();
-        try
-        {
-            _cheekTelemetrySocket = new UdpClient(AddressFamily.InterNetwork);
-        }
-        catch (SocketException error)
-        {
-            Logger.LogWarning(error, "Cheek calibration preview could not open its local output socket.");
-        }
-        _nextCheekTelemetryTick = 0;
         Logger.LogInformation(
             "Quest Pro combined bridge initialized: source={Source}, eye={Eye}, face={Face}; Qpro gaze freshness={Timeout} ms",
             _useSteamLink ? "Steam Link OSC 9015" : "Virtual Desktop", _needsEye,
@@ -278,7 +249,6 @@ public sealed class TrackingModule : ExtTrackingModule
         ReceiveGaze();
         ReceiveTongue();
         ReceivePupil();
-        ReceiveCameraCheeks();
         if (_useSteamLink)
         {
             UpdateSteamLink();
@@ -306,8 +276,6 @@ public sealed class TrackingModule : ExtTrackingModule
         _heartbeatNativeState = ((_needsExpression && lowerFaceAvailable) ||
             (_needsEye && (_second[292] != 0 || _second[293] != 0))) ? "untimed" : "unavailable";
         _heartbeatNativeAge = -1;
-        if (lowerFaceAvailable)
-            PublishCheekCalibrationSample(expressions, NativeFaceSource.VirtualDesktop, _tickClock());
 
         if (_needsEye)
             UpdateEyes(expressions);
@@ -341,15 +309,10 @@ public sealed class TrackingModule : ExtTrackingModule
         _tongueSocket = null;
         _pupilSocket?.Dispose();
         _pupilSocket = null;
-        _cheekCameraSocket?.Dispose();
-        _cheekCameraSocket = null;
-        _cheekCamera.Reset();
         _steamSource?.Dispose();
         _steamSource = null;
         _steamLabelSocket?.Dispose();
         _steamLabelSocket = null;
-        _cheekTelemetrySocket?.Dispose();
-        _cheekTelemetrySocket = null;
         _view?.Dispose();
         _view = null;
         _map?.Dispose();
@@ -386,9 +349,7 @@ public sealed class TrackingModule : ExtTrackingModule
              Channel("gaze-right", _rightGazeOverlay, GazeTimeoutMs, _needsEye),
              Channel("tongue", _tongueOverlay, TongueTimeoutMs, _needsExpression),
              Channel("pupil-left", _leftPupilOverlay, PupilTimeoutMs, _needsEye),
-             Channel("pupil-right", _rightPupilOverlay, PupilTimeoutMs, _needsEye),
-             new("camera-cheeks", _cheekCamera.PacketAge(now), 500,
-                 _needsExpression && state == "active" && _cheekCamera.CustomApplied(now))]);
+             Channel("pupil-right", _rightPupilOverlay, PupilTimeoutMs, _needsEye)]);
     }
 
     private bool TryReadState()
@@ -449,8 +410,6 @@ public sealed class TrackingModule : ExtTrackingModule
         neutral.Clear();
         ReadOnlySpan<float> upperValues = upperFaceAvailable ? expressions : neutral;
         ReadOnlySpan<float> lowerValues = lowerFaceAvailable ? expressions : neutral;
-        if (lowerFaceAvailable)
-            PublishCheekCalibrationSample(expressions, NativeFaceSource.SteamLink, now);
         if (_needsEye)
             UpdateSteamEyes(upperValues, now);
         if (_needsEye || _needsExpression)
@@ -608,19 +567,6 @@ public sealed class TrackingModule : ExtTrackingModule
         }
     }
 
-    private void ReceiveCameraCheeks()
-    {
-        if (!_cheekCameraTransportReady)
-        {
-            // A large queue may need several bounded drains. Do not retime
-            // packets from an earlier inactive session as new camera output.
-            _cheekCameraTransportReady = LocalDatagrams.DiscardPending(_cheekCameraSocket);
-            return;
-        }
-        foreach (byte[] packet in LocalDatagrams.ReadPending(_cheekCameraSocket))
-            if (_cheekSessionActive) _cheekCamera.Receive(packet, _tickClock());
-    }
-
     private void UpdateCheekOutput(ReadOnlySpan<float> values, bool nativeAvailable)
     {
         CheekPuffWeights native = default;
@@ -629,20 +575,18 @@ public sealed class TrackingModule : ExtTrackingModule
             if (_cheekSessionActive) RefreshCheekPuffMode();
             native = _cheekPuffTracker.Update(values,
                 _cheekSessionActive ? _cheekPuffMode : CheekPuffMode.Off,
-                _tickClock(), _cheekPuffCalibration);
+                _tickClock());
             // Native passthrough is still a write owned by this module. Clear
             // it once if its source disappears, just like adjusted output.
             _cheekPuffNativeOutputApplied = true;
         }
-        CheekPuffWeights? resolved = _cheekCamera.Resolve(_tickClock(), nativeAvailable, native);
-        if (!nativeAvailable && _cheekPuffNativeOutputApplied)
+        if (!nativeAvailable)
         {
-            resolved ??= new CheekPuffWeights(0, 0);
+            if (!_cheekPuffNativeOutputApplied) return;
             _cheekPuffNativeOutputApplied = false;
         }
-        if (resolved is not CheekPuffWeights cheeks) return;
-        Set((int)UnifiedExpressions.CheekPuffLeft, cheeks.Left);
-        Set((int)UnifiedExpressions.CheekPuffRight, cheeks.Right);
+        Set((int)UnifiedExpressions.CheekPuffLeft, native.Left);
+        Set((int)UnifiedExpressions.CheekPuffRight, native.Right);
     }
 
     private void ReceiveTongue()
@@ -770,8 +714,7 @@ public sealed class TrackingModule : ExtTrackingModule
         Set((int)UnifiedExpressions.MouthCornerSlantRight, smile.Right);
 
         // Both sources use the same left/right XR_FB cheek indices. The Hub
-        // selects native passthrough, calibrated strength, balanced separation,
-        // or a confirmed 1/0 pose.
+        // selects native passthrough or a confirmed 1/0 pose.
         UpdateCheekOutput(values, nativeTongueAvailable);
         Set((int)UnifiedExpressions.CheekSquintLeft, values[4]);
         Set((int)UnifiedExpressions.CheekSquintRight, values[5]);
@@ -892,11 +835,9 @@ public sealed class TrackingModule : ExtTrackingModule
         bool drained = LocalDatagrams.DiscardPending(_gazeSocket);
         drained &= LocalDatagrams.DiscardPending(_tongueSocket);
         drained &= LocalDatagrams.DiscardPending(_pupilSocket);
-        drained &= LocalDatagrams.DiscardPending(_cheekCameraSocket);
         drained &= _steamSource?.DiscardPending() ?? true;
         foreach (LiveOverlayState overlay in OverlayStates()) overlay.DiscardPackets();
         _tongueDirty = false;
-        _cheekCamera.DiscardPackets();
         return drained;
     }
 
@@ -912,10 +853,8 @@ public sealed class TrackingModule : ExtTrackingModule
     private void ResetOverlayState()
     {
         foreach (LiveOverlayState overlay in OverlayStates()) overlay.Reset();
-        _cheekCamera.Reset();
         _cheekPuffNativeOutputApplied = false;
         _cheekSuckOutputApplied = false;
-        _cheekCameraTransportReady = true;
         _tongueDirty = false;
     }
 
@@ -947,10 +886,6 @@ public sealed class TrackingModule : ExtTrackingModule
         _cheekSessionActive = active;
         _cheekPuffTracker.Reset();
         _cheekSuckTracker.Reset();
-        // Keep ownership of the last camera write until it is restored or
-        // cleared, including when the native face feed is unavailable.
-        _cheekCamera.DiscardPackets();
-        _cheekCameraTransportReady = LocalDatagrams.DiscardPending(_cheekCameraSocket);
         _nextCheekPuffModeCheckTick = _nextCheekSuckModeCheckTick = 0;
         Logger.LogInformation(active
             ? "Companion tracking started: saved cheek adjustments enabled."
@@ -971,59 +906,19 @@ public sealed class TrackingModule : ExtTrackingModule
             selected = saved.ToLowerInvariant() switch
             {
                 "off" => CheekPuffMode.Off,
-                "balanced" => CheekPuffMode.Balanced,
-                "calibrated" => CheekPuffMode.Calibrated,
                 _ => CheekPuffMode.Strong
             };
         }
         catch (IOException) { return; }
         catch (UnauthorizedAccessException) { return; }
-        string source = _useSteamLink
-            ? CheekPuffCalibrationProfile.SteamLinkSource
-            : CheekPuffCalibrationProfile.VirtualDesktopSource;
-        CheekPuffCalibration? calibration = selected == CheekPuffMode.Calibrated
-            ? CheekPuffCalibrationProfile.Load(source) : null;
-        string? origin = calibration.HasValue ? "personal profile" : null;
-        if (selected == CheekPuffMode.Calibrated && !calibration.HasValue)
-        {
-            calibration = DeveloperCheekPuffBaseline.ForSource(source);
-            origin = calibration.HasValue ? "developer baseline" : "balanced fallback; no profile";
-        }
-        if (_cheekPuffMode == selected && _cheekPuffCalibration == calibration &&
-            _cheekPuffCalibrationOrigin == origin) return;
+        if (_cheekPuffMode == selected) return;
         _cheekPuffMode = selected;
-        _cheekPuffCalibration = calibration;
-        _cheekPuffCalibrationOrigin = origin;
         _cheekPuffTracker.Reset();
         Logger.LogInformation("Cheek puff style: {Style}", selected switch
         {
             CheekPuffMode.Off => "native passthrough",
-            CheekPuffMode.Balanced => "balanced",
-            CheekPuffMode.Calibrated => $"calibrated ({origin})",
             _ => "1/0 individual"
         });
-    }
-
-    private void PublishCheekCalibrationSample(ReadOnlySpan<float> values, NativeFaceSource source, long nowMs)
-    {
-        if (_cheekTelemetrySocket is null || nowMs < _nextCheekTelemetryTick) return;
-        _nextCheekTelemetryTick = nowMs + 50;
-        // Calibration always measures Balanced strengths, even while another
-        // output mode is selected, so its anchors describe the same input that
-        // Calibrated mode later normalizes.
-        CheekPuffWeights cheeks = CheekPuffMapping.FromFaceWeights(values);
-        byte sourceId = source == NativeFaceSource.SteamLink
-            ? CheekPuffTelemetry.SourceSteamLink : CheekPuffTelemetry.SourceVirtualDesktop;
-        byte[] packet = CheekPuffTelemetry.Create(sourceId, cheeks.Left, cheeks.Right);
-        try
-        {
-            _cheekTelemetrySocket.Send(packet, packet.Length, CheekTelemetryEndpoint);
-        }
-        catch (SocketException)
-        {
-            // A closed calibration window must not interrupt face tracking.
-            _nextCheekTelemetryTick = nowMs + 1000;
-        }
     }
 
     private void RefreshCheekSuckMode()
@@ -1040,7 +935,6 @@ public sealed class TrackingModule : ExtTrackingModule
             selected = saved.ToLowerInvariant() switch
             {
                 "off" => CheekSuckMode.Off,
-                "balanced" => CheekSuckMode.Balanced,
                 _ => CheekSuckMode.Strong
             };
         }
@@ -1052,8 +946,7 @@ public sealed class TrackingModule : ExtTrackingModule
         Logger.LogInformation("Cheek suck style: {Style}", selected switch
         {
             CheekSuckMode.Off => "native passthrough",
-            CheekSuckMode.Balanced => "balanced",
-            _ => "strong individual"
+            _ => "1/0 individual"
         });
     }
 
