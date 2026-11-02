@@ -10,8 +10,6 @@ $ErrorActionPreference = 'Stop'
 $qproPrivatePython = Join-Path $env:LOCALAPPDATA 'QproFaceTracking\runtime\python-3.12.10\python.exe'
 $qproSharedRuntime = Join-Path $env:LOCALAPPDATA 'QproFaceTracking\runtime'
 $qproRequirements = Join-Path $QproRoot 'requirements-runtime.txt'
-$qproGateModel = Join-Path $QproRoot 'models\qpro-stereo-tongue-v8-gate.pt'
-$qproDirectionModel = Join-Path $QproRoot 'models\qpro-stereo-tongue-v8-direction.pt'
 $qproStableRadeonNames = @(
     'Radeon RX 9070 XT', 'Radeon RX 9070', 'Radeon AI PRO R9700',
     'Radeon RX 9060 XT', 'Radeon RX 7900 XTX', 'Radeon PRO W7900',
@@ -85,6 +83,119 @@ function Get-QproRocmRecipe([string]$Root, [bool]$Legacy) {
     $recipe = if ($Legacy) { [string]$components.legacyRocmRecipe } else { [string]$components.rocmRecipe }
     if ($recipe -notmatch '^[a-fA-F0-9]{64}$') { return $null }
     return $recipe.ToLowerInvariant()
+}
+
+function Get-QproRocmModelPair([string]$Root) {
+    $repair = 'Re-extract the complete Qpro release ZIP, then retry AMD setup. No runtime or personal model was changed by this model check.'
+    $models = Join-Path $Root 'models'
+    $manifestPath = Join-Path $Root 'release-manifest.json'
+    $legacy = -not (Test-Path -LiteralPath $manifestPath -PathType Leaf)
+    $stem = 'qpro-stereo-tongue-v8'
+    function Read-ModelJson([string]$Path) {
+        if ((Get-Item -LiteralPath $Path).Length -gt 131072) { throw "Model metadata is too large: $Path. $repair" }
+        return [IO.File]::ReadAllText($Path) | ConvertFrom-Json -ErrorAction Stop
+    }
+    function File-Hash([string]$Path) {
+        $stream = [IO.File]::OpenRead($Path)
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+        finally { $sha.Dispose(); $stream.Dispose() }
+    }
+    function Existing-Pair([string]$Name) {
+        $gate = Join-Path $models ($Name + '-gate.pt')
+        $direction = Join-Path $models ($Name + '-direction.pt')
+        foreach ($path in @($gate, $direction)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) { return $null }
+        }
+        return [pscustomobject]@{ Stem=$Name; Gate=$gate; Direction=$direction; GateSha256=(File-Hash $gate); DirectionSha256=(File-Hash $direction) }
+    }
+    function Is-BundledDeveloper($Metadata) {
+        return $null -ne $Metadata -and $Metadata.bundledDeveloperModel -is [bool] -and $Metadata.bundledDeveloperModel -and
+            $Metadata.origin -ceq 'bundled developer model' -and $Metadata.modelKind -cin @('developer-tongue', 'developer-lower-face')
+    }
+    function Metadata-MatchesPair($Metadata, $Pair) {
+        return (Is-BundledDeveloper $Metadata) -and $null -ne $Pair -and
+            [string]$Metadata.modelFiles.gateSha256 -ceq $Pair.GateSha256 -and
+            [string]$Metadata.modelFiles.directionSha256 -ceq $Pair.DirectionSha256
+    }
+    if (-not $legacy) {
+        try { $manifest = Read-ModelJson $manifestPath }
+        catch { throw "The bundled tongue model manifest could not be read: $($_.Exception.Message) $repair" }
+        if ($manifest.name -cne 'QproFaceTracking' -or $manifest.bundledTongueModel -isnot [string] -or
+            $manifest.bundledTongueModel -cnotmatch '^qpro-stereo-tongue-v[1-9][0-9]*$') {
+            throw "The release manifest does not identify a valid bundled tongue model. $repair"
+        }
+        $stem = $manifest.bundledTongueModel
+        $version = $null
+        $legacy = [Version]::TryParse([string]$manifest.version, [ref]$version) -and $version.Major -lt 3 -and $stem -ceq 'qpro-stereo-tongue-v8'
+    }
+
+    # Package hashes also identify a bundled model relocated by an in-place
+    # update when a personal model already occupies its public version number.
+    $checksumPath = Join-Path $Root 'SHA256SUMS.txt'
+    $prefix = 'models/'
+    if (-not (Test-Path -LiteralPath $checksumPath -PathType Leaf) -and
+        [IO.Path]::GetFileName([IO.Path]::GetFullPath($Root).TrimEnd('\', '/')) -ceq 'QproRuntime') {
+        $checksumPath = Join-Path (Split-Path -Parent $Root) 'SHA256SUMS.txt'
+        $prefix = 'QproRuntime/models/'
+    }
+    $expected = $null
+    if (Test-Path -LiteralPath $checksumPath -PathType Leaf) {
+        if ((Get-Item -LiteralPath $checksumPath).Length -gt 2097152) { throw "The release checksum list is too large. $repair" }
+        $hashes = @{}
+        foreach ($line in [IO.File]::ReadLines($checksumPath)) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            $match = [regex]::Match($line, '^(?<hash>[0-9a-fA-F]{64})  (?<path>.+)$')
+            if (-not $match.Success -or $hashes.ContainsKey($match.Groups['path'].Value)) { throw "The release checksum list is invalid. $repair" }
+            $hashes[$match.Groups['path'].Value] = $match.Groups['hash'].Value.ToLowerInvariant()
+        }
+        $gateHash = $hashes[$prefix + $stem + '-gate.pt']
+        $directionHash = $hashes[$prefix + $stem + '-direction.pt']
+        if (-not $gateHash -or -not $directionHash) { throw "The release checksum list does not identify its bundled tongue pair. $repair" }
+        $expected = @{ Gate=$gateHash; Direction=$directionHash }
+    }
+    $pair = Existing-Pair $stem
+    if ($null -ne $pair) {
+        if ($null -ne $expected) {
+            if ($pair.GateSha256 -ceq $expected.Gate -and $pair.DirectionSha256 -ceq $expected.Direction) { return $pair }
+        } elseif ($legacy) { return $pair }
+        else {
+            $metadataPath = Join-Path $models ($stem + '.metadata.json')
+            if (Test-Path -LiteralPath $metadataPath -PathType Leaf) {
+                try { if (Metadata-MatchesPair (Read-ModelJson $metadataPath) $pair) { return $pair } } catch { }
+            }
+        }
+    }
+    if ($null -ne $expected -and (Test-Path -LiteralPath $models -PathType Container)) {
+        $metadataFiles = @(Get-ChildItem -LiteralPath $models -File -Filter 'qpro-stereo-tongue-v*.metadata.json')
+        if ($metadataFiles.Count -gt 256) { throw "There are too many model metadata files to identify the bundled pair safely. $repair" }
+        foreach ($file in ($metadataFiles | Sort-Object Name)) {
+            $localStem = $file.Name -replace '\.metadata\.json$', ''
+            if ($localStem -cnotmatch '^qpro-stereo-tongue-v[1-9][0-9]*$') { continue }
+            try { $metadata = Read-ModelJson $file.FullName } catch { continue }
+            if (-not (Is-BundledDeveloper $metadata) -or
+                [string]$metadata.modelFiles.gateSha256 -cne $expected.Gate -or
+                [string]$metadata.modelFiles.directionSha256 -cne $expected.Direction) { continue }
+            $localPair = Existing-Pair $localStem
+            if (Metadata-MatchesPair $metadata $localPair) { return $localPair }
+        }
+    }
+    throw "The release's complete bundled tongue model '$stem' is missing, empty or does not match its bundle identity. Expected its gate and direction checkpoints under '$models'. $repair"
+}
+
+function Assert-QproRocmModelPairUnchanged($Pair) {
+    foreach ($branch in @('Gate', 'Direction')) {
+        $path = [string]$Pair.$branch
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -eq 0) {
+            throw "The bundled tongue model file is missing or empty: $path. The GPU model checks cannot continue. Re-extract the complete release ZIP and retry."
+        }
+        $stream = [IO.File]::OpenRead($path); $sha = [Security.Cryptography.SHA256]::Create()
+        try { $hash = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+        finally { $sha.Dispose(); $stream.Dispose() }
+        if ($hash -cne [string]$Pair.($branch + 'Sha256')) {
+            throw "The bundled tongue model changed during setup: $path. The GPU model checks cannot continue. Keep the current release folder unchanged and retry."
+        }
+    }
 }
 
 function Test-QproRocmReplacement([string]$EnvironmentRoot, [string]$Version, [switch]$Update) {
@@ -290,6 +401,10 @@ if ($null -eq $qproAmdGpu) {
 }
 $qproGfxTarget = $qproRocm10Targets[(Get-QproNormalizedGpuName $qproAmdGpu)]
 $qproRocmVersion = if ($qproExperimental) { '10.1.0' } else { '7.2.1' }
+$qproSmokeModels = Get-QproRocmModelPair $QproRoot
+$qproGateModel = $qproSmokeModels.Gate
+$qproDirectionModel = $qproSmokeModels.Direction
+Write-Host "Bundled tongue model for GPU validation: $($qproSmokeModels.Stem)."
 . (Join-Path $QproRoot 'runtime-python.ps1')
 $qproRocmPrefix = if ($qproExperimental) { '10' } else { '721' }
 $qproRocmEnv = Get-QproRocmInstallEnvironment $qproRocmPrefix $qproGfxTarget $RocmStorageRoot
@@ -441,11 +556,14 @@ try {
     $qproGpuProbe = Invoke-QproRocmPythonProbe $qproRocmPython "import torch; from qpro_gpu import require_rocm_device_name,rocm_device_diagnostics; print('PyTorch:',torch.__version__,flush=True); print('ROCm release:',getattr(torch.version,'rocm',None),flush=True); print('HIP build:',torch.version.hip,flush=True); print('GPU available:',torch.cuda.is_available(),flush=True); print('GPU devices:',rocm_device_diagnostics(torch),flush=True); device=require_rocm_device_name(torch); print('GPU:',torch.cuda.get_device_name(int(device.split(':')[1])),flush=True); print('Device:',device,flush=True)"
     Assert-QproRocmPythonProbe $qproGpuProbe 'AMD packages imported successfully, but the discrete GPU check failed. See the detected adapter, driver or device error above.'
 
+    Assert-QproRocmModelPairUnchanged $qproSmokeModels
     & $qproRocmPython -c "import sys,torch; from qpro_gpu import require_rocm_device_name; from train_tongue_model import create_model; device=require_rocm_device_name(torch); assert not torch.backends.cudnn.enabled; c=torch.load(sys.argv[1],map_location='cpu',weights_only=True); m=create_model(c['architecture'],list(c['targetNames'])).to(device); x=torch.rand(2,2,c['imageSize'],c['imageSize'],device=device); m(x).float().square().mean().backward(); torch.cuda.synchronize(device); print('GPU training smoke test passed on',device)" $qproGateModel
-    if ($LASTEXITCODE -ne 0) { throw 'The Qpro tongue model failed a GPU training step.' }
+    if ($LASTEXITCODE -ne 0) { throw 'The bundled tongue model GPU training check could not complete. See the preceding model-load or GPU error. This environment has not been marked ready.' }
 
+    Assert-QproRocmModelPairUnchanged $qproSmokeModels
     & $qproRocmPython -c "import sys,numpy as np,torch; from qpro_gpu import require_rocm_device_name; from tongue_model_preview import LiveTongueModelPreview; assert not torch.backends.cudnn.enabled; p=LiveTongueModelPreview(sys.argv[1],direction_checkpoint_path=sys.argv[2]); assert str(p.device)==require_rocm_device_name(torch); p.predict(np.zeros((400,800),dtype=np.uint8),None,[]); torch.cuda.synchronize(p.device); print('GPU inference smoke test passed on',p.device)" $qproGateModel $qproDirectionModel
-    if ($LASTEXITCODE -ne 0) { throw 'The Qpro tongue model failed a GPU inference step.' }
+    if ($LASTEXITCODE -ne 0) { throw 'The bundled tongue model GPU inference check could not complete. See the preceding model-load or GPU error. This environment has not been marked ready.' }
+    Assert-QproRocmModelPairUnchanged $qproSmokeModels
 
     Remove-Item Env:QPRO_ROCM_INSTALL_SMOKE_TEST -ErrorAction SilentlyContinue
     Remove-Item Env:QPRO_ROCM_EXPECTED_GFX_TARGET -ErrorAction SilentlyContinue
