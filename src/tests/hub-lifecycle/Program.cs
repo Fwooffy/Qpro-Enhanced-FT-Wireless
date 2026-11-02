@@ -40,6 +40,7 @@ internal static class LifecycleTests
         if (new HubEnvironment(fixtureRoot).IndependentGazeEnabled)
             throw new Exception("A fresh Hub enabled independent gaze.");
         using var form = new HubForm(fixtureRoot, rememberLaunch: false, previewOnly: true);
+        StockRestoreFixtures.Run(form);
         object? Call(string name, params object[] args) => typeof(HubForm).GetMethod(name, Private)!.Invoke(form, args);
         void Set(string name, bool value) => typeof(HubForm).GetField(name, Private)!.SetValue(form, value);
         bool Pending() => (bool)typeof(HubForm).GetProperty("TrackingShutdownPending", Private)!.GetValue(form)!;

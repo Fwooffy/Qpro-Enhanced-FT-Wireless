@@ -772,8 +772,13 @@ internal sealed partial class HubForm
 
     private async Task StopTrackingAsync()
     {
+        await TryStopTrackingAsync();
+    }
+
+    private async Task<bool> TryStopTrackingAsync()
+    {
         EndCheekTrackingSession();
-        if (_stopping) return;
+        if (_stopping) return false;
         _stopping = true;
         StopTrackingHealth();
         bool gazeRestoreFailed = false;
@@ -801,7 +806,7 @@ internal sealed partial class HubForm
                 {
                     _trackingCleanupPending = true;
                     AppendLog("Tracking processes exited, but their final output has not finished. Cleanup remains unverified; keep the Hub open and press Stop tracking again.");
-                    return;
+                    return false;
                 }
                 _trackingCleanupPending = false;
                 await FinishControllerRestorationAsync();
@@ -839,6 +844,7 @@ internal sealed partial class HubForm
             if (_trackingProcesses.Count == 0) ResetInferenceStatus();
             UpdateControlState();
         }
+        return !stopRequestFailed && !gazeRestoreFailed && !ControllerCleanupUnconfirmed && !TrackingShutdownPending;
     }
 
     private Process StartManaged(string label, string script, params string[] arguments)
@@ -1280,11 +1286,21 @@ internal sealed partial class HubForm
                 throw new InvalidOperationException("The gaze action did not confirm its result. Check Activity before restarting gaze.");
             if (isGazeInspection && _gazeInspectionResult is null)
                 throw new InvalidOperationException("The gaze setup result was incomplete. Re-extract the complete ZIP and retry Check gaze setup.");
-            ReloadProfiles();
-            // The wireless connection script already verifies ADB and Magisk root.
-            // Show its result without waiting on a second network status probe.
-            if (label != "Connect wireless Quest") await RefreshStatusAsync();
+            if (label == StockRestoreTitle)
+                UpdateSetupStepStyles();
+            else
+            {
+                ReloadProfiles();
+                // The wireless connection script already verifies ADB and Magisk root.
+                if (label != "Connect wireless Quest") await RefreshStatusAsync();
+            }
             if (controllerFeedback is not null) ShowControllerFeedback(controllerFeedback);
+            else if (label == StockRestoreTitle && setupResult?.UninstalledModuleCounts is { } counts)
+            {
+                var detail = StockRestoreSummary(counts.Removed, counts.Restored);
+                AppendLog(detail);
+                SetActionFeedback("VRCFaceTracking module reset complete", detail, StockRestoreNext);
+            }
             else SetActionFeedback(label + " completed", "The helper exited successfully and its required result checks passed.", label.StartsWith("Install ", StringComparison.Ordinal) && label.Contains("module", StringComparison.Ordinal) ? "Reopen VRCFaceTracking to load the installed module." : "Continue setup or choose your features on Facial tracking.");
             return true;
         }

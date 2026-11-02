@@ -11,6 +11,7 @@ internal sealed class HubSetupResult
     private readonly string? _expectedBackup;
     private int _completed;
     private string? _failure;
+    internal (int Removed, int Restored)? UninstalledModuleCounts { get; private set; }
 
     private HubSetupResult(string action, string? expectedBackup = null) { _action = action; _expectedBackup = expectedBackup; }
 
@@ -58,7 +59,9 @@ internal sealed class HubSetupResult
                 else if (_action == "module-uninstall")
                 {
                     _completed++;
-                    if (result.GetProperty("removed").GetInt32() < 0 || result.GetProperty("restored").GetInt32() < 0 ||
+                    var removed = result.GetProperty("removed").GetInt32();
+                    var restored = result.GetProperty("restored").GetInt32();
+                    if (removed < 0 || restored < 0 ||
                         result.GetProperty("remainingQpro").GetInt32() != 0) throw new FormatException();
                     var issues = result.GetProperty("recoveryIssues");
                     if (issues.ValueKind != JsonValueKind.Array || issues.GetArrayLength() > 32) throw new FormatException();
@@ -66,6 +69,7 @@ internal sealed class HubSetupResult
                     if (messages.Any(message => string.IsNullOrWhiteSpace(message) || message.Length > 4096)) throw new FormatException();
                     if (messages.Length > 0)
                         _failure ??= "The Qpro module was removed, but saved-module recovery needs attention. " + string.Join(" ", messages);
+                    else UninstalledModuleCounts = (removed, restored);
                 }
                 else
                 {

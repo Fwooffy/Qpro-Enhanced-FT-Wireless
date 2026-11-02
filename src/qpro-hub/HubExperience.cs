@@ -70,6 +70,7 @@ internal sealed partial class HubForm
         card.Controls.Add(_actionNext);
         var actions = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = true, Margin = Padding.Empty };
         actions.Controls.Add(ActionButton("Copy diagnostics", (_, _) => CopyDiagnostics()));
+        actions.Controls.Add(ActionButton(StockRestoreTitle, async (_, _) => await RestoreStockVrcftAsync()));
         actions.Controls.Add(ActionButton("Save log…", (_, _) => SaveDiagnostics()));
         card.Controls.Add(actions);
         return card;
