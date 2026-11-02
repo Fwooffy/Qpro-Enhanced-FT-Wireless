@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <StartupObject>LocalUpdaterProgram</StartupObject>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>QproFaceTracking</AssemblyName>
+    <RootNamespace>QproFaceTracking.Hub</RootNamespace>
+    <Version>2.9.99</Version>
+    <Title>Qpro Companion local updater test</Title>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../qpro-hub/*.cs" Link="Hub/%(Filename)%(Extension)" />
+    <Compile Include="../../shared/CheekTrackingSession.cs;../../shared/EyebrowPreference.cs;../../shared/CheekPuffCalibrationProfile.cs;../../shared/CheekPuffTelemetry.cs;../../shared/DeveloperCheekPuffBaseline.cs" Link="Shared/%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>
