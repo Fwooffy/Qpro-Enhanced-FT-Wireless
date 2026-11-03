@@ -1,12 +1,20 @@
-# Qpro Companion V3.0.0 - release candidate source
+# Qpro Companion V3.0.0 - source
 
-Face-tracking and experimental controller tools for a **rooted Meta Quest Pro** on Windows, based on [n0tmast3r's Qpro-Enhanced-FT](https://github.com/n0tmast3r/Qpro-Enhanced-FT). This source prepares the V3.0.0 release candidate: Virtual Desktop or Steam Link, USB or wireless ADB, NVIDIA CUDA, experimental AMD ROCm support, and CPU fallback. **The V3.0.0 candidate has not been published as a GitHub release.** See [V3.0.0 release notes](RELEASE_NOTES_V3.0.0.md) for the proposed release description.
+Face-tracking and experimental controller tools for a **rooted Meta Quest Pro** on Windows, based on [n0tmast3r's Qpro-Enhanced-FT](https://github.com/n0tmast3r/Qpro-Enhanced-FT). V3.0.0 supports Virtual Desktop or Steam Link, USB or wireless ADB, NVIDIA CUDA, experimental AMD ROCm support, and CPU fallback. **[V3.0.0 is released](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases/tag/v3.0.0).** See [V3.0.0 release notes](RELEASE_NOTES_V3.0.0.md) for its features and validation limits.
 
-**[Download the latest release](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases/latest)** · [Beginner PDF guide](Quest_Pro_Enhanced_Face_Tracking_Guide.pdf) · [Text setup instructions](RELEASE_INSTRUCTIONS.md) · [Detailed technical notes](RELEASE_README.md) · [Community Discord](https://discord.gg/ghvuJTpRu4)
+**[Download QproCompanion.V3.0.0.zip](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases/download/v3.0.0/QproCompanion.V3.0.0.zip)** · [Beginner PDF guide](Quest_Pro_Enhanced_Face_Tracking_Guide.pdf) · [Text setup instructions](RELEASE_INSTRUCTIONS.md) · [Detailed technical notes](RELEASE_README.md) · [Community Discord](https://discord.gg/ghvuJTpRu4)
 
 Download the **ZIP asset** from Releases and extract the entire folder. GitHub's automatically generated source archives do not include the runnable Hub, bundled model weights, Android tools, or private Python runtime.
 
-The public ZIP is **QproCompanion.V3.0.0.zip**. Qpro Companion retains `QproFaceTracking.exe`, existing app/data folders and `.qptonguemodel` files for update compatibility. Older updaters can use the byte-identical **QproFaceTracking.V3.0.0.zip** asset.
+The public ZIP is **QproCompanion.V3.0.0.zip**. Qpro Companion retains `QproFaceTracking.exe`, existing app/data folders and `.qptonguemodel` files for update compatibility.
+
+## Updating Companion
+
+The Hub checks for newer stable releases at startup and shows a popup when one is available. Choose **Update** to download and verify it, then **Restart and update** to apply it in the existing folder. Your personal/imported models, recordings, saved settings and connection choices stay in place. Tracking does not restart automatically.
+
+Automatic checks can be turned off in the update window. **Include prereleases** is off by default. The updater only offers newer versions; another V3.0.0 test build needs a manual download.
+
+Use **Updates > Components** separately for installed Qpro modules and private Python/PyTorch/ROCm runtimes. Stop tracking or training first. To replace the Qpro VRCFaceTracking module, close VRCFaceTracking and wait for its module helper to exit.
 
 ## New to rooting a Quest Pro?
 
@@ -14,7 +22,7 @@ Start with [**Root Your Meta Quest with Singularity — a beginner guide by Fwoo
 
 Before changing your headset, compare its **exact model and firmware build** with the current [Singularity documentation and releases](https://github.com/Lumince/singularity). The root guide covers several Quest models; **this face-tracking app is for Quest Pro**.
 
-## What this candidate includes
+## What V3.0.0 includes
 
 - Receives face, brow, jaw, and blink values through the selected Virtual Desktop or Steam Link Qpro module, with optional independent eye gaze and convergence.
 - Adds stereo camera tongue tracking with **Developer tongue model** as the fresh-setup default, the opt-in **Mustachio** model, and Quick refinement, Focused, and Full dataset capture modes.
@@ -24,7 +32,7 @@ Before changing your headset, compare its **exact model and firmware build** wit
 
 **Experimental relative pupil dilation** has been live-tested in VRChat. It is an avatar animation estimate, not a calibrated pupil measurement.
 
-**Steam Link** is selectable under **Streaming app** in this candidate. Its Qpro module uses OSC port **9015** with eye and face sharing enabled. Steam Link face, blink, and mouth tracking, native TongueOut, and Qpro's camera tongue override have been checked live on a Quest Pro. Follow the [Steam Link settings](RELEASE_INSTRUCTIONS.md#steam-link-settings) before installing its module.
+**Steam Link** is selectable under **Streaming app** in V3.0.0. Its Qpro module uses OSC port **9015** with eye and face sharing enabled. Steam Link face, blink, and mouth tracking, native TongueOut, and Qpro's camera tongue override have been checked live on a Quest Pro. Follow the [Steam Link settings](RELEASE_INSTRUCTIONS.md#steam-link-settings) before installing its module.
 
 ## Requirements
 

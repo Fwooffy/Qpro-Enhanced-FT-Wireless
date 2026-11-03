@@ -2,11 +2,11 @@
 
 A Windows companion for face tracking and optional controller features on a **rooted Meta Quest Pro**, based on [Qpro-Enhanced-FT by n0tmast3r](https://github.com/n0tmast3r/Qpro-Enhanced-FT). It supports Virtual Desktop or Steam Link, USB or wireless ADB, tongue tracking with NVIDIA CUDA, experimental AMD ROCm support, and CPU fallback. Optional features include independent eye gaze, relative pupil animation, individual cheek puff and suck, eyebrow sensitivity, and experimental Virtual Desktop hands + controllers and Touch Pro thumb-rest input.
 
-**V3.0.0 is being prepared as a release candidate.** See the [V3.0.0 release notes](src/RELEASE_NOTES_V3.0.0.md) for the changes and experimental features. The Releases page remains the place to download published builds.
+**V3.0.0 is released.** See the [published release notes](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases/tag/v3.0.0) for the changes and experimental features.
 
-**Download QproCompanion.V3.0.0.zip from [Releases](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases/latest) when published.** Extract it before opening `QproFaceTracking.exe`. GitHub's automatic source ZIP does not include the Hub executable or packaged models and tools.
+**[Download QproCompanion.V3.0.0.zip](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases/download/v3.0.0/QproCompanion.V3.0.0.zip).** Extract it before opening `QproFaceTracking.exe`. GitHub's automatic source ZIP does not include the Hub executable or packaged models and tools.
 
-Qpro Companion is the new public name. The executable, existing app/data folders and `.qptonguemodel` format retain their QproFaceTracking names for update compatibility. The legacy-named `QproFaceTracking.V3.0.0.zip` asset contains the same bytes for older updaters; use either ZIP, not both.
+Qpro Companion is the new public name. The executable, existing app/data folders and `.qptonguemodel` format retain their QproFaceTracking names for update compatibility.
 
 The **latest [VRCFaceTracking from Steam](https://store.steampowered.com/app/3329480/VRCFaceTracking/)** is required. If you used a Qpro version before V2.0, record and train a new tongue model. Working V2.0 or newer models can be exported and imported into V3.0.0 through **Model manager**.
 
@@ -14,10 +14,18 @@ The **latest [VRCFaceTracking from Steam](https://store.steampowered.com/app/332
 
 An active independent-gaze Magisk module supplies gaze itself. When detected, the Hub keeps **Independent eye gaze + convergence** off and disabled; skip **Check gaze setup** and **Prepare gaze**. Tongue, pupil dilation and eyebrow controls still work separately. After changing the Magisk module, reboot the headset and use **Reconnect USB** or **Check headset compatibility** to refresh its status.
 
+## Updating Companion
+
+The Hub checks for newer stable releases at startup and shows a popup when one is available. Choose **Update** to download and verify it, then **Restart and update** to apply it in the existing folder. Your personal/imported models, recordings, saved settings and connection choices stay in place. Tracking does not restart automatically.
+
+Automatic checks can be turned off in the update window. **Include prereleases** is off by default. The updater only offers newer versions; another V3.0.0 test build needs a manual download.
+
+Use **Updates > Components** separately for installed Qpro modules and private Python/PyTorch/ROCm runtimes. Stop tracking or training first. To replace the Qpro VRCFaceTracking module, close VRCFaceTracking and wait for its module helper to exit.
+
 ## Guides
 
 - [Text setup instructions](src/RELEASE_INSTRUCTIONS.md)
-- [Detailed release notes](src/RELEASE_README.md)
+- [Technical notes](src/RELEASE_README.md)
 - [Quest Pro rooting guide by glorpette and Fwooffy](https://github.com/glorpette/quest-guides/blob/main/root_guide_by_fwooffy.md)
 
 ## Repository layout
