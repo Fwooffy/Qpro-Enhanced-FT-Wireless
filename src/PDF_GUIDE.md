@@ -4,18 +4,20 @@
 
 ## Your first session
 
-Start with the three cards on **First-time setup**. Complete one step at a time; optional gaze, AMD and controller features can wait.
+On **First-time setup**, follow **1. Connect**, **2. PC runtime**, then **3. VRCFT module**. One step is shown at a time, with its status above.
 
-1. **Connect your Quest Pro.** Start with **USB cable**, approve USB debugging in the headset and allow **Shell / ADB Shell** in Magisk.
+1. **Connect your Quest Pro.** Start with **USB cable**, approve USB debugging in the headset, then press **Check USB connection**. Allow **Shell / ADB Shell** in Magisk.
 2. **Install the PC runtime.** Press **Install runtime**. Keep the Hub open while its private Python and tracking libraries download. Wait for completion in **Activity**.
-3. **Install your VRCFaceTracking module.** Close VRCFaceTracking, choose **Streaming app**, install the matching Qpro module and reopen VRCFaceTracking.
+3. **Install your VRCFaceTracking module.** Close VRCFaceTracking and wait for **ModuleProcess** to exit. Choose **Streaming app**, install the matching Qpro module, then reopen VRCFaceTracking.
+
+**Back** and **Next step** only navigate. **Open Facial tracking** changes pages; it does not start tracking.
 
 > [!TIP] Check the source before adding features
 > Connect through Virtual Desktop or Steam Link and confirm that mouth expressions and blinks move in VRCFaceTracking's preview. An installed module or green app status does not establish live tracking.
 
 Once expressions move, open **Facial tracking**, choose your features and press **Start tracking**. Finish with **Stop tracking** and wait for cleanup in **Activity**.
 
-Already using the independent-gaze Magisk module? When detected, Hub gaze stays off and disabled. Skip **Check gaze setup** and **Prepare gaze**; ordinary face tracking does not need them.
+Extras are under **Show optional tools and recovery**. With Magisk gaze, skip **Check gaze setup** and **Prepare gaze**; detected Hub gaze stays off and disabled.
 
 ### Find your next step
 
@@ -43,14 +45,14 @@ Read only the optional feature pages you need. The top-right **Contents** link r
 
 Install **SteamVR**, the [latest VRCFaceTracking from Steam](https://store.steampowered.com/app/3329480/VRCFaceTracking/) and your streaming app's PC software. Setup needs internet access and several gigabytes of free space.
 
-1. Download **QproCompanion.V3.0.0.zip** from [Releases](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases) when published, or use the supplied release candidate ZIP.
+1. Download **QproCompanion.V3.0.1.zip** from [Releases](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases) when published, or use the supplied release candidate ZIP.
 2. Right-click the ZIP in File Explorer and choose **Extract All**. Keep `QproFaceTracking.exe`, `Helpers` and `QproRuntime` together.
 3. Open `QproFaceTracking.exe`. For OneDrive, first choose **Always keep on this device** for the whole extracted folder.
 
 > [!NOTE] Independent gaze is optional
 > You do not need a gaze Magisk module or the Hub's gaze preparation for ordinary face tracking, tongue tracking or pupil dilation.
 
-ADB and private Python are supplied. For update compatibility, the executable, app/data folders and `.qptonguemodel` format keep their old names. The legacy **QproFaceTracking.V3.0.0.zip** is the same package for older updaters; use either ZIP. GitHub's **Source code** archives are not the app.
+ADB and private Python are supplied. For update compatibility, the executable, app/data folders and `.qptonguemodel` format keep their old names. The legacy **QproFaceTracking.V3.0.1.zip** is the same package for older updaters; use either ZIP. GitHub's **Source code** archives are not the app.
 
 ## Virtual Desktop and Steam Link
 
@@ -79,26 +81,48 @@ In the headset's **Advanced Settings**, enable **OSC**, **Share eye tracking dat
 
 **USB cable** and **Wireless ADB (Wi-Fi)** choose the Qpro tracking-data connection, not the VR picture stream. The [full text guide](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/blob/main/src/RELEASE_INSTRUCTIONS.md) also covers the optional Virtual Desktop USB-video beta setup.
 
+## Windows Streamer updates
+
+This optional hold controls **Virtual Desktop Streamer on the PC**. Quest app updates are managed separately.
+
+### Pause or restore
+
+1. Stop tracking and finish any setup or training action. Let the Virtual Desktop updater or installer finish if it is running.
+2. Open **First-time setup > Show optional tools and recovery**, then expand **Show Windows Streamer updates**.
+3. Press **Check updater status**. Use **Pause PC Streamer updater** to add the hold and approve the Windows administrator prompt.
+4. To undo it, return here and press **Restore PC Streamer updater**. This remains available if you select Steam Link.
+
+### What changes
+
+Companion adds its own Windows Defender Firewall rule for the verified installed **Updater.exe**. It blocks that updater's network access. It leaves the Streamer program, INI file, Quest app and unrelated firewall rules alone. Linked or unverified installations are refused.
+
+Restore removes only the current Windows user's Companion-owned rule. The status explains if another Windows user's hold remains. **Restore before removing Companion from the PC.**
+
+> [!WARNING] This holds updater downloads
+> It cannot cancel an installer already downloaded or prevent a manual installation. It does not downgrade Streamer or validate an unsupported hand-tracking version. A newer Quest app may still require a matching PC Streamer.
+
+If status cannot be checked, read **Activity** and retry after any Windows Firewall or installer operation finishes. Do not assume a timed-out Pause or Restore succeeded.
+
 ## USB cable
 
 USB is the easiest first connection. Leave the cable attached and the headset awake while setting up.
 
 1. Connect the Quest Pro to the PC and put it on.
 2. In **USB debugging**, choose **Always allow from this computer**, then **Allow**. The Hub cannot approve this headset permission for you.
-3. On **First-time setup**, set **Connection type** to **USB cable**. Qpro verifies the Quest Pro and remembers it.
+3. On **First-time setup > 1. Connect**, set **Connection type** to **USB cable** and press **Check USB connection**. Qpro verifies the Quest Pro and remembers it.
 4. If root access is unavailable, allow **Shell / ADB Shell** in Magisk. Open **Facial tracking > Your session > Show connection and camera settings**, then **Refresh connection status**.
 
 > [!TIP] You should not normally need to unplug USB
-> The USB selection stays in the app's settings. After reopening the Hub, keep the Quest awake and connected. If it stalls, stop tracking and training, then press **Reconnect USB** in **First-time setup**.
+> The USB selection stays in the app's settings. After reopening the Hub, keep the Quest awake and connected. If it stalls, stop tracking and training, then press **Check USB connection** in **First-time setup**.
 
-**Reconnect USB** first verifies an already working connection. It does not reset a healthy USB headset; offline recovery is attempted only when needed.
+**Check USB connection** first verifies an already working connection. It does not reset a healthy USB headset; offline recovery is attempted only when needed.
 
 | Result | Next step |
 | --- | --- |
 | Unauthorized | Wear the headset and approve its USB debugging prompt. |
-| Offline or stalled | Stop tracking and training, then use **Reconnect USB**. |
+| Offline or stalled | Stop tracking and training, then use **Check USB connection**. |
 | Missing device | Check the cable, USB port and Windows USB driver. |
-| A different Quest is remembered | Use **Forget USB headset**, connect the intended Quest Pro, then **Reconnect USB**. |
+| A different Quest is remembered | Use **Forget USB headset**, connect the intended Quest Pro, then **Check USB connection**. |
 
 Qpro does not silently replace a remembered headset. If several Android USB devices are attached during the first check, temporarily disconnect the others.
 
@@ -111,14 +135,14 @@ Keep the Quest and PC on the same trusted private Wi-Fi network. You can start w
 1. On **First-time setup**, choose **Wireless ADB (Wi-Fi)** under **Connection type**.
 2. Enter the Quest's address in **Quest IP:port**, then press **Connect to Quest**. For example, `192.168.1.25:5555` uses the usual port, but you must use your own Quest's IP.
 3. **Quest connected** and **Wireless Quest ready** mean ADB and root are ready. You can unplug USB if it was attached.
-4. If wireless is off but USB works, connect USB once and press **Enable from USB**. After success, unplug USB and connect to the saved address.
+4. If wireless is off but USB works, open **Show wireless setup options** and press **Enable from USB**. After success, unplug USB and connect to the saved address.
 
 > [!TIP] Ready means you can skip pairing
 > If **Connect to Quest** succeeds, do not press **Pair and connect**. Pairing is only for a headset showing a six-digit wireless debugging pairing code.
 
 ### When pairing is required
 
-Open **Show pairing options**. Keep the headset's pairing prompt open while entering:
+Open **Show wireless setup options**, then **Show pairing options**. Keep the headset's pairing prompt open while entering:
 
 | Hub field | What to enter |
 | --- | --- |
@@ -130,22 +154,22 @@ A `protocol fault` usually needs a fresh code and temporary port. After rebootin
 
 ## Runtime and Qpro module
 
-After the Quest connects, complete the remaining **First-time setup** cards.
+After the Quest connects, use **Next step** to reach the remaining **First-time setup** steps.
 
 ### Install the PC runtime
 
-Press **Install runtime** and keep the Hub open. **Activity** reports PowerShell startup, the current phase, downloads and still-running messages when output pauses. PyTorch is a large download.
+On **2. PC runtime**, press **Install runtime** and keep the Hub open. **Setup progress** shows the current message; **View setup activity** opens the full log. **Activity** reports PowerShell startup, downloads and still-running messages when output pauses. PyTorch is a large download.
 
 Qpro uses private Python and works with or without an existing Python installation. You do not need to uninstall another app's Python. NVIDIA CUDA or CPU uses the normal runtime; AMD acceleration is a separate optional step.
 
-Use **Repair runtime** to rebuild damaged tracking packages. **Restore saved runtime** checks saved backups before replacing the current runtime, and keeps a recovery copy. Both actions require tracking, capture and training to be stopped. They preserve models, recordings and Facial tracking choices; AMD ROCm has its own separate environment.
+Under **Show optional tools and recovery**, **Repair runtime** rebuilds damaged tracking packages. **Restore saved runtime** checks saved backups before replacing the current runtime and keeps a recovery copy. Stop tracking, capture and training first. Models, recordings and Facial tracking choices are kept; AMD ROCm has its own separate environment.
 
 ### Install your VRCFaceTracking module
 
-1. **Close VRCFaceTracking** and wait for its module process to exit.
+1. Open **3. VRCFT module**. **Close VRCFaceTracking** and wait for its **ModuleProcess** helper to exit.
 2. Choose **Virtual Desktop** or **Steam Link** under **Streaming app**.
 3. Press **Install Virtual Desktop module** or **Install Steam Link module**. Only the selected source's button is available. Wait for completion in **Activity**.
-4. Reopen VRCFaceTracking with the source connected. Check that ordinary expressions move in its preview.
+4. Reopen VRCFaceTracking with the source connected. Check that ordinary expressions move in its preview, then press **Open Facial tracking**.
 
 Its card is **Qpro Companion — Virtual Desktop** or **Qpro Companion — Steam Link**, using the Hub's release version. Older QproFaceTracking cards remain recognized.
 
@@ -217,9 +241,9 @@ Choose one method. Independent gaze is optional; tongue and pupils do not requir
 | Enabled gaze Magisk module | When detected, Hub gaze stays off and disabled. Skip **Check gaze setup** and **Prepare gaze**; those buttons are disabled too. |
 | Temporary Hub method | Disable the gaze Magisk module and reboot first. Use **Check gaze setup**, then **Prepare gaze**. Enable Hub gaze only if its checks pass. |
 
-The Magisk route lists **Quest Pro Independent Eye Gaze** and **Magisk OverlayFS** in Singularity **Apps/Modules > Magisk repo**. Follow its firmware requirements and reboot prompts. After changing the module, reboot, then use **Reconnect USB** or **Check headset compatibility** to refresh detection. A failed check is not proof that no module exists.
+The Magisk route lists **Quest Pro Independent Eye Gaze** and **Magisk OverlayFS** in Singularity **Apps/Modules > Magisk repo**. Follow its firmware requirements and reboot prompts. After changing the module, reboot, then use **Check USB connection** or **Check headset compatibility** to refresh detection. A failed check is not proof that no module exists.
 
-For the Hub route, open **First-time setup > Optional independent gaze > Show gaze setup**. The Hub reads that headset's eye model and engine and prepares a temporary model on the PC. **You do not need to supply an engine file.** A build number alone does not establish engine compatibility.
+For the Hub route, open **First-time setup > Show optional tools and recovery > Optional independent gaze > Show gaze setup**. The Hub reads that headset's eye model and engine and prepares a temporary model on the PC. **You do not need to supply an engine file.** A build number alone does not establish engine compatibility.
 
 > [!WARNING] Wait for the service restart
 > Applying/restoring Hub gaze briefly freezes the headset and can interrupt positional tracking while Meta trackingservice restarts. Wait for **Activity** to confirm recovery. Do not combine methods to bypass a failed compatibility check.
@@ -258,7 +282,7 @@ If the preview separates the sides but the avatar does not, check its cheek para
 
 ## Personalize
 
-Open **Personalize** in the sidebar; its page heading is **Tongue training/refinement**. Record, train, then select the result.
+Open **Personalize** in the sidebar. Under **Capture and train**, record poses, train a personal copy, then select the result.
 
 | Capture mode | What it records |
 | --- | --- |
@@ -298,7 +322,7 @@ Select it on **Facial tracking**, then restart. Contrast processing is automatic
 
 Export backups and import working **V2.0 or newer** `.qptonguemodel` files. Pre-V2.0 models need recapture/retraining. Exports contain weights, not camera recordings. You can refine an imported model with **new** recordings; exports cannot reconstruct its original captured poses.
 
-**Activity** names the loaded model. Use **Lower-face tracking > Show camera settings > Motion smoothing** to soften extension/retraction. Start with **Tongue visibility > Weighted camera + native**. Use **Camera only** only after checking for false detections and obscured poses.
+**Activity** names the loaded model. Use **Lower-face tracking > Show tongue settings > Motion smoothing** to soften extension/retraction. Start with **Tongue visibility > Weighted camera + native**. Use **Camera only** only after checking for false detections and obscured poses.
 
 ### Delete a saved recording
 
@@ -308,7 +332,7 @@ On **Personalize**, open **Show saved recordings** under its capture card. Choos
 
 Optional AMD acceleration comes after **Install runtime**. NVIDIA/CPU users skip this step.
 
-Open **First-time setup > Optional AMD ROCm acceleration > Show AMD setup**, then **Install ROCm 10.1** for an eligible discrete Radeon. Large GPU-specific downloads go into a separate Qpro environment.
+Open **First-time setup > Show optional tools and recovery > Optional AMD ROCm acceleration > Show AMD setup**, then **Install ROCm 10.1** for an eligible discrete Radeon. Large GPU-specific downloads go into a separate Qpro environment.
 
 | Series | Models mapped for ROCm 10.1 |
 | --- | --- |
@@ -381,7 +405,7 @@ First complete [the prerequisite settings](#controllers). Keep all those switche
 ### Install once
 
 1. Finish **Install runtime**. **Close SteamVR** and wait for it to exit.
-2. Open **First-time setup > Optional hands and controllers > Show hands setup and uninstall**, then press **Install hand/controller components**. Keep the Hub open until **Activity** reports completion.
+2. Open **First-time setup > Show optional tools and recovery > Optional hands and controllers > Show hands setup and uninstall**, then press **Install hand/controller components**. Keep the Hub open until **Activity** reports completion.
 3. Connect through Virtual Desktop, then launch SteamVR from its menu. Reopen VRChat.
 
 Installation downloads verified Frida 17.18.0 into Qpro's private environment and registers its add-on. Repeat only when the Hub asks for repair or update.
@@ -406,7 +430,7 @@ Finish with **Stop tracking** and wait for confirmed cleanup. [The next page](#h
 
 ### Current compatibility boundary
 
-**Headset Virtual Desktop 1.34.22.0** and checked PC drivers, including **1.34.23 beta PC driver**, are admitted. **Headset 1.34.23.0 is not admitted.**
+**Headset Virtual Desktop 1.34.22.0** and exact reviewed PC drivers, including **1.34.23 beta** and the reported **1.34.25 PC rebuild**, are admitted. **Headset 1.34.23.0 and 1.34.25.0 are not admitted.**
 
 Unsupported versions or layouts block startup; reinstalling cannot add support. Follow Activity for settings warnings; do not edit headset preferences by hand.
 
@@ -451,7 +475,7 @@ On the checked headset, **Both / 100%** scrolled well in Dashboard and VRChat, w
 
 Press **Stop tracking** and wait for Activity to confirm cleanup. Keep the app open if restoration is unconfirmed. Desktop mouse should release its click, and ordinary controls should keep working.
 
-To remove thumb-rest input, close SteamVR. Open **First-time setup > Optional hands and controllers**, expand **Show hands setup and uninstall**, then press **Uninstall controller add-on**. Reopen SteamVR afterward. Recovery copies stay; hands components and Singularity are unchanged. See [the controller guide](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/blob/main/src/CONTROLLER_INPUT.md).
+To remove thumb-rest input, close SteamVR. Open **First-time setup > Show optional tools and recovery > Optional hands and controllers**, expand **Show hands setup and uninstall**, then press **Uninstall controller add-on**. Reopen SteamVR afterward. Recovery copies stay; hands components and Singularity are unchanged. See [the controller guide](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/blob/main/src/CONTROLLER_INPUT.md).
 
 ## Return to ordinary tracking
 
@@ -467,7 +491,7 @@ Stopping a session, removing a PC module and disabling headset gaze are differen
 
 ### Uninstall Qpro module
 
-On **First-time setup**, open **Show module uninstall** on **Install your VRCFaceTracking module**. Press **Uninstall Qpro module**, confirm and wait for **Setup step complete** before reopening VRCFaceTracking.
+Open **First-time setup > Show optional tools and recovery**. Under **VRCFaceTracking module maintenance**, press **Uninstall Qpro module**, confirm and wait for **Setup step complete** before reopening VRCFaceTracking.
 
 Verified Qpro modules are removed. An official Virtual Desktop module saved by an older installer can be restored if verified; otherwise install the official source module through VRCFaceTracking. Models/recordings remain saved.
 

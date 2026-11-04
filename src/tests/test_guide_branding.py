@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import pdfplumber
@@ -18,9 +19,22 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("pdf", type=Path)
     parser.add_argument("--audit", type=Path, required=True)
+    parser.add_argument("--version", help="Expected three-part version; defaults to the text guide's declared version")
+    parser.add_argument("--pages", type=int, help="Expected pages; defaults to cover plus the print source's H2 sections")
     args = parser.parse_args()
     source = Path(__file__).resolve().parents[1]
     checks = []
+    version_match = re.search(r"^# Qpro Companion (V\d+\.\d+\.\d+)",
+                              (source / "RELEASE_INSTRUCTIONS.md").read_text(encoding="utf-8"))
+    if version_match is None:
+        raise ValueError("Text setup instructions must declare a three-part release version")
+    version = args.version or version_match[1]
+    if not re.fullmatch(r"V\d+\.\d+\.\d+", version):
+        raise ValueError("Expected version must use Vmajor.minor.patch")
+    expected_pages = args.pages if args.pages is not None else 1 + len(re.findall(
+        r"^## ", (source / "PDF_GUIDE.md").read_text(encoding="utf-8"), re.MULTILINE))
+    if expected_pages < 2:
+        raise ValueError("Expected guide must include a cover and at least one content page")
 
     def check(name, passed):
         checks.append({"name": name, "passed": bool(passed)})
@@ -28,14 +42,14 @@ def main():
     reader = PdfReader(args.pdf)
     texts = [page.extract_text() or "" for page in reader.pages]
     flat = " ".join("\n".join(texts).split())
-    check("Reviewed 22-page structure", len(reader.pages) == 22)
-    check("Public title metadata", reader.metadata.title == "Qpro Companion V3.0.0 - Setup and feature guide")
+    check(f"Reviewed {expected_pages}-page source structure", len(reader.pages) == expected_pages)
+    check("Public title metadata", reader.metadata.title == f"Qpro Companion {version} - Setup and feature guide")
     check("Author credit", reader.metadata.author == "Fwooffy")
     check("Branded cover bookmark", reader.outline[0].title == "Qpro Companion")
     check("One bookmark per guide page", len(reader.outline) == len(reader.pages))
     check("No PDF JavaScript", "/JavaScript" not in str(reader.trailer["/Root"].get("/Names", {})))
 
-    required = ["QproCompanion.V3.0.0.zip", "QproFaceTracking.V3.0.0.zip", "QproFaceTracking.exe",
+    required = [f"QproCompanion.{version}.zip", f"QproFaceTracking.{version}.zip", "QproFaceTracking.exe",
                 "update compatibility", ".qptonguemodel", "Qpro Companion — Virtual Desktop",
                 "Qpro Companion — Steam Link", "Older QproFaceTracking cards remain recognized",
                 "Developer tongue model", "Mustachio", "two bundled choices", "Local model numbers can change",
@@ -49,17 +63,21 @@ def main():
                 "Dashboard scrolling", "preserving ordinary controls", "Qpro Companion thumb-rest scrolling",
                 "Personal dashboard choices stay selected", "other modes and Stop send neutral scroll",
                 "provided by Magisk", "stays off and disabled", "those buttons are disabled too",
-                "Reconnect USB", "Check headset compatibility", "A failed check is not proof",
+                "Check USB connection", "Check headset compatibility", "A failed check is not proof",
                 "Pupil, eyebrow and tongue controls work separately", "VRChat menu scrolling",
                 "Automatic selection requires an existing binding selection",
                 "Preparation is not proof of live scrolling",
-                "The bottom Start tracking / Stop tracking bar controls all selected features"]
+                "The bottom Start tracking / Stop tracking bar controls all selected features",
+                "1. Connect", "2. PC runtime", "3. VRCFT module", "Next step", "Open Facial tracking",
+                "Show optional tools and recovery", "Show wireless setup options", "Show pairing options",
+                "View setup activity", "ModuleProcess", "VRCFaceTracking module maintenance", "Show tongue settings"]
     for phrase in required:
         check("Required instruction: " + phrase, phrase in flat)
 
     for phrase in ["QPRO HUB", "Live tracking", "Camera cheek puff", "Calibrate cheek puff",
                    "Developer lower-face model", "v13", "37 cards", "79 cards", "21 cheek",
-                   "qpro_touch_pro", "TOUCHPAD_WAITING", "Under Show hand and controller details, choose"]:
+                   "qpro_touch_pro", "TOUCHPAD_WAITING", "Under Show hand and controller details, choose",
+                   "Reconnect USB", "Show module uninstall", "Show camera settings"]:
         check("No obsolete instruction: " + phrase, phrase not in flat)
 
     links = 0
@@ -67,7 +85,7 @@ def main():
     for index, page in enumerate(reader.pages, 1):
         text = texts[index - 1]
         check(f"Page {index}: public header", "QPRO COMPANION / SETUP & FEATURE GUIDE" in " ".join(text.split()))
-        check(f"Page {index}: watermark and page count", "Made by Fwooffy" in text and f"{index:02d} / 22" in text)
+        check(f"Page {index}: watermark and page count", "Made by Fwooffy" in text and f"{index:02d} / {expected_pages}" in text)
         for pointer in page.get("/Annots", []):
             item = pointer.get_object()
             if item.get("/Subtype") != "/Link":
@@ -96,8 +114,19 @@ def main():
         check(f"{name}: no trailing spaces", not any(line.rstrip() != line for line in text.splitlines()))
     for path in [source.parent / "README.md", source / "RELEASE_INSTRUCTIONS.md", source / "RELEASE_README.md"]:
         text = path.read_text(encoding="utf-8")
+        # The public README describes the published stable release while these
+        # setup documents can describe a newer test build. Verify both aliases
+        # for each document's declared version without rewriting release history.
+        document_version = re.search(r"^# Qpro Companion (V\d+\.\d+\.\d+)", text)
+        if document_version is None:
+            raise ValueError(f"{path}: missing public release version")
+        document_version = document_version[1]
         check(f"{path.name}: manual launch kept accurate", "QproFaceTracking.exe" in text)
-        check(f"{path.name}: both download aliases explained", "QproCompanion.V3.0.0.zip" in text and "QproFaceTracking.V3.0.0.zip" in text)
+        if path == source.parent / "README.md":
+            check("Published README: named release download", f"QproCompanion.{document_version}.zip" in text)
+            check("Published README: legacy identities explained", "existing app/data folders" in text and "update compatibility" in text)
+        else:
+            check(f"{path.name}: both download aliases explained", f"QproCompanion.{document_version}.zip" in text and f"QproFaceTracking.{document_version}.zip" in text)
         check(f"{path.name}: model export preserved", ".qptonguemodel" in text)
 
     result = {"status": "PASS" if all(item["passed"] for item in checks) else "FAIL",

@@ -1,16 +1,16 @@
-# Qpro Companion V3.0.0 - release candidate
+# Qpro Companion V3.0.1 - release candidate
 
-Qpro Companion is the new name for QproFaceTracking. Download **QproCompanion.V3.0.0.zip** when published. For update compatibility, the executable, existing app/data folders and `.qptonguemodel` format keep their old names. The legacy **QproFaceTracking.V3.0.0.zip** asset contains the same bytes for older updaters; use either ZIP, not both.
+Qpro Companion is the new name for QproFaceTracking. Download **QproCompanion.V3.0.1.zip** when published. For update compatibility, the executable, existing app/data folders and `.qptonguemodel` format keep their old names. The legacy **QproFaceTracking.V3.0.1.zip** asset contains the same bytes for older updaters; use either ZIP, not both.
 
 This is a clean derivative of [Qpro-Enhanced-FT](https://github.com/n0tmast3r/Qpro-Enhanced-FT) v0.1.10-poc. V2.0 added AMD ROCm for tongue-model tracking and training, while NVIDIA CUDA has also been live-tested and is functional. A CPU fallback remains available. It carries headset camera and eye data over USB or wireless ADB on a trusted Wi-Fi network. Independent gaze and relative pupil dilation remain experimental features. A rooted Quest Pro is required.
 
-V3.0.0 includes a selectable Steam Link source alongside Virtual Desktop, native individual cheek puff/suck controls, eyebrow sensitivity, an updated Developer tongue model and the separate experimental Mustachio tongue model. Runtime setup uses a private Python archive and reports setup progress in Activity. AMD ROCm becomes ready only after its GPU inference and training checks pass. This folder is a release candidate; publishing the GitHub release is a separate step.
+V3.0.1 includes a selectable Steam Link source alongside Virtual Desktop, native individual cheek puff/suck controls, eyebrow sensitivity, an updated Developer tongue model and the separate experimental Mustachio tongue model. Runtime setup uses a private Python archive and reports setup progress in Activity. AMD ROCm becomes ready only after its GPU inference and training checks pass. This folder is a release candidate; publishing the GitHub release is a separate step.
 
-**Upgrading from a version before V2.0? Record and train a new tongue model.** Keep older models as backups. Working V2.0 or newer models can be exported from the old version and imported into V3.0.0 through **Model manager**, without retraining. See the [beginner PDF guide](Quest_Pro_Enhanced_Face_Tracking_Guide.pdf) for the recording steps.
+**Upgrading from a version before V2.0? Record and train a new tongue model.** Keep older models as backups. Working V2.0 or newer models can be exported from the old version and imported into V3.0.1 through **Model manager**, without retraining. See the [beginner PDF guide](Quest_Pro_Enhanced_Face_Tracking_Guide.pdf) for the recording steps.
 
 **Required:** install the [latest VRCFaceTracking from Steam](https://store.steampowered.com/app/3329480/VRCFaceTracking/) and let Steam finish updating it before installing Qpro's module.
 
-**Updating the optional controller add-on:** Close SteamVR, open **First-time setup > Optional hands and controllers**, expand **Show hands setup and uninstall**, then press **Install hand/controller components** in the new Companion version, then reopen SteamVR through Virtual Desktop. This updates the separately installed add-on and keeps valid saved tuning. Swipe offers a 25% to 200% sensitivity slider, with 100% as the default; stop tracking before adjusting it, then start again.
+**Updating the optional controller add-on:** Close SteamVR, open **First-time setup > Show optional tools and recovery > Optional hands and controllers**, expand **Show hands setup and uninstall**, then press **Install hand/controller components** in the new Companion version, then reopen SteamVR through Virtual Desktop. This updates the separately installed add-on and keeps valid saved tuning. Swipe offers a 25% to 200% sensitivity slider, with 100% as the default; stop tracking before adjusting it, then start again.
 
 ## What's in this package
 
@@ -29,11 +29,17 @@ Start with the [beginner PDF guide](Quest_Pro_Enhanced_Face_Tracking_Guide.pdf),
 
 ## Setup inside the Hub
 
-Choose **USB cable** or **Wireless ADB (Wi-Fi)** in First-time setup. For Wi-Fi, enter the Quest's address and press **Connect to Quest**; use **Pair and connect** if the headset shows a pairing code, or **Enable from USB** for a one-time cable setup. The Hub saves the selected transport and uses it for tracking. Switching to USB makes the Hub target the cable connection.
+Follow **1. Connect**, **2. PC runtime**, then **3. VRCFT module** on **First-time setup**. One step is shown at a time, with each component's observed status above it. **Back** and **Next step** only change the visible step; they do not run installers or complete checks.
+
+Choose **USB cable** and press **Check USB connection**, or choose **Wireless ADB (Wi-Fi)**, enter the Quest's address and press **Connect to Quest**. **Show wireless setup options** contains **Enable from USB**, pairing and **Disable Wi-Fi ADB**. Use **Pair and connect** only if the headset shows a pairing code. Qpro saves the selected connection for tracking.
 
 Press **Install runtime**. Choose **Virtual Desktop** or **Steam Link** under **Streaming app**, then press the matching **Install Virtual Desktop module** or **Install Steam Link module** button. Only the selected source's install button is available, and installing it removes the other Qpro source module. Close VRCFaceTracking and wait for its module process to exit before pressing either button, then reopen it. For Steam Link, enable OSC, eye sharing, and face sharing in its headset **Advanced Settings**, using **OSC Output Port 9015**. Remove separate modules that would compete for the same source.
 
-**Already using an enabled Independent Eye Gaze Magisk module?** Skip **Check gaze setup** and **Prepare gaze**. Once detected, the Hub keeps **Independent eye gaze + convergence (provided by Magisk)** off and disabled, along with both setup buttons. Tongue, pupil dilation and eyebrow controls work separately. After changing the module, reboot the headset and use **Reconnect USB** or **Check headset compatibility** to refresh detection.
+**Open Facial tracking** changes pages after setup; it does not start tracking. Reopen VRCFaceTracking and check expressions in its preview first. **Setup progress** and **View setup activity** report installation progress.
+
+Expand **Show optional tools and recovery** for independent gaze, AMD acceleration, controller components, PC Streamer updater controls and recovery. Those extras are separate from the three required steps.
+
+**Already using an enabled Independent Eye Gaze Magisk module?** Skip **Check gaze setup** and **Prepare gaze**. Once detected, the Hub keeps **Independent eye gaze + convergence (provided by Magisk)** off and disabled, along with both setup buttons. Tongue, pupil dilation and eyebrow controls work separately. After changing the module, reboot the headset and use **Check USB connection** or **Check headset compatibility** to refresh detection.
 
 If you choose the Hub's temporary independent gaze method, disable any gaze Magisk module and reboot first, then use **Check gaze setup** followed by **Prepare gaze** on the **Independent gaze** card. The result popup identifies the detected gaze method, gives the next step and explains **Recover Qpro gaze** and **Reset legacy gaze**. The Hub's gaze option starts off by default and can fail on some Quest Pro firmware builds. The [beginner PDF guide](Quest_Pro_Enhanced_Face_Tracking_Guide.pdf) explains the alternative Magisk method.
 
@@ -43,7 +49,7 @@ Disable the gaze Magisk module and reboot before switching to the Hub's gaze met
 
 If the Hub recognizes your discrete AMD GPU, press **Install ROCm 10.1** after the PC runtime is ready. The installer validates GPU inference and training before marking the new environment ready.
 
-The **VRCFT module** card also has **Uninstall Qpro module**. Stop Qpro tracking, close VRCFaceTracking and wait for its module process to exit before pressing it. The uninstall script removes Qpro's source module and restores previous Virtual Desktop modules backed up by this extracted copy when their original locations are unoccupied. It leaves personal captures, models and headset settings alone. Restart VRCFaceTracking with exactly one official module for the selected streaming app; install the official Virtual Desktop or Steam Link module if needed.
+Under **Show optional tools and recovery**, **VRCFaceTracking module maintenance** has **Uninstall Qpro module**. Stop Qpro tracking, close VRCFaceTracking and wait for its module process to exit before pressing it. The uninstall script removes Qpro's source module and restores previous Virtual Desktop modules backed up by this extracted copy when their original locations are unoccupied. It leaves personal captures, models and headset settings alone. Restart VRCFaceTracking with exactly one official module for the selected streaming app; install the official Virtual Desktop or Steam Link module if needed.
 
 On **Personalize**, each capture mode has **Recorded datasets (including trained)** and **Delete selected dataset…**. Deletion requires confirmation and removes only that recording, its labels and session details, and its prepared training cache from the extracted release folder. Existing trained models stay available.
 
@@ -73,7 +79,7 @@ If **Install runtime** exits with code 1, read the first error in **Activity** r
 
 1. Keep the rooted Quest and PC on the same trusted Wi-Fi network. On the Hub's **First-time setup** page, select **Wireless ADB (Wi-Fi)**.
 2. If the Quest already exposes wireless ADB, enter its Wi-Fi IP and port (usually `5555`) and press **Connect to Quest**. The Hub verifies ADB and Magisk root before saving the address. A **Quest connected** pop-up and “Wireless Quest ready” in Activity mean you can start tracking without pairing. A **Quest connection failed** pop-up points you to Activity for the exact error. Use **Pair and connect** only if the headset requires Android's six-digit pairing flow. Enter the temporary **pairing IP:port** shown beside that code, as well as the regular **connection IP:port**. The two ports are different. A “protocol fault” during pairing often means the temporary pairing dialog closed or the regular connection port was entered instead; reopen the dialog for a fresh address and code.
-3. If wireless ADB is off, connect an authorized Quest by USB once and press **Enable from USB**. The Hub checks Magisk Shell root, enables ADB over Wi-Fi, and saves the Quest address. Unplug USB afterward; the Hub uses the selected Wi-Fi connection.
+3. If wireless ADB is off, connect an authorized Quest by USB once, open **Show wireless setup options**, then press **Enable from USB**. The Hub checks Magisk Shell root, enables ADB over Wi-Fi, and saves the Quest address. Unplug USB afterward; the Hub uses the selected Wi-Fi connection.
 4. Start the selected Virtual Desktop or Steam Link app on the Quest and connect to the PC. Start SteamVR and VRCFaceTracking, then press **Start tracking** in the Hub. Wi-Fi quality and router settings affect camera latency and stability.
 
 On the tested Quest Pro, Singularity kept ADB TCP port `5555` enabled after reboot. If your port is closed after reboot, open **Singularity > Root Terminal** on the headset and run `su -c 'setprop service.adb.tcp.port 5555; stop adbd; start adbd'`, approving root in Magisk if prompted. This manual command affects the current boot only. Then connect to the current Quest IP again in the Hub. Some headsets instead expose Android's pairing-code flow. Use a trusted private network: the ADB TCP port remains reachable on the local network until disabled or the headset reboots.
@@ -120,7 +126,7 @@ The AMD ROCm 10.1 setup downloads packages from `stable.repo.amd.com`; the origi
 
 ## Changes from the upstream package
 
-The Hub executable is built from this project's source. Changes cover source-specific VRCFaceTracking modules, tongue capture and training, gaze recovery, relative pupil processing, isolated runtime setup, GPU selection, and wireless connection helpers. `SHA256SUMS.txt` lists the exact contents of the V3.0.0 ZIP.
+The Hub executable is built from this project's source. Changes cover source-specific VRCFaceTracking modules, tongue capture and training, gaze recovery, relative pupil processing, isolated runtime setup, GPU selection, and wireless connection helpers. `SHA256SUMS.txt` lists the exact contents of the V3.0.1 ZIP.
 
 This edition is not an official release of the upstream repository. See [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).
 

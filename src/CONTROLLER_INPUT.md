@@ -137,8 +137,9 @@ version and driver checks; newer headset builds still need their own profile.
 
 1. Install the normal **PC runtime** through the Hub. Close **SteamVR** and
    wait for it to exit before installing optional components.
-2. Open **First-time setup > Optional hands and controllers > Show hands setup
-   and uninstall**, then press **Install hand/controller components**. The
+2. Open **First-time setup > Show optional tools and recovery > Optional hands
+   and controllers > Show hands setup and uninstall**, then press
+   **Install hand/controller components**. The
    optional download uses a dedicated Qpro Python environment and checks
    official artifact hashes. It registers only Qpro's own add-on path and does
    not edit global Python or `steamvr.vrsettings`. Repeat installation when the
