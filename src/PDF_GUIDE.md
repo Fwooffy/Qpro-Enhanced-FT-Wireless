@@ -415,7 +415,7 @@ For thumb-rest sessions, Qpro hash-checks the installed add-on DLL against this 
 ### Start each session
 
 1. Choose **Virtual Desktop** under **Facial tracking > Your session > Streaming app**. Open **Controllers** and press **Check hand/controller compatibility**.
-2. Green **Hand/controller prechecks passed** means versions/settings passed; it does not confirm live input or performance. Red is blocked; yellow is unchecked/waiting. Follow the result's next step.
+2. **Hand/controller prechecks passed** is a read-only preflight result, not live native-hook validation or a performance test. Unknown-version warnings still need startup checks. Follow Activity's next step.
 3. Turn on **Experimental hands + controllers** and press **Start tracking**. Leave **Experimental Touch Pro thumb-rest input** off for this first finger check; it is separate.
 4. Hold the controllers with your hands visible to the headset cameras. Move individual fingers and check **both** hands in VRChat while movement and buttons still work.
 
@@ -430,9 +430,7 @@ Finish with **Stop tracking** and wait for confirmed cleanup. [The next page](#h
 
 ### Current compatibility boundary
 
-**Headset Virtual Desktop 1.34.22.0** and exact reviewed PC drivers, including **1.34.23 beta** and the reported **1.34.25 PC rebuild**, are admitted. **Headset 1.34.23.0 and 1.34.25.0 are not admitted.**
-
-Unsupported versions or layouts block startup; reinstalling cannot add support. Follow Activity for settings warnings; do not edit headset preferences by hand.
+New version labels may attempt guarded startup. Unknown PC full hashes require an approved **PE code/layout family**, then loaded-image/native-interface checks before fixed-offset hooks. Quest startup must prove actual **Mono hand-result fields, types, sizes and layout**. Native caller, role, bone, freshness, lease and cleanup checks remain. Unrecognized layouts reject cleanly; this is not support for all versions.
 
 ### Confirm and stop
 

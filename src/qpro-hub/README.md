@@ -37,3 +37,9 @@ Fresh setups select **Developer tongue model**. Its new visibility detector reta
 The module heartbeat has **five live channels**: `gaze-left`, `gaze-right`, `tongue`, `pupil-left` and `pupil-right`. It verifies source and installed DLL identity, module process identity, output ownership and freshness before displaying a live-output result. Native cheek adjustments are session settings, not a camera-output channel. Matching installed files or a green process indicator does not prove that expressions move correctly in VRCFaceTracking or an avatar.
 
 Pupil image preprocessing can use a verified GPU runtime. CPU handles contour geometry and smoothing. Latest-frame workers and subscriber-only JPEG encoding bound queued work; Activity reports backend and timing.
+
+## Guarded controller version checks
+
+The manual compatibility check is read-only preflight. A different Virtual Desktop app version label no longer blocks a trial by itself. An unfamiliar PC full hash must match the conservative approved PE code/layout family, with the actual loaded image and native interfaces validated before fixed-RVA hooks. On the Quest, startup must establish the actual Mono hand-result fields, types, sizes and layout. Native caller, controller-role, bone, freshness, lease and cleanup checks remain required. Frida, component and settings requirements are unchanged.
+
+Neither green prechecks nor a family match proves live optical fingers or game performance. Changed code/layout families and unsupported native layouts still reject cleanly; this does not promise all future Virtual Desktop versions work. The first researched Android build and historical exact-hash PC inspections remain evidence, not blanket version support.

@@ -9,6 +9,11 @@ https://github.com/Yeusepe/QFTPlus/tree/aff54dcc70ea87ac04f93da3063c05a5d30cd7a4
 No reference scripts/binaries were run and no implementation code was copied.
 No gaze source or the previously excluded gaze commit was used.
 
+The dated inspection sections below record historical evidence and the admission
+policy used at those times. Their exact-hash and Android-version restrictions
+are not the current startup policy. See **Current guarded admission policy** at
+the end; the original findings and live-test limits are retained.
+
 ## Private compatibility facts
 
 - Virtual Desktop Android1.34.22.0 and the PC driver SHA256 recorded in
@@ -111,3 +116,26 @@ resolver guards and source syntax. Synthetic memory/instructions cannot establis
 that the current headset runtime supplies correct fingers or that every firmware
 restores successfully. Until a live test passes, this remains experimental and
 runtime-unvalidated; future driver or firmware changes need new evidence.
+
+## Current guarded admission policy
+
+V3.0.1 separates version labels from the private layouts used by native hooks.
+The inspected full-file hashes remain provenance. An unfamiliar PC full hash
+may proceed only when a conservative PE code/layout-family fingerprint matches
+an approved layout; it is not a broad version range or an approximate code
+match. Startup additionally validates the actual loaded image and native
+interfaces before installing fixed-RVA hooks. A code/layout mismatch still
+needs review and cannot be bypassed with a version string.
+
+Android `1.34.22.0` remains the researched reference. Another app version label
+may attempt guarded startup, but the actual Mono hand-result fields, types,
+sizes and layout must be established before the adapter uses result offsets.
+The native query caller, controller roles, bone data, fresh optical input,
+leases and confirmed cleanup must still pass. Frida, component and settings
+requirements are unchanged. An unsupported layout is rejected cleanly.
+
+The manual compatibility command remains read-only preflight and reports
+`runtimeValidated: false`. Neither green prechecks nor a family fingerprint
+establish live finger accuracy, performance, successful restoration on another
+firmware, or compatibility with all future Virtual Desktop releases. The dated
+PC-only inspections above still do not prove a new PC/headset pair works live.

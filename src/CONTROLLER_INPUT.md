@@ -29,10 +29,10 @@ Trigger-slide input is not included.
 
 ## Compatibility
 
-| Component | First admitted profile | Verification limit |
+| Component | Reference / admission rule | Verification limit |
 | --- | --- | --- |
-| Headset Virtual Desktop | 1.34.22.0 | Exact version gate; sustained performance unverified |
-| PC Streamer driver | Exact SHA-256 fingerprints in `hybrid/compatibility.json`; signed Streamer 1.34.23 PC driver also inspected | Private PC layout checked independently; no live test of the new PC/headset pair |
+| Headset Virtual Desktop | 1.34.22.0 researched reference; other version labels may attempt guarded startup | Actual Mono hand-result field/type/size layout and native caller checks must pass; sustained performance unverified |
+| PC Streamer driver | Reviewed full hashes or a conservative approved PE code/layout-family fingerprint | Loaded image and native interfaces checked before fixed-offset hooks; a family match is not a live test of a new PC/headset pair |
 | Python and Android helper | Frida 17.18.0, Windows x64 / Android ARM64 | Official downloads pinned by SHA-256 |
 | Thumb-rest sensor layout | Firmware build `51503870024400340` | Both thumbs scrolled well at 100% on one headset; Stop restored neutral output and ordinary controls; Desktop mouse felt smoother |
 | Steam Link | Not admitted | Controller identity and optical transport need separate validation |
@@ -44,18 +44,24 @@ Qpro's components does not enable these menu settings. The compatibility check
 does not verify the Quest auto-switch menu option; confirm it in the headset.
 Turn off Singularity's separate Frida Server before use. Keep controller
 firmware current. Body-tracking interaction is unverified. A compatible
-version/fingerprint is an admission check, not proof that the feature works on
+version/fingerprint is a preflight observation, not proof that the feature works on
 every headset.
 
-The first checked headset version remains **Virtual Desktop Android 1.34.22.0**.
-The signed **Streamer 1.34.23** PC driver is admitted separately because its
-private hand layout was inspected and its OpenVR input interface is already
-supported by the adapter. This does **not** enable Android **1.34.23.0**: that
-headset build still needs managed hand-result and native caller evidence.
-If the compatibility check reports an unsupported headset version, send its
-Activity details to Qpro support. Reinstalling the hand components cannot add a
-missing hand profile. Ordinary face tracking can still be used with Hands +
-controllers turned off.
+The first researched headset remains **Virtual Desktop Android 1.34.22.0**.
+The signed **Streamer 1.34.23** and exact reported **1.34.25 PC rebuild** provided
+additional PC layout evidence. Those historical inspections do not prove a new
+PC/headset pair works. A different version label can now attempt startup, but
+an unfamiliar PC full hash must match the conservative approved PE code/layout
+family. The loaded image and native interfaces are validated before fixed-offset
+hooks are used. On the Quest, startup must establish the actual Mono hand-result
+fields, their types and sizes, and their layout before the native adapter can
+activate. Native caller, controller-role, bone, freshness, lease and cleanup
+checks remain mandatory. An unsupported layout is rejected rather than guessed.
+
+**Check hand/controller compatibility** remains a read-only preflight: it does
+not attach adapters or prove those live checks passed. Keep hands off after a
+layout rejection and send its Activity details. Reinstalling components cannot
+supply a different layout. Ordinary face tracking can run separately.
 
 Installing hand/controller components does not turn on headset hand tracking or
 Singularity's switch. The two boolean preference readings can report inactive
@@ -130,8 +136,8 @@ Keep Quest hand tracking, **Automatically switch between controllers and
 hands**, and Singularity's simultaneous switch enabled too.
 Emulated Vive trackers are optional body tracking, not a requirement for Qpro
 fingers. Start the PC Streamer and connect through Virtual Desktop, then launch
-SteamVR through Virtual Desktop. These settings do not bypass Qpro's exact
-version and driver checks; newer headset builds still need their own profile.
+SteamVR through Virtual Desktop. These settings do not bypass Qpro's guarded
+PC layout-family and live native-hook checks on an unfamiliar build.
 
 ### Install once, then start a session
 
@@ -148,8 +154,9 @@ version and driver checks; newer headset builds still need their own profile.
    **Facial tracking > Your session > Streaming app**. On **Controllers**, press
    **Check hand/controller compatibility**. This reads versions, current-user
    settings and the driver fingerprint; it does not attach or start a Frida
-   helper. An unsupported headset version or driver needs a checked profile,
-   not another components installation. Thumb-rest sensor admission is checked
+   helper. A preflight pass does not validate native hooks. An unfamiliar version
+   still needs the startup layout and routing checks to pass; reinstalling cannot
+   repair an unsupported layout. Thumb-rest sensor admission is checked
    separately on start.
 4. Turn on **Experimental hands + controllers** and press **Start tracking**.
    Leave **Experimental Touch Pro thumb-rest input** off for the first finger
@@ -178,9 +185,9 @@ version and driver checks; newer headset builds still need their own profile.
   to verify live optical input. Simultaneous mode must still be `1`. Missing,
   unreadable, duplicate or unsupported values refuse startup. Recheck ADB/root
   access and reconnect Virtual Desktop; do not edit the preferences by hand.
-- **Unsupported headset version, driver or controller ABI:** keep hands off and
-  copy the full diagnostics. Components installation cannot supply a missing
-  adapter profile. Ordinary face tracking can still run separately.
+- **Unsupported driver family, managed hand layout or controller ABI:** keep
+  hands off and copy the full diagnostics. Components installation cannot
+  supply a different layout. Ordinary face tracking can run separately.
 - **No live routing or a disconnect:** keep the headset on, hold a controller
   and put your hand in camera view. Reconnect Virtual Desktop if its stream
   stopped, then stop Qpro before retrying. Helper startup is not optical
@@ -252,8 +259,10 @@ and app bindings need their own checks after installation.
 adapters. Each adapter also has a renewable lease. The supervisor remains
 running while owned workers clean up so the Hub does not orphan them. Activity
 distinguishes valid routed fingers from hook startup, and reports cleanup
-failures explicitly. Unknown product versions and driver fingerprints fail
-before attachment; runtime ABI mismatches fail before adapter activation.
+failures explicitly. Unknown PC full hashes require an approved PE code/layout
+family; loaded-image and native-interface checks precede fixed-offset hooks.
+Unknown Quest app labels may attempt startup, but unrecognized Mono hand-result
+or native caller layouts fail before adapter activation.
 
 Frequent SteamVR skeleton and pose callbacks run in native code. The headset's
 controller query and idle Update gate also run natively; managed finger

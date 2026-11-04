@@ -70,7 +70,9 @@ def main():
                 "The bottom Start tracking / Stop tracking bar controls all selected features",
                 "1. Connect", "2. PC runtime", "3. VRCFT module", "Next step", "Open Facial tracking",
                 "Show optional tools and recovery", "Show wireless setup options", "Show pairing options",
-                "View setup activity", "ModuleProcess", "VRCFaceTracking module maintenance", "Show tongue settings"]
+                "View setup activity", "ModuleProcess", "VRCFaceTracking module maintenance", "Show tongue settings",
+                "read-only preflight result", "PE code/layout family", "fixed-offset hooks",
+                "Mono hand-result fields, types, sizes and layout", "not support for all versions"]
     for phrase in required:
         check("Required instruction: " + phrase, phrase in flat)
 
