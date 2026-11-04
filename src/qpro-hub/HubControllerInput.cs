@@ -24,7 +24,7 @@ internal sealed partial class HubForm
     private readonly DarkButton _removeHandsButton = SetupButton("Uninstall controller add-on");
     private readonly DarkButton _checkHandsButton = SecondaryButton("Check hand/controller compatibility");
     private const string ControllerBindingInstructions =
-        "1. Close SteamVR, then use First-time setup > Show optional tools and recovery > Show hands setup and uninstall > Install hand/controller components. Reopen SteamVR through Virtual Desktop.\n\n" +
+        "1. Close SteamVR, then use First-time setup > Show optional tools and recovery > Optional features > Show hands setup and uninstall > Install hand/controller components. Reopen SteamVR through Virtual Desktop.\n\n" +
         "2. For SteamVR dashboard and VRChat menu scrolling, choose Swipe and press Start tracking. The updated add-on prepares bindings automatically where supported. Existing custom bindings are kept; select the prepared Qpro binding manually if needed. If your binding layout is not recognized, leave it unchanged and follow the manual steps in Activity.\n\n" +
         "3. For other game actions, open SteamVR Settings > Controllers > Manage Controller Bindings. Select your game and edit a custom binding. Assign the extra Qpro thumb-rest trackpad's position, touch, force or click to the actions you want.\n\n" +
         "Qpro does not replace your game's bindings. Normal movement, buttons, gestures, haptics and finger skeleton remain available on their original inputs.\n\n" +

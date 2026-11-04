@@ -108,13 +108,16 @@ internal static class Program
                     if (expandArgument + 1 >= args.Length) throw new ArgumentException("--preview-expand requires disclosure names separated by commas.");
                     foreach (var name in args[expandArgument + 1].Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
                     {
-                        // Only informational disclosure controls may be clicked
-                        // by preview tooling; installers and tracking actions are excluded.
+                        // Preview tooling only clicks informational disclosures
+                        // and category navigation, never installers or tracking actions.
                         var disclosure = FindControl(form, control => control is Button button && button.Visible &&
                             button.Text.Equals("Show " + name, StringComparison.OrdinalIgnoreCase)) as Button;
                         disclosure ??= FindControl(form, control => control is Button button && button.Visible &&
                             button.Text.StartsWith("Show ", StringComparison.Ordinal) &&
                             button.Text.EndsWith(name, StringComparison.OrdinalIgnoreCase)) as Button;
+                        disclosure ??= FindControl(form, control => control is Button button && button.Visible &&
+                            Equals(button.Tag, "optional-tools-category") &&
+                            button.AccessibleName?.Equals("Optional tools category: " + name, StringComparison.OrdinalIgnoreCase) == true) as Button;
                         if (disclosure is null) throw new ArgumentException("Unknown preview disclosure: " + name);
                         disclosure.PerformClick();
                         Application.DoEvents();

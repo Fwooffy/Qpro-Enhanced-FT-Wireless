@@ -130,7 +130,7 @@ internal sealed partial class HubForm
             bool completed = restore ? !status.CanRestore && !status.IsPaused : status.IsPaused;
             AppendLog("[Windows Streamer updater] " + status.Title + ": " + status.Detail);
             SetActionFeedback(status.Title, status.Detail,
-                "Use First-time setup > Show optional tools and recovery > Show Windows Streamer updates to check or restore this PC setting.",
+                "Use First-time setup > Show optional tools and recovery > Checks & Updates > Show Windows Streamer updates to check or restore this PC setting.",
                 severity: completed ? ActivitySeverity.Normal : ActivitySeverity.Warning);
         }
         catch (OperationCanceledException) when (_streamerUpdaterToken.IsCancellationRequested) { }

@@ -308,7 +308,8 @@ internal sealed class DarkButton : Button
             textAlignment = TextFormatFlags.Left;
         }
         TextRenderer.DrawText(e.Graphics, Text, Font, textBounds, textColor,
-            textAlignment | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            textAlignment | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis |
+            (UseMnemonic ? TextFormatFlags.Default : TextFormatFlags.NoPrefix));
         // User-painted buttons must draw their own keyboard focus cue.
         if (Focused && ShowFocusCues && Width > 12 && Height > 12)
             ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -5, -5), textColor, fillColor);

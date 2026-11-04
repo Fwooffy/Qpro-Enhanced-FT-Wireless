@@ -310,6 +310,94 @@ internal static class SetupNavigationTests
             AssertNoWork("Open optional Magisk gaze");
             CheckGeometry(form, page, "Expanded optional Magisk gaze");
             Capture(form, "setup-magisk-optional-open");
+
+            var optionalGroups = new[]
+            {
+                ("Optional features", new[] { "gaze setup", "hands setup and uninstall", "AMD setup" }),
+                ("Checks & Updates", new[] { "headset compatibility", "Windows Streamer updates" }),
+                ("Recovery", new[] { "PC runtime repair and recovery", "VRCFaceTracking module maintenance", "gaze recovery tools" }),
+            };
+            var actionFields = new[] { "_setupGazeButton", "_inspectGazeButton", "_installHandsButton", "_removeHandsButton",
+                "_setupAmdButton", "_uninstallBridgeButton", "_recoverGazeButton", "_resetLegacyGazeButton",
+                "_checkStreamerUpdater", "_pauseStreamerUpdater", "_restoreStreamerUpdater" };
+            var preservedActions = actionFields.ToDictionary(name => name, name => Field<Control>(form, name));
+            var preservedHandles = preservedActions.ToDictionary(item => item.Key, item => item.Value.Handle);
+            var savedOptions = form.CaptureLiveOptions();
+            foreach (var size in new[] { new Size(1280, 900), new Size(900, 760), new Size(780, 580) })
+            {
+                form.Size = size; Pump(form);
+                foreach (var (category, tools) in optionalGroups)
+                {
+                    NamedButton(form, "Optional tools category: " + category).PerformClick(); Pump(form);
+                    AssertNoWork("Select optional category " + category);
+                    Check(Descendants(page).Count(control => control.Visible && Equals(control.Tag, "optional-tool-body")) <= 1,
+                        "Changing categories exposed more than one optional tool.");
+                    foreach (var tool in tools)
+                    {
+                        var toggle = Descendants(page).OfType<Button>().Single(button => button.Visible &&
+                            (button.Text == "Show " + tool || button.Text == "Hide " + tool));
+                        if (toggle.Text.StartsWith("Hide ", StringComparison.Ordinal)) { toggle.PerformClick(); Pump(form); }
+                        toggle.PerformClick(); Pump(form);
+                        var bodies = Descendants(page).Where(control => control.Visible && Equals(control.Tag, "optional-tool-body")).ToArray();
+                        Check(bodies.Length == 1 && bodies[0].AccessibleName == "Optional tool: " + tool,
+                            "The selected optional tool is not the sole visible body: " + tool);
+                        Check(Descendants(page).OfType<Button>().Count(button => button.Visible &&
+                            button.Text.StartsWith("Hide ", StringComparison.Ordinal) && tools.Any(name => button.Text == "Hide " + name)) == 1,
+                            "Exclusive tool selection left a stale disclosure label: " + category);
+                        foreach (var item in preservedActions)
+                            Check(ReferenceEquals(Field<Control>(form, item.Key), item.Value) && item.Value.Handle == preservedHandles[item.Key],
+                                "Optional navigation recreated an action: " + item.Key);
+                        Check(form.CaptureLiveOptions() == savedOptions, "Optional navigation changed saved feature or model choices.");
+                        AssertNoWork("Open optional tool " + tool);
+                        CheckGeometry(form, page, size.Width + "px optional tool " + tool);
+                        if (tool == "hands setup and uninstall")
+                        {
+                            var names = Descendants(bodies[0]).OfType<Label>().Where(label => label.Text is "Quest" or "Singularity").ToArray();
+                            Check(names.Length == 2 && names.All(label => label.Width >= TextRenderer.MeasureText(
+                                label.Text, label.Font, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix).Width),
+                                "Hands prerequisites wrapped their short field names into fragments.");
+                        }
+                        if (tool == "gaze setup")
+                            Check(!Field<Button>(form, "_setupGazeButton").Enabled && !Field<Button>(form, "_inspectGazeButton").Enabled,
+                                "Optional category navigation bypassed the Magisk gate.");
+                    }
+                }
+            }
+            foreach (var (category, tool) in new[]
+            {
+                ("Optional features", "hands setup and uninstall"),
+                ("Recovery", "PC runtime repair and recovery"),
+            })
+            {
+                form.Size = new Size(1280, 900); Pump(form);
+                NamedButton(form, "Optional tools category: " + category).PerformClick(); Pump(form);
+                var toggle = Descendants(page).OfType<Button>().Single(button => button.Visible &&
+                    (button.Text == "Show " + tool || button.Text == "Hide " + tool));
+                if (toggle.Text.StartsWith("Show ", StringComparison.Ordinal)) { toggle.PerformClick(); Pump(form); }
+                page.AutoScrollPosition = new Point(0, Math.Min(120, page.VerticalScroll.Maximum)); Pump(form);
+                var position = page.AutoScrollPosition;
+                var geometry = Descendants(page).Where(control => control.Visible)
+                    .ToDictionary(control => control, control => control.Bounds);
+                var wraps = Descendants(form).OfType<Label>().Where(label => Equals(label.Tag, "responsive-info"))
+                    .ToDictionary(label => label, label => label.MaximumSize);
+                form.WindowState = FormWindowState.Minimized; Pump(form);
+                Check(wraps.All(item => item.Key.MaximumSize == item.Value),
+                    "Minimizing an expanded optional tool changed wrapping: " + tool);
+                form.WindowState = FormWindowState.Normal; Pump(form);
+                Check(page.AutoScrollPosition == position && geometry.All(item => item.Key.Visible && item.Key.Bounds == item.Value),
+                    "Restoring an expanded optional tool changed scroll or settled geometry: " + tool);
+                Check(Descendants(page).Count(control => control.Visible && Equals(control.Tag, "optional-tool-body")) == 1,
+                    "Restore changed exclusive optional-tool selection: " + tool);
+                foreach (var item in preservedActions)
+                    Check(ReferenceEquals(Field<Control>(form, item.Key), item.Value) && item.Value.Handle == preservedHandles[item.Key],
+                        "Restore recreated an optional action: " + item.Key);
+                AssertNoWork("Restore expanded optional tool " + tool);
+                CheckGeometry(form, page, "Restored optional tool " + tool);
+            }
+            Disclosure(form, "Hide optional tools and recovery").PerformClick(); Pump(form);
+            Check(!Descendants(page).Any(control => control.Visible && Equals(control.Tag, "optional-tool-body")),
+                "Closing optional tools left a tool body visible.");
+            AssertNoWork("Close optional tools");
         }
         Check(PreferenceFingerprint(root) == beforePreferences,
             "Preview navigation changed preferences or installed VRCFaceTracking module files.");

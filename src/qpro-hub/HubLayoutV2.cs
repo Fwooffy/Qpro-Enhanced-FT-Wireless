@@ -804,32 +804,10 @@ internal sealed partial class HubForm
         setupLayout.Controls.Add(BuildGuidedSetupWorkspace(setupPage,
             [connectionCard, runtimeCard, moduleCard], () => liveTab.PerformClick()), 0, 0);
 
-        var optionalSetupTools = new BufferedTableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, Margin = Padding.Empty };
-        optionalSetupTools.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        optionalSetupTools.Controls.Add(BuildHeadsetCompatibilityCard());
-        var streamerUpdaterCard = Card(); streamerUpdaterCard.ColumnCount = 1;
-        Span(streamerUpdaterCard, SectionTitle("Windows Streamer updates", HubIcon.Desktop), 0);
-        Span(streamerUpdaterCard, Info("Optional controls for Virtual Desktop Streamer on this PC. Restore stays available when using Steam Link."), 1);
-        var streamerUpdaterDisclosure = Details(streamerUpdaterCard, streamerUpdaterControls, "Windows Streamer updates", 2);
-        streamerUpdaterDisclosure.Click += async (_, _) =>
-        {
-            if (streamerUpdaterControls.Visible && _streamerUpdaterState is null)
-                await RefreshStreamerUpdaterAsync();
-        };
-        optionalSetupTools.Controls.Add(streamerUpdaterCard);
-        var runtimeRepairCard = Card(); runtimeRepairCard.ColumnCount = 1;
-        runtimeRepairCard.Controls.Add(SectionTitle("PC runtime repair and recovery", HubIcon.Desktop));
-        runtimeRepairCard.Controls.Add(BuildRuntimeRecoveryControls());
-        optionalSetupTools.Controls.Add(runtimeRepairCard);
-        var moduleRepairCard = Card(); moduleRepairCard.ColumnCount = 1;
-        moduleRepairCard.Controls.Add(SectionTitle("VRCFaceTracking module maintenance", HubIcon.Module));
-        moduleRepairCard.Controls.Add(moduleMaintenance);
-        optionalSetupTools.Controls.Add(moduleRepairCard);
-        var gazeSetup = Card(); gazeSetup.ColumnCount = 1;
-        Span(gazeSetup, SectionTitle("Optional independent gaze", HubIcon.Eyes), 0);
-        Span(gazeSetup, _setupGazeStatus, 1);
-        Span(gazeSetup, Info("Using a Magisk gaze module? Skip Check gaze setup and Prepare gaze. Leave Independent Eye Gaze off in Facial tracking."), 2);
+        var headsetCompatibilityBody = BuildHeadsetCompatibilityCard();
+        // The compact tool header supplies the title; retain all original
+        // diagnostic controls and their handlers inside the expanded body.
+        headsetCompatibilityBody.Controls[0].Visible = false;
         var gazeOptions = new BufferedTableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, Margin = Padding.Empty };
         gazeOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -850,31 +828,20 @@ internal sealed partial class HubForm
         gazeRecovery.Controls.Add(Info("Recover Qpro gaze restores the previous eye-model state saved by a recorded Qpro session. Reset legacy gaze selects normal gaze for an older session without a record, after confirmation. Neither option disables Magisk or removes the PC module."));
         gazeRecovery.Controls.Add(_recoverGazeButton);
         gazeRecovery.Controls.Add(_resetLegacyGazeButton);
-        Details(gazeOptions, gazeRecovery, "gaze recovery tools", 2);
-        Details(gazeSetup, gazeOptions, "gaze setup", 3);
-        optionalSetupTools.Controls.Add(gazeSetup);
-        var handsSetup = Card(); handsSetup.ColumnCount = 1;
-        handsSetup.Controls.Add(SectionTitle("Optional hands and controllers", HubIcon.Controller));
-        handsSetup.Controls.Add(Info("Experimental · Virtual Desktop only. Installing components does not enable the headset settings."));
-        handsSetup.Controls.Add(HandsPrerequisites(includeAppSettings: false));
         var handsOptions = new BufferedTableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, Margin = Padding.Empty };
         handsOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        handsOptions.Controls.Add(Info("1. Close SteamVR.\n2. Install the optional components.\n3. Reopen SteamVR through Virtual Desktop, then use Controllers > Check hand/controller compatibility."));
-        handsOptions.Controls.Add(Info("These components are separate from the VRCFaceTracking face module. Uninstall controller add-on removes the thumb-rest add-on and keeps a recovery copy; it does not disable Quest or Singularity settings."));
-        handsOptions.Controls.Add(_installHandsButton);
-        handsOptions.Controls.Add(_removeHandsButton);
-        Details(handsSetup, handsOptions, "hands setup and uninstall", 3);
-        optionalSetupTools.Controls.Add(handsSetup);
-        var amdCard = Card(); amdCard.Dock = DockStyle.Top; amdCard.ColumnCount = 1;
-        amdCard.Controls.Add(SectionTitle("Optional AMD ROCm acceleration", HubIcon.Module));
+        Span(handsOptions, Info("Installing components does not enable the headset settings."), 0);
+        Span(handsOptions, HandsPrerequisites(includeAppSettings: false), 1);
+        Span(handsOptions, Info("1. Close SteamVR.\n2. Install the optional components.\n3. Reopen SteamVR through Virtual Desktop, then use Controllers > Check hand/controller compatibility."), 2);
+        Span(handsOptions, Info("These components are separate from the VRCFaceTracking face module. Uninstall controller add-on removes the thumb-rest add-on and keeps a recovery copy; it does not disable Quest or Singularity settings."), 3);
+        Span(handsOptions, _installHandsButton, 4);
+        Span(handsOptions, _removeHandsButton, 5);
         _setupAmdStatus.Tag = "responsive-info";
-        amdCard.Controls.Add(_setupAmdStatus);
-        amdCard.Controls.Add(Info("Optional acceleration for compatible Radeon graphics cards. Install the PC runtime first."));
         var amdOptions = new BufferedTableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, Margin = Padding.Empty };
         amdOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        amdOptions.Controls.Add(Info($"ROCm {HubRocmRuntime.InstallVersion} accelerates training and tracking on listed discrete Radeon GPUs. Setup enables it only after GPU tests pass. This remains experimental; earlier verified ROCm runtimes stay available as fallbacks."));
+        amdOptions.Controls.Add(Info($"Install the PC runtime first. ROCm {HubRocmRuntime.InstallVersion} accelerates training and tracking on listed discrete Radeon GPUs. Setup enables it only after GPU tests pass. This remains experimental; earlier verified ROCm runtimes stay available as fallbacks."));
         amdOptions.Controls.Add(_amdGpuStatus);
         var amdSupportLink = new LinkLabel { Text = "ROCm 7.2.1 fallback GPU list", AutoSize = true, LinkColor = Accent, ActiveLinkColor = Accent, VisitedLinkColor = Accent, Margin = new Padding(0, 3, 0, 8) };
         amdSupportLink.LinkClicked += (_, _) =>
@@ -897,11 +864,22 @@ internal sealed partial class HubForm
         amdDetails.Controls.Add(_experimentalWindows10Rocm);
         amdDetails.Controls.Add(Info("AMD validates this Windows ROCm path on Windows 11. Windows 10 is experimental and still requires a mapped discrete Radeon plus successful training and inference checks."));
         Details(amdOptions, amdDetails, "AMD compatibility details", amdOptions.Controls.Count);
-        Details(amdCard, amdOptions, "AMD setup", 3);
-        optionalSetupTools.Controls.Add(amdCard);
+        var optionalSetupTools = BuildOptionalToolsWorkspace(
+            new OptionalSetupGroup("Optional features",
+                new OptionalSetupTool("gaze setup", "Temporary independent eye gaze; Magisk users can skip this.", gazeOptions, _setupGazeStatus),
+                new OptionalSetupTool("AMD setup", "Experimental Radeon acceleration for tracking and training.", amdOptions, _setupAmdStatus),
+                new OptionalSetupTool("hands setup and uninstall", "Experimental optical fingers and thumb-rest input · Virtual Desktop only.", handsOptions)),
+            new OptionalSetupGroup("Checks & Updates",
+                new OptionalSetupTool("headset compatibility", "Read-only checks for the connected Quest Pro, root access and firmware.", headsetCompatibilityBody),
+                new OptionalSetupTool("Windows Streamer updates", "Check, pause or restore the verified Windows updater.", streamerUpdaterControls,
+                    Opened: async () => { if (_streamerUpdaterState is null) await RefreshStreamerUpdaterAsync(); })),
+            new OptionalSetupGroup("Recovery",
+                new OptionalSetupTool("PC runtime repair and recovery", "Repair libraries or restore a verified saved runtime; keep models and recordings.", BuildRuntimeRecoveryControls()),
+                new OptionalSetupTool("VRCFaceTracking module maintenance", "Remove the Qpro face module; personal models and recordings stay in place.", moduleMaintenance),
+                new OptionalSetupTool("gaze recovery tools", "Restore a recorded Qpro gaze state or reset an older temporary gaze selection.", gazeRecovery)));
         var optionalSetupCard = Card(); optionalSetupCard.ColumnCount = 1;
         Span(optionalSetupCard, SectionTitle("Optional tools and recovery", HubIcon.Sliders), 0);
-        var optionalSetupNote = Info("Compatibility checks, independent gaze, hands, AMD acceleration and repair tools. You can finish the three steps above without these extras.");
+        var optionalSetupNote = Info("Choose a group, then open only the tool you need. These tools are separate from the three required steps.");
         optionalSetupNote.Margin = new Padding(0, 0, 0, 4);
         Span(optionalSetupCard, optionalSetupNote, 1);
         var magiskSetupNote = Info("Magisk gaze users: skip gaze setup and leave Independent Eye Gaze off in Facial tracking.");
@@ -1200,7 +1178,12 @@ internal sealed partial class HubForm
             {
                 try
                 {
-                    if (ReferenceEquals(page, activityPage))
+                    if (ReferenceEquals(page, setupPage))
+                    {
+                        _fitOptionalToolsWidth?.Invoke();
+                        setupLayout.PerformLayout();
+                    }
+                    else if (ReferenceEquals(page, activityPage))
                     {
                         // Finish percent-row allocation after wrapped children
                         // have settled at the page's current height.
