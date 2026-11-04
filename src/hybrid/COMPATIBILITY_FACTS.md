@@ -67,6 +67,32 @@ Official sources:
 https://download.vrdesktop.net/files/beta/VirtualDesktop.Streamer.Setup.exe
 https://github.com/guygodin/VirtualDesktop/releases
 
+## Reported PC driver fingerprint inspection
+
+The reported PC driver was found in a local Streamer 1.34.25 installation and
+inspected without loading or executing it on 2026-11-04. Its exact SHA-256 is:
+
+`9fa2b70005d4e0aea02a891ae48a5caa0314d0f30e1190001d7ea979ec10d5c1`
+
+Windows Authenticode reports a valid Virtual Desktop, Inc. signature for this
+driver and the previously admitted `70698c13...` beta used for comparison. Both
+files are 676,376 bytes. Their executable `.text`, private `.data`, `.pdata`,
+`.detourc`, `.detourd`, `.fptable`, `.rsrc` and `.reloc` sections are byte-identical,
+with identical section RVAs, sizes, flags, image base and image size. All 1,943
+runtime-function ranges/unwind references and all 25 functions that refer to the
+profile globals match exactly. The only `.rdata` changes are three debug-record
+timestamps and a CodeView/PDB GUID. Header changes are build timestamp/checksum;
+no private hand fields, entry points, import data or routing instructions changed.
+
+That evidence admits only this exact additional fingerprint with the existing
+PC layout. It does not introduce a version-range or approximate binary match.
+The matching headset build in the report, Android `1.34.22.0`, remains admitted;
+Android `1.34.25.0` is not admitted by this PC-only inspection. Existing runtime
+object, role, interface, original-callable, ARM64 caller and fresh optical-input
+checks remain required. The read-only compatibility report continues to set
+`runtimeValidated` to false. This offline comparison does not establish live
+finger accuracy or performance.
+
 ## Public interface facts
 
 Valve documents a31-bone left/right hand skeleton and

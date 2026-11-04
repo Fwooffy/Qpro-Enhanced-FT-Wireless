@@ -13,8 +13,11 @@ Virtual Desktop files. It is a prototype; live operation is not yet validated.
 - Virtual Desktop Android **1.34.22.0** and one of the exact, independently
   inspected Streamer driver fingerprints in `compatibility.json`.
   The signed Streamer **1.34.23** PC driver shares the checked PC layout and is
-  admitted independently. Android **1.34.23.0** still needs its own hand-layout
-  evidence and is not admitted. The new PC/headset pair has not been live tested.
+  admitted independently. The exact `9fa2b700...` driver from the inspected
+  **1.34.25** PC installation is also admitted: its code and private data match
+  that checked driver, with only build/debug metadata changed. Android
+  **1.34.23.0** and **1.34.25.0** still need their own hand-layout evidence and
+  are not admitted. PC admission alone does not validate a new PC/headset pair.
 - SteamVR running through Virtual Desktop. Steam Link is unsupported.
 - Hand components installed separately: Python Frida **17.18.0** and its matching
   Android ARM64 server. Tracking never downloads or installs dependencies.

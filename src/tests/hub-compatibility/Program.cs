@@ -115,11 +115,19 @@ Check(HubControllerFeedback.TryParseCheckLine(HubControllerFeedback.CheckPrefix 
     !handResult!.IsError && handResult.Detail.Contains("live optical input has not been verified") &&
     handResult.NextStep.Contains("warning"), "Preliminary inactive values became a blocking menu failure or live readiness.");
 hands["compatible"] = false; hands["problems"] = new JsonArray("This Virtual Desktop Streamer driver has no validated hand profile.");
+// Historical 1.34.22.0 report from the old profile list; the Hub displays what
+// the installed checker reported, independent of the current admissions list.
+hands["pcDriverSha256"] = "9fa2b70005d4e0aea02a891ae48a5caa0314d0f30e1190001d7ea979ec10d5c1";
 Check(HubControllerFeedback.TryParseCheckLine(HubControllerFeedback.CheckPrefix + hands.ToJsonString(), out handResult) &&
-    handResult!.IsError && handResult.Detail.Contains("no validated hand profile"), "The actual incompatible version detail was hidden.");
+    handResult!.IsError && handResult.Title.StartsWith("Windows Streamer driver") &&
+    handResult.Detail.StartsWith("This Virtual Desktop Streamer driver has no validated hand profile.") &&
+    handResult.Detail.Contains("Quest app version: 1.34.22.0") &&
+    handResult.Detail.Contains("Windows Streamer driver SHA-256: " + hands["pcDriverSha256"]!.GetValue<string>()) &&
+    !handResult.Detail.Contains("recognized", StringComparison.OrdinalIgnoreCase),
+    "A PC-only failure must lead with the driver problem, retain both observed identities, and not infer headset support.");
 hands["componentsReady"] = false; hands["componentProblems"] = new JsonArray("Matching Frida is missing.");
 Check(HubControllerFeedback.TryParseCheckLine(HubControllerFeedback.CheckPrefix + hands.ToJsonString(), out handResult) &&
-    handResult!.NextStep.Contains("validated compatibility profile") && !handResult.NextStep.Contains("install the hand/controller components"),
+    handResult!.NextStep.Contains("Copy diagnostics") && !handResult.NextStep.Contains("install the hand/controller components"),
     "An unsupported version sent users into repeated component installation.");
 var missingComponents = HandCheck();
 missingComponents["componentsReady"] = false; missingComponents["fridaVersion"] = null;
@@ -136,8 +144,15 @@ reportedVersion["problems"] = new JsonArray("This Virtual Desktop Streamer drive
 reportedVersion["componentProblems"] = new JsonArray("Install the experimental hand components first (matching Frida is missing).",
     "The matching Android hand helper is missing.");
 Check(HubControllerFeedback.TryParseCheckLine(HubControllerFeedback.CheckPrefix + reportedVersion.ToJsonString(), out handResult) &&
-    handResult!.Title.Contains("needs a hand profile") && handResult.Detail.Contains("1.34.23.0") && handResult.NextStep.Contains("Keep Hands + controllers off"),
+    handResult!.Title.Contains("both need hand profiles") && handResult.Detail.Contains("1.34.23.0") && handResult.NextStep.Contains("Keep Hands + controllers off"),
     "The reported 1.34.23 failure hid the actual version boundary.");
+var androidOnly = HandCheck(false);
+androidOnly["androidVersion"] = "1.34.25.0";
+androidOnly["problems"] = new JsonArray("This headset Virtual Desktop version has no validated hand profile: 1.34.25.0.");
+Check(HubControllerFeedback.TryParseCheckLine(HubControllerFeedback.CheckPrefix + androidOnly.ToJsonString(), out handResult) &&
+    handResult!.IsError && handResult.Title.StartsWith("Quest Virtual Desktop app") &&
+    handResult.Detail.StartsWith("This headset Virtual Desktop version") && handResult.NextStep.Contains("Copy diagnostics"),
+    "An unsupported Quest app must not be presented as an unsupported Windows driver.");
 hands["compatible"] = true;
 Check(!HubControllerFeedback.TryParseCheckLine(HubControllerFeedback.CheckPrefix + hands.ToJsonString(), out _), "Contradictory hand evidence was accepted.");
 foreach (var property in new[] { "androidVersion", "pcDriverSha256" })

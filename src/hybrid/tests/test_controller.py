@@ -375,26 +375,32 @@ class HybridTests(unittest.TestCase):
         self.assertIn("1.34.22.0", report["problems"][0])
         self.assertIn("Reinstalling the hand components does not change", report["problems"][0])
 
-    def test_signed_beta_pc_profile_is_admitted_independently_of_android(self):
+    def test_individually_inspected_pc_profiles_are_admitted_independently_of_android(self):
         checked = controller.load_profile()
-        beta_hash = "70698c13cf40e5a21ea0ad241874ffb8ba2f400c2ab7ace7ad4605fc8c77ddd8"
-        self.assertEqual(checked["additionalPcDriverSha256s"], [beta_hash])
-        for android_version, expected_compatible in ((checked["androidVersion"], True), ("1.34.23.0", False)):
-            with self.subTest(android_version=android_version):
-                adb = FakeAdb(dict(self.profile, androidVersion=android_version))
-                with patch.object(controller.hashlib, "sha256", return_value=SimpleNamespace(hexdigest=lambda: beta_hash)):
-                    report = controller.inspect(adb, self.profile, "17.18.0", self.server, str(self.home))
-                self.assertEqual(report["compatible"], expected_compatible)
-                self.assertTrue(report["componentsReady"])
-                self.assertEqual(report["pcDriverSha256"], beta_hash)
-                self.assertFalse(report["runtimeValidated"])
-                self.assertEqual(len(report["problems"]), 0 if expected_compatible else 1)
-                if not expected_compatible:
-                    self.assertIn("headset Virtual Desktop version", report["problems"][0])
-                self.assertTrue(all(call[0] == "shell" for call in adb.calls))
+        inspected_hashes = [
+            "70698c13cf40e5a21ea0ad241874ffb8ba2f400c2ab7ace7ad4605fc8c77ddd8",
+            "9fa2b70005d4e0aea02a891ae48a5caa0314d0f30e1190001d7ea979ec10d5c1",
+        ]
+        self.assertEqual(checked["additionalPcDriverSha256s"], inspected_hashes)
+        for driver_hash in inspected_hashes:
+            for android_version, expected_compatible in ((checked["androidVersion"], True),
+                                                         ("1.34.23.0", False), ("1.34.25.0", False)):
+                with self.subTest(driver_hash=driver_hash, android_version=android_version):
+                    adb = FakeAdb(dict(self.profile, androidVersion=android_version))
+                    with patch.object(controller.hashlib, "sha256", return_value=SimpleNamespace(hexdigest=lambda: driver_hash)):
+                        report = controller.inspect(adb, self.profile, "17.18.0", self.server, str(self.home))
+                    self.assertEqual(report["compatible"], expected_compatible)
+                    self.assertTrue(report["componentsReady"])
+                    self.assertEqual(report["pcDriverSha256"], driver_hash)
+                    self.assertFalse(report["runtimeValidated"])
+                    self.assertEqual(len(report["problems"]), 0 if expected_compatible else 1)
+                    if not expected_compatible:
+                        self.assertIn("headset Virtual Desktop version", report["problems"][0])
+                    self.assertTrue(all(call[0] == "shell" for call in adb.calls))
 
     def test_additional_driver_admission_requires_the_complete_hash(self):
-        for unknown_hash in ("70698c13", "70698c13cf40e5a21ea0ad241874ffb8ba2f400c2ab7ace7ad4605fc8c77ddd9"):
+        for unknown_hash in ("70698c13", "70698c13cf40e5a21ea0ad241874ffb8ba2f400c2ab7ace7ad4605fc8c77ddd9",
+                             "9fa2b700", "9fa2b70005d4e0aea02a891ae48a5caa0314d0f30e1190001d7ea979ec10d5c0"):
             with self.subTest(unknown_hash=unknown_hash):
                 with patch.object(controller.hashlib, "sha256", return_value=SimpleNamespace(hexdigest=lambda: unknown_hash)):
                     report = controller.inspect(FakeAdb(self.profile), self.profile, "17.18.0", self.server, str(self.home))
