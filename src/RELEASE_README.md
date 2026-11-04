@@ -10,7 +10,7 @@ V3.0.1 includes a selectable Steam Link source alongside Virtual Desktop, native
 
 **Required:** install the [latest VRCFaceTracking from Steam](https://store.steampowered.com/app/3329480/VRCFaceTracking/) and let Steam finish updating it before installing Qpro's module.
 
-**Updating the optional controller add-on:** Close SteamVR, open **First-time setup > Show optional tools and recovery > Optional hands and controllers**, expand **Show hands setup and uninstall**, then press **Install hand/controller components** in the new Companion version, then reopen SteamVR through Virtual Desktop. This updates the separately installed add-on and keeps valid saved tuning. Swipe offers a 25% to 200% sensitivity slider, with 100% as the default; stop tracking before adjusting it, then start again.
+**Updating the optional controller add-on:** Close SteamVR, open **First-time setup > Show optional tools and recovery > Optional features > Show hands setup and uninstall**, then press **Install hand/controller components** in the new Companion version, then reopen SteamVR through Virtual Desktop. This updates the separately installed add-on and keeps valid saved tuning. Swipe offers a 25% to 200% sensitivity slider, with 100% as the default; stop tracking before adjusting it, then start again.
 
 ## What's in this package
 
@@ -37,19 +37,19 @@ Press **Install runtime**. Choose **Virtual Desktop** or **Steam Link** under **
 
 **Open Facial tracking** changes pages after setup; it does not start tracking. Reopen VRCFaceTracking and check expressions in its preview first. **Setup progress** and **View setup activity** report installation progress.
 
-Expand **Show optional tools and recovery** for independent gaze, AMD acceleration, controller components, PC Streamer updater controls and recovery. Those extras are separate from the three required steps.
+Expand **Show optional tools and recovery**, then choose **Optional features**, **Checks & Updates** or **Recovery**. Closed tools have compact summaries; only one tool opens at a time within a group. Full prerequisites and warnings stay beside their actions. Changing groups does not run a check or installer. These extras are separate from the three required steps.
 
 **Already using an enabled Independent Eye Gaze Magisk module?** Skip **Check gaze setup** and **Prepare gaze**. Once detected, the Hub keeps **Independent eye gaze + convergence (provided by Magisk)** off and disabled, along with both setup buttons. Tongue, pupil dilation and eyebrow controls work separately. After changing the module, reboot the headset and use **Check USB connection** or **Check headset compatibility** to refresh detection.
 
-If you choose the Hub's temporary independent gaze method, disable any gaze Magisk module and reboot first, then use **Check gaze setup** followed by **Prepare gaze** on the **Independent gaze** card. The result popup identifies the detected gaze method, gives the next step and explains **Recover Qpro gaze** and **Reset legacy gaze**. The Hub's gaze option starts off by default and can fail on some Quest Pro firmware builds. The [beginner PDF guide](Quest_Pro_Enhanced_Face_Tracking_Guide.pdf) explains the alternative Magisk method.
+If you choose the Hub's temporary independent gaze method, disable any gaze Magisk module and reboot first, then open **Optional features > Show gaze setup** and use **Check gaze setup** followed by **Prepare gaze**. The result popup identifies the detected gaze method, gives the next step and explains **Recover Qpro gaze** and **Reset legacy gaze**, found under **Recovery > Show gaze recovery tools**. The Hub's gaze option starts off by default and can fail on some Quest Pro firmware builds. The [beginner PDF guide](Quest_Pro_Enhanced_Face_Tracking_Guide.pdf) explains the alternative Magisk method.
 
 **Use one independent gaze method at a time.** While the Magisk module is active, leave **Independent Eye Gaze** unchecked in the Hub. If you want to try the Hub's temporary gaze method instead, enable it and start tracking; the headset will freeze while it hooks into the tracking engine. **Stop tracking** only reverses the Hub's changes; it does not disable a Magisk module.
 
 Disable the gaze Magisk module and reboot before switching to the Hub's gaze method or returning to ordinary headset eye tracking. Qpro does not disable Magisk modules for you.
 
-If the Hub recognizes your discrete AMD GPU, press **Install ROCm 10.1** after the PC runtime is ready. The installer validates GPU inference and training before marking the new environment ready.
+If the Hub recognizes your discrete AMD GPU, open **Optional features > Show AMD setup** and press **Install ROCm 10.1** after the PC runtime is ready. The installer validates GPU inference and training before marking the new environment ready.
 
-Under **Show optional tools and recovery**, **VRCFaceTracking module maintenance** has **Uninstall Qpro module**. Stop Qpro tracking, close VRCFaceTracking and wait for its module process to exit before pressing it. The uninstall script removes Qpro's source module and restores previous Virtual Desktop modules backed up by this extracted copy when their original locations are unoccupied. It leaves personal captures, models and headset settings alone. Restart VRCFaceTracking with exactly one official module for the selected streaming app; install the official Virtual Desktop or Steam Link module if needed.
+Under **Show optional tools and recovery > Recovery > Show VRCFaceTracking module maintenance**, press **Uninstall Qpro module**. Stop Qpro tracking, close VRCFaceTracking and wait for its module process to exit before pressing it. The uninstall script removes Qpro's source module and restores previous Virtual Desktop modules backed up by this extracted copy when their original locations are unoccupied. It leaves personal captures, models and headset settings alone. Restart VRCFaceTracking with exactly one official module for the selected streaming app; install the official Virtual Desktop or Steam Link module if needed.
 
 On **Personalize**, each capture mode has **Recorded datasets (including trained)** and **Delete selected dataset…**. Deletion requires confirmation and removes only that recording, its labels and session details, and its prepared training cache from the extracted release folder. Existing trained models stay available.
 

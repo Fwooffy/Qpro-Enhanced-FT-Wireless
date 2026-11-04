@@ -143,8 +143,8 @@ PC layout-family and live native-hook checks on an unfamiliar build.
 
 1. Install the normal **PC runtime** through the Hub. Close **SteamVR** and
    wait for it to exit before installing optional components.
-2. Open **First-time setup > Show optional tools and recovery > Optional hands
-   and controllers > Show hands setup and uninstall**, then press
+2. Open **First-time setup > Show optional tools and recovery > Optional features
+   > Show hands setup and uninstall**, then press
    **Install hand/controller components**. The
    optional download uses a dedicated Qpro Python environment and checks
    official artifact hashes. It registers only Qpro's own add-on path and does

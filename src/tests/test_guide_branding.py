@@ -71,6 +71,8 @@ def main():
                 "1. Connect", "2. PC runtime", "3. VRCFT module", "Next step", "Open Facial tracking",
                 "Show optional tools and recovery", "Show wireless setup options", "Show pairing options",
                 "View setup activity", "ModuleProcess", "VRCFaceTracking module maintenance", "Show tongue settings",
+                "Optional features", "Checks & Updates", "Recovery > Show gaze recovery tools",
+                "Recovery > Show PC runtime repair and recovery", "Recovery > Show VRCFaceTracking module maintenance",
                 "read-only preflight result", "PE code/layout family", "fixed-offset hooks",
                 "Mono hand-result fields, types, sizes and layout", "not support for all versions"]
     for phrase in required:

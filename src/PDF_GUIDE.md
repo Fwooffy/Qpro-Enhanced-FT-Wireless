@@ -17,7 +17,7 @@ On **First-time setup**, follow **1. Connect**, **2. PC runtime**, then **3. VRC
 
 Once expressions move, open **Facial tracking**, choose your features and press **Start tracking**. Finish with **Stop tracking** and wait for cleanup in **Activity**.
 
-Extras are under **Show optional tools and recovery**. With Magisk gaze, skip **Check gaze setup** and **Prepare gaze**; detected Hub gaze stays off and disabled.
+Extras: **Show optional tools and recovery** groups **Optional features**, **Checks & Updates** and **Recovery**. Open a group, then a tool. With Magisk gaze, skip **Check gaze setup** and **Prepare gaze**.
 
 ### Find your next step
 
@@ -88,7 +88,7 @@ This optional hold controls **Virtual Desktop Streamer on the PC**. Quest app up
 ### Pause or restore
 
 1. Stop tracking and finish any setup or training action. Let the Virtual Desktop updater or installer finish if it is running.
-2. Open **First-time setup > Show optional tools and recovery**, then expand **Show Windows Streamer updates**.
+2. Open **First-time setup > Show optional tools and recovery > Checks & Updates > Show Windows Streamer updates**.
 3. Press **Check updater status**. Use **Pause PC Streamer updater** to add the hold and approve the Windows administrator prompt.
 4. To undo it, return here and press **Restore PC Streamer updater**. This remains available if you select Steam Link.
 
@@ -162,7 +162,7 @@ On **2. PC runtime**, press **Install runtime** and keep the Hub open. **Setup p
 
 Qpro uses private Python and works with or without an existing Python installation. You do not need to uninstall another app's Python. NVIDIA CUDA or CPU uses the normal runtime; AMD acceleration is a separate optional step.
 
-Under **Show optional tools and recovery**, **Repair runtime** rebuilds damaged tracking packages. **Restore saved runtime** checks saved backups before replacing the current runtime and keeps a recovery copy. Stop tracking, capture and training first. Models, recordings and Facial tracking choices are kept; AMD ROCm has its own separate environment.
+Open **Show optional tools and recovery > Recovery > Show PC runtime repair and recovery**. **Repair runtime** rebuilds packages; **Restore saved runtime** verifies a backup and keeps a recovery copy. Stop tracking, capture and training first. Models, recordings and choices stay; AMD ROCm is separate.
 
 ### Install your VRCFaceTracking module
 
@@ -178,7 +178,7 @@ Its card is **Qpro Companion — Virtual Desktop** or **Qpro Companion — Steam
 
 Junctions, symlinks and Windows Cloud Files are supported. For OneDrive, keep the whole app available offline. Recovery copies go under `%LOCALAPPDATA%\QproFaceTracking\module-recovery`; **Activity** gives the exact path.
 
-For a damaged/wrong-source module, follow **Activity**, close VRCFaceTracking and reinstall. File-access/verification errors need their specific diagnosis; they do not by themselves establish card damage. **Check headset compatibility** and **Show firmware details** are optional diagnostics.
+For module or file-access errors, follow **Activity**; they do not establish card damage. Optional **Check headset compatibility** and **Show firmware details** are under **Checks & Updates > Show headset compatibility**.
 
 ## Facial tracking
 
@@ -243,14 +243,14 @@ Choose one method. Independent gaze is optional; tongue and pupils do not requir
 
 The Magisk route lists **Quest Pro Independent Eye Gaze** and **Magisk OverlayFS** in Singularity **Apps/Modules > Magisk repo**. Follow its firmware requirements and reboot prompts. After changing the module, reboot, then use **Check USB connection** or **Check headset compatibility** to refresh detection. A failed check is not proof that no module exists.
 
-For the Hub route, open **First-time setup > Show optional tools and recovery > Optional independent gaze > Show gaze setup**. The Hub reads that headset's eye model and engine and prepares a temporary model on the PC. **You do not need to supply an engine file.** A build number alone does not establish engine compatibility.
+For the Hub route, open **First-time setup > Show optional tools and recovery > Optional features > Show gaze setup**. The Hub reads that headset's eye model and engine and prepares a temporary model on the PC. **You do not need to supply an engine file.** A build number alone does not establish engine compatibility.
 
 > [!WARNING] Wait for the service restart
 > Applying/restoring Hub gaze briefly freezes the headset and can interrupt positional tracking while Meta trackingservice restarts. Wait for **Activity** to confirm recovery. Do not combine methods to bypass a failed compatibility check.
 
 ### Show gaze recovery tools
 
-On the optional gaze card, open **Show gaze setup**, then **Show gaze recovery tools**:
+Open **Show optional tools and recovery > Recovery > Show gaze recovery tools**:
 
 - **Recover Qpro gaze** restores the previous state recorded for a verified Qpro session. It does not remove unrelated modifications.
 - **Reset legacy gaze** offers a confirmed normal gaze selection for an older session without a record. It refuses active gaze Magisk modules or unverified overlays; it does not overwrite firmware.
@@ -332,7 +332,7 @@ On **Personalize**, open **Show saved recordings** under its capture card. Choos
 
 Optional AMD acceleration comes after **Install runtime**. NVIDIA/CPU users skip this step.
 
-Open **First-time setup > Show optional tools and recovery > Optional AMD ROCm acceleration > Show AMD setup**, then **Install ROCm 10.1** for an eligible discrete Radeon. Large GPU-specific downloads go into a separate Qpro environment.
+Open **First-time setup > Show optional tools and recovery > Optional features > Show AMD setup**, then **Install ROCm 10.1** for an eligible discrete Radeon. Large GPU-specific downloads go into a separate Qpro environment.
 
 | Series | Models mapped for ROCm 10.1 |
 | --- | --- |
@@ -405,7 +405,7 @@ First complete [the prerequisite settings](#controllers). Keep all those switche
 ### Install once
 
 1. Finish **Install runtime**. **Close SteamVR** and wait for it to exit.
-2. Open **First-time setup > Show optional tools and recovery > Optional hands and controllers > Show hands setup and uninstall**, then press **Install hand/controller components**. Keep the Hub open until **Activity** reports completion.
+2. Open **First-time setup > Show optional tools and recovery > Optional features > Show hands setup and uninstall**, then press **Install hand/controller components**. Keep the Hub open until **Activity** reports completion.
 3. Connect through Virtual Desktop, then launch SteamVR from its menu. Reopen VRChat.
 
 Installation downloads verified Frida 17.18.0 into Qpro's private environment and registers its add-on. Repeat only when the Hub asks for repair or update.
@@ -473,7 +473,7 @@ On the checked headset, **Both / 100%** scrolled well in Dashboard and VRChat, w
 
 Press **Stop tracking** and wait for Activity to confirm cleanup. Keep the app open if restoration is unconfirmed. Desktop mouse should release its click, and ordinary controls should keep working.
 
-To remove thumb-rest input, close SteamVR. Open **First-time setup > Show optional tools and recovery > Optional hands and controllers**, expand **Show hands setup and uninstall**, then press **Uninstall controller add-on**. Reopen SteamVR afterward. Recovery copies stay; hands components and Singularity are unchanged. See [the controller guide](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/blob/main/src/CONTROLLER_INPUT.md).
+To remove thumb-rest input, close SteamVR. Open **First-time setup > Show optional tools and recovery > Optional features > Show hands setup and uninstall**, then press **Uninstall controller add-on**. Reopen SteamVR afterward. Recovery copies stay; hands components and Singularity are unchanged. See [the controller guide](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/blob/main/src/CONTROLLER_INPUT.md).
 
 ## Return to ordinary tracking
 
@@ -489,7 +489,7 @@ Stopping a session, removing a PC module and disabling headset gaze are differen
 
 ### Uninstall Qpro module
 
-Open **First-time setup > Show optional tools and recovery**. Under **VRCFaceTracking module maintenance**, press **Uninstall Qpro module**, confirm and wait for **Setup step complete** before reopening VRCFaceTracking.
+Open **First-time setup > Show optional tools and recovery > Recovery > Show VRCFaceTracking module maintenance**. Press **Uninstall Qpro module**, confirm and wait for **Setup step complete** before reopening VRCFaceTracking.
 
 Verified Qpro modules are removed. An official Virtual Desktop module saved by an older installer can be restored if verified; otherwise install the official source module through VRCFaceTracking. Models/recordings remain saved.
 
