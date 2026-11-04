@@ -22,11 +22,28 @@ internal static class HubUpdateReleaseParser
     internal const long MaximumArchiveBytes = 1_610_612_736;
     internal const int MaximumReleaseListEntries = 30;
     internal const int MaximumMetadataBytes = 2_097_152;
-    internal static readonly Uri ReleasesPage = new("https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases");
-    internal static readonly Uri LatestApi = new("https://api.github.com/repos/Fwooffy/Qpro-Enhanced-FT-Wireless/releases/latest");
-    internal static readonly Uri ReleasesApi = new("https://api.github.com/repos/Fwooffy/Qpro-Enhanced-FT-Wireless/releases?per_page=30");
-    private const string RepositoryPath = "/Fwooffy/Qpro-Enhanced-FT-Wireless";
-    private const string CompanionRepositoryPath = "/Fwooffy/Qpro-Companion";
+    private const string RepositoryPath = "/Fwooffy/Qpro-Companion";
+    private const string LegacyRepositoryPath = "/Fwooffy/Qpro-Enhanced-FT-Wireless";
+    // The generic browser link must work before the rename too. GitHub's web
+    // redirect keeps this alias usable afterward; API checks prefer the new name.
+    internal static readonly Uri ReleasesPage = new("https://github.com" + LegacyRepositoryPath + "/releases");
+    internal static readonly Uri LatestApi = new("https://api.github.com/repos" + RepositoryPath + "/releases/latest");
+    internal static readonly Uri ReleasesApi = new("https://api.github.com/repos" + RepositoryPath + "/releases?per_page=30");
+    internal static readonly Uri LegacyLatestApi = new("https://api.github.com/repos" + LegacyRepositoryPath + "/releases/latest");
+    internal static readonly Uri LegacyReleasesApi = new("https://api.github.com/repos" + LegacyRepositoryPath + "/releases?per_page=30");
+    // GitHub's rename redirects use this immutable repository ID. Verified on
+    // 2026-11-04 against both repository APIs: Fwooffy, owner ID 123058221.
+    private const string RepositoryId = "1386190011";
+    internal static readonly Uri RepositoryLatestApi = new("https://api.github.com/repositories/" + RepositoryId + "/releases/latest");
+    internal static readonly Uri RepositoryReleasesApi = new("https://api.github.com/repositories/" + RepositoryId + "/releases?per_page=30");
+
+    internal static Uri[] MetadataEndpoints(bool includePrereleases) => includePrereleases
+        ? [ReleasesApi, LegacyReleasesApi] : [LatestApi, LegacyLatestApi];
+
+    internal static bool IsMetadataEndpoint(Uri endpoint, bool includePrereleases) =>
+        MetadataEndpoints(includePrereleases)
+            .Append(includePrereleases ? RepositoryReleasesApi : RepositoryLatestApi).Any(allowed =>
+            endpoint.AbsoluteUri.Equals(allowed.AbsoluteUri, StringComparison.OrdinalIgnoreCase));
 
     internal static bool TryStableVersion(string text, out Version? version)
     {
@@ -36,13 +53,15 @@ internal static class HubUpdateReleaseParser
         return Version.TryParse(text.TrimStart('v', 'V'), out version) && version.Revision < 0;
     }
 
-    internal static HubUpdateCheck Parse(string json, Version current, bool includePrereleases = false)
+    internal static HubUpdateCheck Parse(string json, Version current, bool includePrereleases = false,
+        Uri? metadataEndpoint = null)
     {
         using JsonDocument document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 24 });
-        return ParseRelease(document.RootElement, current, includePrereleases);
+        return ParseRelease(document.RootElement, current, includePrereleases, metadataEndpoint);
     }
 
-    internal static HubUpdateCheck ParseReleases(string json, Version current, bool includePrereleases = false)
+    internal static HubUpdateCheck ParseReleases(string json, Version current, bool includePrereleases = false,
+        Uri? metadataEndpoint = null)
     {
         using JsonDocument document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 24 });
         JsonElement releases = document.RootElement;
@@ -53,7 +72,7 @@ internal static class HubUpdateReleaseParser
         foreach (JsonElement release in releases.EnumerateArray())
         {
             HubUpdateCheck check;
-            try { check = ParseRelease(release, current, includePrereleases); }
+            try { check = ParseRelease(release, current, includePrereleases, metadataEndpoint); }
             catch (Exception error) when (error is InvalidDataException or JsonException or UriFormatException)
             {
                 // A broken release entry must not hide a valid release elsewhere
@@ -126,7 +145,8 @@ internal static class HubUpdateReleaseParser
         return true;
     }
 
-    private static HubUpdateCheck ParseRelease(JsonElement root, Version current, bool includePrereleases)
+    private static HubUpdateCheck ParseRelease(JsonElement root, Version current, bool includePrereleases,
+        Uri? metadataEndpoint)
     {
         UniqueObject(root);
         if (Bool(root, "draft")) return NoNewRelease(includePrereleases);
@@ -138,7 +158,7 @@ internal static class HubUpdateReleaseParser
         if ((!numericTag && (!includePrereleases || !isPrerelease ||
                 !TryPrereleaseVersion(tag, out version, out suffix))) || version! <= current)
             return NoNewRelease(includePrereleases);
-        Uri releasePage = new($"https://github.com{RepositoryPath}/releases/tag/{Uri.EscapeDataString(tag)}");
+        Uri releasePage = ReleasePage(root, tag, includePrereleases, metadataEndpoint);
         string title = OptionalText(root, "name", 256) ?? "Qpro Companion V" + version;
         string notes = OptionalText(root, "body", 100_000) ?? string.Empty;
         if (notes.Length > 32_768) notes = notes[..32_768] + "\n\nRead the complete notes on GitHub.";
@@ -200,7 +220,31 @@ internal static class HubUpdateReleaseParser
     {
         string releaseAsset = "/releases/download/" + tag + "/" + assetName;
         return path.Equals(RepositoryPath + releaseAsset, StringComparison.OrdinalIgnoreCase) ||
-            path.Equals(CompanionRepositoryPath + releaseAsset, StringComparison.OrdinalIgnoreCase);
+            path.Equals(LegacyRepositoryPath + releaseAsset, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static Uri ReleasePage(JsonElement root, string tag, bool includePrereleases, Uri? metadataEndpoint)
+    {
+        if (metadataEndpoint is not null && !IsMetadataEndpoint(metadataEndpoint, includePrereleases))
+            throw new InvalidDataException("The release came from an unsupported update source.");
+        string? address = OptionalText(root, "html_url", 2048);
+        if (address is not null && Uri.TryCreate(address, UriKind.Absolute, out Uri? supplied) &&
+            supplied.Scheme == Uri.UriSchemeHttps && supplied.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase) &&
+            supplied.IsDefaultPort && supplied.UserInfo.Length == 0 && supplied.Query.Length == 0 && supplied.Fragment.Length == 0)
+        {
+            string path = Uri.UnescapeDataString(supplied.AbsolutePath);
+            string suffix = "/releases/tag/" + tag;
+            if (path.Equals(RepositoryPath + suffix, StringComparison.OrdinalIgnoreCase) ||
+                path.Equals(LegacyRepositoryPath + suffix, StringComparison.OrdinalIgnoreCase)) return supplied;
+        }
+        bool legacy = metadataEndpoint is not null &&
+            (metadataEndpoint.AbsoluteUri.Equals(LegacyLatestApi.AbsoluteUri, StringComparison.OrdinalIgnoreCase) ||
+             metadataEndpoint.AbsoluteUri.Equals(LegacyReleasesApi.AbsoluteUri, StringComparison.OrdinalIgnoreCase) ||
+             metadataEndpoint.AbsoluteUri.Equals(RepositoryLatestApi.AbsoluteUri, StringComparison.OrdinalIgnoreCase) ||
+             metadataEndpoint.AbsoluteUri.Equals(RepositoryReleasesApi.AbsoluteUri, StringComparison.OrdinalIgnoreCase));
+        string repository = legacy
+            ? LegacyRepositoryPath : RepositoryPath;
+        return new($"https://github.com{repository}/releases/tag/{Uri.EscapeDataString(tag)}");
     }
 
     private static void UniqueObject(JsonElement element)

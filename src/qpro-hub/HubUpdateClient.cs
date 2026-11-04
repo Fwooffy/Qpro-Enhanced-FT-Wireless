@@ -24,39 +24,66 @@ internal sealed class HubUpdateClient : IDisposable
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
         try
         {
-            Uri endpoint = includePrereleases ? HubUpdateReleaseParser.ReleasesApi : HubUpdateReleaseParser.LatestApi;
-            using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
-            request.Headers.Accept.ParseAdd("application/vnd.github+json");
-            request.Headers.Add("X-GitHub-Api-Version", "2026-03-10");
-            using HttpResponseMessage response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
-            if (response.StatusCode == HttpStatusCode.NotFound)
-                return new(HubUpdateCheckState.UpToDate, includePrereleases
-                    ? "No GitHub release or prerelease is available yet."
-                    : "No stable GitHub release is available yet.");
-            if (response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
-                return new(HubUpdateCheckState.Unavailable, "GitHub's update check limit was reached. Try later, or open the release page.");
-            response.EnsureSuccessStatusCode();
-            if (response.Content.Headers.ContentLength is > HubUpdateReleaseParser.MaximumMetadataBytes)
-                throw new InvalidDataException("GitHub release metadata is unexpectedly large.");
-            using Stream source = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
-            using var bytes = new MemoryStream();
-            byte[] buffer = new byte[16_384];
-            int read;
-            while ((read = await source.ReadAsync(buffer, timeout.Token).ConfigureAwait(false)) != 0)
+            // The old repository remains a transition source until the rename.
+            // A failed or malformed check must not silently choose another feed.
+            foreach (Uri endpoint in HubUpdateReleaseParser.MetadataEndpoints(includePrereleases))
             {
-                if (bytes.Length + read > HubUpdateReleaseParser.MaximumMetadataBytes)
+                var opened = await OpenMetadataAsync(endpoint, includePrereleases, timeout.Token).ConfigureAwait(false);
+                using HttpResponseMessage response = opened.Response;
+                if (response.StatusCode == HttpStatusCode.NotFound) continue;
+                if (response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
+                    return new(HubUpdateCheckState.Unavailable, "GitHub's update check limit was reached. Try later, or open the release page.");
+                response.EnsureSuccessStatusCode();
+                if (response.Content.Headers.ContentLength is > HubUpdateReleaseParser.MaximumMetadataBytes)
                     throw new InvalidDataException("GitHub release metadata is unexpectedly large.");
-                bytes.Write(buffer, 0, read);
+                using Stream source = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+                using var bytes = new MemoryStream();
+                byte[] buffer = new byte[16_384];
+                int read;
+                while ((read = await source.ReadAsync(buffer, timeout.Token).ConfigureAwait(false)) != 0)
+                {
+                    if (bytes.Length + read > HubUpdateReleaseParser.MaximumMetadataBytes)
+                        throw new InvalidDataException("GitHub release metadata is unexpectedly large.");
+                    bytes.Write(buffer, 0, read);
+                }
+                string json = Encoding.UTF8.GetString(bytes.ToArray());
+                return includePrereleases
+                    ? HubUpdateReleaseParser.ParseReleases(json, current, includePrereleases: true, metadataEndpoint: opened.Endpoint)
+                    : HubUpdateReleaseParser.Parse(json, current, metadataEndpoint: opened.Endpoint);
             }
-            string json = Encoding.UTF8.GetString(bytes.ToArray());
-            return includePrereleases
-                ? HubUpdateReleaseParser.ParseReleases(json, current, includePrereleases: true)
-                : HubUpdateReleaseParser.Parse(json, current);
+            return new(HubUpdateCheckState.UpToDate, includePrereleases
+                ? "No GitHub release or prerelease is available yet."
+                : "No stable GitHub release is available yet.");
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         { return new(HubUpdateCheckState.Unavailable, "The update check timed out. Your current version is ready to use; try later."); }
         catch (Exception error) when (error is HttpRequestException or IOException or System.Text.Json.JsonException or InvalidDataException)
         { return new(HubUpdateCheckState.Unavailable, "Updates could not be checked: " + error.Message); }
+    }
+
+    private async Task<(HttpResponseMessage Response, Uri Endpoint)> OpenMetadataAsync(Uri original,
+        bool includePrereleases, CancellationToken cancellationToken)
+    {
+        Uri current = original;
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (int hop = 0; hop <= 5; hop++)
+        {
+            if (!HubUpdateReleaseParser.IsMetadataEndpoint(current, includePrereleases))
+                throw new InvalidDataException("GitHub redirected the update check outside its supported release sources.");
+            if (!visited.Add(current.AbsoluteUri))
+                throw new InvalidDataException("GitHub's update check redirected in a loop.");
+            using var request = new HttpRequestMessage(HttpMethod.Get, current);
+            request.Headers.Accept.ParseAdd("application/vnd.github+json");
+            request.Headers.Add("X-GitHub-Api-Version", "2026-03-10");
+            HttpResponseMessage response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken).ConfigureAwait(false);
+            if ((int)response.StatusCode is not (301 or 302 or 303 or 307 or 308)) return (response, current);
+            Uri? location = response.Headers.Location;
+            response.Dispose();
+            if (location is null) throw new InvalidDataException("GitHub's update check redirect has no address.");
+            current = location.IsAbsoluteUri ? location : new Uri(current, location);
+        }
+        throw new InvalidDataException("GitHub's update check redirected too many times.");
     }
 
     internal async Task<HubStagedUpdate> StageAsync(HubUpdateRelease release, string existingRuntimeRoot,
@@ -72,7 +99,7 @@ internal sealed class HubUpdateClient : IDisposable
             progress?.Report(new("Downloading update", 0, release.AssetSize));
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromMinutes(30));
-            using HttpResponseMessage response = await OpenDownloadAsync(release.DownloadUrl!, timeout.Token).ConfigureAwait(false);
+            using HttpResponseMessage response = await OpenDownloadAsync(release, timeout.Token).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
             if (response.Content.Headers.ContentLength is { } length && length != release.AssetSize)
                 throw new InvalidDataException("The downloaded ZIP size differs from GitHub's release metadata.");
@@ -115,9 +142,9 @@ internal sealed class HubUpdateClient : IDisposable
         }
     }
 
-    private async Task<HttpResponseMessage> OpenDownloadAsync(Uri original, CancellationToken cancellationToken)
+    private async Task<HttpResponseMessage> OpenDownloadAsync(HubUpdateRelease release, CancellationToken cancellationToken)
     {
-        Uri current = original;
+        Uri current = release.DownloadUrl!;
         for (int hop = 0; hop <= 5; hop++)
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, current);
@@ -127,10 +154,12 @@ internal sealed class HubUpdateClient : IDisposable
             response.Dispose();
             if (location is null) throw new InvalidDataException("GitHub's update download redirect has no address.");
             current = location.IsAbsoluteUri ? location : new Uri(current, location);
-            bool hostAllowed = current.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase) ||
+            bool hostAllowed = current.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
+                    ? HubUpdateReleaseParser.IsAssetUrl(current, release.Tag, release.AssetName!) :
                 current.Host.Equals("release-assets.githubusercontent.com", StringComparison.OrdinalIgnoreCase) ||
                 current.Host.Equals("objects.githubusercontent.com", StringComparison.OrdinalIgnoreCase);
-            if (!hostAllowed || current.Scheme != Uri.UriSchemeHttps || !current.IsDefaultPort || current.UserInfo.Length != 0)
+            if (!hostAllowed || current.Scheme != Uri.UriSchemeHttps || !current.IsDefaultPort ||
+                current.UserInfo.Length != 0 || current.Fragment.Length != 0)
                 throw new InvalidDataException("GitHub redirected the update outside its release download hosts.");
         }
         throw new InvalidDataException("GitHub's update download redirected too many times.");

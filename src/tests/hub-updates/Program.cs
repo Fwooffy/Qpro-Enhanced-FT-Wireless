@@ -367,6 +367,7 @@ try
     })))
         await RejectAsync(async () => await client.StageAsync(Release(good), oldRoot, storage, null, default), "foreign redirect");
     Check(!Directory.GetFiles(storage, ".qpro-download-*").Any(), "download cleanup");
+    await RepositoryMigrationFixtures.RunAsync(current, () => Metadata(), Check, good, Release(good), oldRoot, storage);
     Console.WriteLine($"Hub updater tests passed: {passed}. No network, installed apps or real updates were used.");
 }
 finally
