@@ -1,6 +1,6 @@
 'use strict';
-// The host admits this adapter only for the exact driver fingerprint in the
-// compatibility profile. Every live object and public interface is rechecked.
+// The host admits an inspected driver build or a byte-equivalent layout family.
+// Bind that disk proof to the loaded image before using any private RVA.
 const configuration = globalThis.QPRO_PROFILE;
 const layout = configuration.pcLayout;
 let state = 'idle', error = null, driver = null, input = null, updateAddress = null;
@@ -450,8 +450,69 @@ function heartbeat(seconds) {
     if (lease !== null) clearTimeout(lease);
     lease = setTimeout(deactivate, seconds * 1000);
 }
+function validateImageIdentity() {
+    const identity = configuration.pcImageIdentity;
+    const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+    const bounded = (value, maximum) => Number.isSafeInteger(value) && value > 0 && value <= maximum;
+    if (identity === null || typeof identity !== 'object' || identity === undefined ||
+        !bounded(identity.sizeOfImage, 128 * 1024 * 1024) || driver.size !== identity.sizeOfImage ||
+        !bounded(identity.sizeOfHeaders, 256 * 1024) || identity.sizeOfHeaders > driver.size ||
+        !hash(identity.headerSha256) || !/^0x[0-9a-f]{1,16}$/.test(identity.preferredImageBase || '') ||
+        !Array.isArray(identity.codeView) || identity.codeView.length > 64 ||
+        !Array.isArray(identity.executableSections) || identity.executableSections.length < 1 ||
+        identity.executableSections.length > 96)
+        throw new Error('The Windows driver image proof is missing or invalid; check compatibility again');
+    function bytesAt(rva, size) {
+        if (!Number.isSafeInteger(rva) || rva < 0 || !bounded(size, 32 * 1024 * 1024) ||
+            rva + size > driver.size)
+            throw new Error('The Windows driver image proof has an invalid range');
+        const value = driver.base.add(rva).readByteArray(size);
+        if (value === null || value.byteLength !== size)
+            throw new Error('The loaded Windows driver image could not be read completely');
+        return value;
+    }
+    if (Checksum.compute('sha256', bytesAt(0, identity.sizeOfHeaders)) !== identity.headerSha256)
+        throw new Error('The loaded Windows driver differs from the checked file; restart SteamVR and check again');
+    for (const record of identity.codeView) {
+        if (record === null || typeof record !== 'object' || !/^[a-f0-9]{32}$/.test(record.guid || '') ||
+            !Number.isSafeInteger(record.age) || record.age < 0 || record.age > 0xffffffff)
+            throw new Error('The Windows driver build identity is invalid');
+        const bytes = new Uint8Array(bytesAt(record.rva, 24));
+        const guid = Array.from(bytes.subarray(4, 20), value => value.toString(16).padStart(2, '0')).join('');
+        const age = (bytes[20] + bytes[21] * 256 + bytes[22] * 65536 + bytes[23] * 16777216) >>> 0;
+        if (bytes[0] !== 82 || bytes[1] !== 83 || bytes[2] !== 68 || bytes[3] !== 83 ||
+            guid !== record.guid || age !== record.age)
+            throw new Error('The loaded Windows driver build identity changed; restart SteamVR and check again');
+    }
+    let codeBytes = 0;
+    for (const section of identity.executableSections) {
+        if (section === null || typeof section !== 'object' || !hash(section.sha256) ||
+            !Array.isArray(section.relocations) || section.relocations.length > 65536)
+            throw new Error('The Windows driver code proof is invalid');
+        const value = bytesAt(section.rva, section.size), bytes = new Uint8Array(value);
+        codeBytes += bytes.length;
+        if (codeBytes > 32 * 1024 * 1024) throw new Error('The Windows driver code proof is too large');
+        let previous = -8;
+        for (const offset of section.relocations) {
+            if (!Number.isSafeInteger(offset) || offset < previous + 8 || offset + 8 > bytes.length)
+                throw new Error('The Windows driver code relocation proof is invalid');
+            previous = offset;
+            let address = '0x';
+            for (let index = 7; index >= 0; index--) address += bytes[offset + index].toString(16).padStart(2, '0');
+            // The approved on-disk relocation table supplies these slots. No
+            // live instruction bytes are excluded from the comparison.
+            const original = ptr(address).sub(driver.base).add(ptr(identity.preferredImageBase))
+                .toString().replace(/^0x/, '').padStart(16, '0');
+            for (let index = 0; index < 8; index++)
+                bytes[offset + index] = parseInt(original.slice(14 - index * 2, 16 - index * 2), 16);
+        }
+        if (Checksum.compute('sha256', value) !== section.sha256)
+            throw new Error('The loaded Windows driver code changed; native hand hooks were not started');
+    }
+}
 function resolveInterfaces() {
     driver = Process.getModuleByName('driver_VirtualDesktop.dll');
+    validateImageIdentity();
     if (!Number.isSafeInteger(layout.skeletonOriginal) || layout.skeletonOriginal < 0)
         throw new Error('The saved skeleton callable is missing from this profile');
     if (driver.size <= Math.max(layout.skeletonTable, layout.controllerTable, layout.skeletonOriginal) + 16)

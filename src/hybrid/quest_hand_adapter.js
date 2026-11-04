@@ -226,6 +226,102 @@ function pointerParameter(type) {
     // used by the existing adapter. This does not validate its private layout.
     return byReference(type) !== 0 || [15, 18, 20, 28, 29].includes(typeKind(type));
 }
+function validateHandResultLayout(handType, fingerType) {
+    // The researched build retains its established profile. An unfamiliar app
+    // must describe the private output buffer through metadata before any
+    // conversion can use the profile's byte offsets.
+    if (profile.requireResultMetadata !== true) return {source: 'profile'};
+    const failure = reason => { throw new Error('Managed hand-result layout is unsupported: ' + reason); };
+    if (Process.arch !== 'arm64' || Process.pointerSize !== 8)
+        failure('the adapter requires the checked ARM64 object layout');
+    if (typeKind(handType) !== 17 || !byReference(handType)
+        || typeKind(fingerType) !== 17 || !byReference(fingerType))
+        failure('hand and finger results must be by-reference value types');
+    let valueSize, valueType, fieldsOf;
+    try {
+        valueSize = api('mono_class_value_size', 'int', ['pointer', 'pointer']);
+        valueType = api('mono_class_is_valuetype', 'int', ['pointer']);
+        fieldsOf = api('mono_class_get_fields', 'pointer', ['pointer', 'pointer']);
+    } catch (_) { failure('required Mono layout metadata is unavailable'); }
+    const header = Process.pointerSize * 2;
+    const sizes = new Map(), active = new Set();
+    const budget = {fields: 0};
+    const primitiveSizes = new Map([[2, 1], [3, 2], [4, 1], [5, 1], [6, 2], [7, 2],
+        [8, 4], [9, 4], [10, 8], [11, 8], [12, 4], [13, 8]]);
+    function classSize(klass) {
+        const key = klass.toString();
+        if (sizes.has(key)) return sizes.get(key);
+        if (klass.isNull() || !valueType(klass)) failure('a result field is not a value type');
+        const alignment = Memory.alloc(4); alignment.writeU32(0);
+        const size = valueSize(klass, alignment), align = alignment.readU32();
+        // Mono field offsets include the boxed object header; byref value
+        // arguments point to the unboxed payload. Check the relationship before
+        // translating an offset rather than accepting either convention.
+        if (!Number.isSafeInteger(size) || size <= 0 || size > 16384
+            || !Number.isSafeInteger(align) || align < 1 || align > 16 || (align & (align - 1)) !== 0
+            || instanceSize(klass) !== size + header)
+            failure('value size, alignment or boxed field offsets are inconsistent');
+        sizes.set(key, size); return size;
+    }
+    function instanceFields(klass) {
+        const result = [], iterator = Memory.alloc(Process.pointerSize);
+        iterator.writePointer(ptr(0));
+        const seen = new Set();
+        for (;;) {
+            const entry = fieldsOf(klass, iterator);
+            if (entry.isNull()) return result;
+            if (++budget.fields > 1024 || seen.has(entry.toString())) failure('field enumeration is ambiguous or excessive');
+            seen.add(entry.toString());
+            if (fieldFlags(entry) & 16) continue;
+            const type = requirePointer(fieldType(entry), 'Managed result field type is missing');
+            if (byReference(type)) failure('a result contains a by-reference field');
+            const offset = offsetOf(entry) - header;
+            if (!Number.isSafeInteger(offset) || offset < 0) failure('a result field has no supported unboxed offset');
+            result.push({type, offset});
+        }
+    }
+    function plainValue(klass, depth = 0) {
+        if (depth > 12) failure('nested value metadata is excessive');
+        const key = klass.toString();
+        if (active.has(key)) failure('recursive value metadata');
+        const size = classSize(klass), fields = instanceFields(klass), ranges = [];
+        if (!fields.length) failure('a finger value has no inspectable fields');
+        active.add(key);
+        try {
+            for (const entry of fields) {
+                const kind = typeKind(entry.type);
+                const width = primitiveSizes.get(kind)
+                    ?? (kind === 17 ? plainValue(typeClass(entry.type), depth + 1) : 0);
+                if (!width || entry.offset + width > size)
+                    failure('a finger field is a reference, pointer, or outside its value');
+                if (ranges.some(range => entry.offset < range.end && entry.offset + width > range.start))
+                    failure('finger fields overlap');
+                ranges.push({start: entry.offset, end: entry.offset + width});
+            }
+        } finally { active.delete(key); }
+        return size;
+    }
+    const handClass = requirePointer(typeClass(handType), 'Managed hand-result class is missing');
+    const fingerClass = requirePointer(typeClass(fingerType), 'Managed finger-result class is missing');
+    const fingerBytes = plainValue(fingerClass), handBytes = classSize(handClass);
+    const [left, right] = fingerOffsets;
+    if (!Number.isSafeInteger(left) || !Number.isSafeInteger(right) || left < 2
+        || right !== left + fingerBytes || handBytes !== right + fingerBytes)
+        failure('the two finger payload spans do not match the adapter');
+    const fields = instanceFields(handClass);
+    if (fields.length !== 4) failure('the hand result does not contain exactly four instance fields');
+    const expected = new Map([[0, 'valid'], [1, 'valid'], [left, 'finger'], [right, 'finger']]);
+    for (const entry of fields) {
+        const kind = expected.get(entry.offset);
+        if (!kind) failure('a hand-result field overlaps or moves an expected payload');
+        if (kind === 'valid' ? typeKind(entry.type) !== 2
+            : typeKind(entry.type) !== 17 || !typeClass(entry.type).equals(fingerClass))
+            failure('validity bytes or finger value identities do not match');
+        expected.delete(entry.offset);
+    }
+    if (expected.size) failure('hand-result fields are missing or ambiguous');
+    return {source: 'mono-metadata', handBytes, fingerBytes, fingerOffsets: [left, right]};
+}
 function setterMethod(klass, name) {
     const found = method(klass, name, 1), types = signatureTypes(found);
     if (byReference(types.result) || typeKind(types.result) !== 1 || byReference(types.parameters[0]) || typeKind(types.parameters[0]) !== 2)
@@ -264,6 +360,11 @@ function resolve() {
         const converter = method(klass, 'ConvertFingerState', 2), types = signatureTypes(converter);
         if (!integral32(types.result, true) || !integral32(types.parameters[0]) || !pointerParameter(types.parameters[1]))
             throw new Error('Managed finger conversion signature is unsupported');
+        const handState = method(klass, 'GetHandState', 1);
+        const handTypes = signatureTypes(handState);
+        if (!pointerParameter(handTypes.parameters[0]))
+            throw new Error('Managed hand-state pointer signature is unsupported');
+        const resultLayout = validateHandResultLayout(handTypes.parameters[0], types.parameters[1]);
         const get = name => {
             const found = method(klass, name, 1);
             if (name === 'GetHandState' && !pointerParameter(signatureTypes(found).parameters[0]))
@@ -272,6 +373,7 @@ function resolve() {
         };
         const value = {
             update: get('Update'), handState: get('GetHandState'),
+            resultLayout,
             convert: new NativeFunction(requirePointer(compile(converter), 'Managed method did not compile'), 'int', ['pointer', 'int', 'pointer']),
             hmdSetter: setterMethod(klass, 'set_UseMultiModalInput'),
             sharedSetter: setterMethod(settings, 'set_UseMultiModal'), shared: null, sharedVtable, sharedField,
@@ -371,7 +473,8 @@ function heartbeat(seconds) {
     lease = setTimeout(deactivate, seconds * 1000);
 }
 rpc.exports = {
-    validate() { resolve(); prepareNative(); return {compatible: true, managedMetadata: true,
+    validate() { const value = resolve(); prepareNative(); return {compatible: true, managedMetadata: true,
+        resultLayout: value.resultLayout ?? {source: 'profile'},
         nativeCallbacks: true, fridaRuntime: Script.runtime}; },
     activate(seconds) {
         if (state !== 'idle') throw new Error('Optical hand adapter is already used');

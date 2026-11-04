@@ -114,6 +114,18 @@ var hands = HandCheck();
 Check(HubControllerFeedback.TryParseCheckLine(HubControllerFeedback.CheckPrefix + hands.ToJsonString(), out var handResult) &&
     !handResult!.IsError && handResult.Detail.Contains("live optical input has not been verified") &&
     handResult.NextStep.Contains("warning"), "Preliminary inactive values became a blocking menu failure or live readiness.");
+var unfamiliar = HandCheck();
+unfamiliar["androidVersion"] = "1.34.99.0";
+unfamiliar["warnings"] = new JsonArray("Unfamiliar version; managed hand-result and native caller validation will run at startup.");
+Check(HubControllerFeedback.TryParseCheckLine(HubControllerFeedback.CheckPrefix + unfamiliar.ToJsonString(), out var unfamiliarResult) &&
+    !unfamiliarResult!.IsError && unfamiliarResult.Detail.Contains("Native hook validation is still pending") &&
+    unfamiliarResult.Detail.Contains("1.34.99.0") && unfamiliarResult.NextStep.Contains("Start tracking"),
+    "An unfamiliar version must remain provisional and not become an arbitrary version failure or live-readiness claim.");
+var changedLayout = HandCheck(false);
+changedLayout["problems"] = new JsonArray("This Windows Streamer driver code/layout does not match a supported hand layout.");
+Check(HubControllerFeedback.TryParseCheckLine(HubControllerFeedback.CheckPrefix + changedLayout.ToJsonString(), out var layoutResult) &&
+    layoutResult!.IsError && layoutResult.Title.StartsWith("Windows Streamer driver") && layoutResult.NextStep.Contains("Copy diagnostics"),
+    "A changed driver layout must retain a real blocking failure and actionable diagnostics.");
 hands["compatible"] = false; hands["problems"] = new JsonArray("This Virtual Desktop Streamer driver has no validated hand profile.");
 // Historical 1.34.22.0 report from the old profile list; the Hub displays what
 // the installed checker reported, independent of the current admissions list.

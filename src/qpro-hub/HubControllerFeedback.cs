@@ -45,7 +45,8 @@ internal sealed record HubControllerFeedback(
                     .Any(property => property.Value.GetString()?.Trim().ToLowerInvariant() is not ("true" or "false" or "1" or "0")))) return false;
             if (components && fridaVersion is null) return false;
             bool blocked = !compatible || !components;
-            static bool MissingPcProfile(string problem) => problem.Contains("Streamer driver has no validated hand profile", StringComparison.OrdinalIgnoreCase);
+            static bool MissingPcProfile(string problem) => problem.Contains("Streamer driver has no validated hand profile", StringComparison.OrdinalIgnoreCase)
+                || problem.Contains("Streamer driver code/layout", StringComparison.OrdinalIgnoreCase);
             static bool MissingHeadsetProfile(string problem) => problem.Contains("headset Virtual Desktop version has no validated hand profile", StringComparison.OrdinalIgnoreCase);
             bool pcProfile = problems.Any(MissingPcProfile);
             bool headsetProfile = problems.Any(MissingHeadsetProfile);
@@ -53,19 +54,19 @@ internal sealed record HubControllerFeedback(
                 .OrderBy(reason => MissingPcProfile(reason) ? 0 : MissingHeadsetProfile(reason) ? 1 : 2).ToArray();
             var detail = blocked
                 ? reasons.Length == 0 ? "The required hand/controller checks did not pass." : string.Join("\n", reasons)
-                : $"Virtual Desktop headset version: {version ?? "not reported"}. Version and component checks passed; live optical input has not been verified." +
+                : $"Virtual Desktop headset version: {version ?? "not reported"}. Component and driver layout prechecks passed. Native hook validation is still pending; live optical input has not been verified." +
                     (warnings.Length == 0 ? string.Empty : "\n" + string.Join("\n", warnings));
             // A missing version profile needs compatibility work. Component repair alone
             // cannot resolve it, so do not send users into a repeated installation loop.
             var unsupportedProfile = problems.Any(problem =>
                 problem.Contains("no validated hand profile", StringComparison.OrdinalIgnoreCase) ||
-                problem.Contains("Controller ABI", StringComparison.OrdinalIgnoreCase));
+                problem.Contains("Controller ABI", StringComparison.OrdinalIgnoreCase) || MissingPcProfile(problem));
             if (blocked)
                 detail += $"\nQuest app version: {version ?? "not reported"}.\nWindows Streamer driver SHA-256: {hash ?? "not reported"}.";
             var next = unsupportedProfile
                 ? "Keep Hands + controllers off. Use Activity > Copy diagnostics to share the Quest app version and Windows Streamer driver SHA-256 for a compatibility review."
                 : !components ? "Close SteamVR and install the hand/controller components, reopen SteamVR through Virtual Desktop, then check again."
-                : !compatible ? "Follow the reported compatibility detail and check again. Qpro will not use an unvalidated version or ABI."
+                : !compatible ? "Follow the reported detail and check again. Native hooks must pass code and data-layout validation before activation."
                 : "Start tracking with Hands + controllers selected, then wait for valid live finger input. A preliminary inactive setting is a warning, not proof that the menu switch is off.";
             var title = pcProfile && headsetProfile ? "Windows Streamer driver and Quest app both need hand profiles"
                 : pcProfile ? "Windows Streamer driver needs a hand profile"

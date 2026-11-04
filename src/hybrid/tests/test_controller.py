@@ -216,6 +216,19 @@ class HybridTests(unittest.TestCase):
         driver = self.home / self.profile["pcDriverRelativePath"]
         driver.parent.mkdir(parents=True); driver.write_bytes(b"approved fixture")
         self.profile["pcDriverSha256"] = hashlib.sha256(driver.read_bytes()).hexdigest()
+        # PE parsing has its own hostile-input fixtures. These supervisor tests
+        # isolate admission decisions and never attach to an actual driver.
+        driver_probe = patch.object(controller, "inspect_driver", side_effect=self.fixture_driver_proof)
+        driver_probe.start()
+        self.addCleanup(driver_probe.stop)
+
+    @staticmethod
+    def fixture_driver_proof(driver, profile):
+        digest = controller.hashlib.sha256(driver.read_bytes()).hexdigest()
+        known = digest in (profile["pcDriverSha256"], *profile.get("additionalPcDriverSha256s", []))
+        return {"driverHash": digest, "knownHash": known, "compatible": known,
+                "approvedLayoutMatched": False, "layoutSha256": "f" * 64,
+                "liveImageIdentity": {"fixture": "read-only layout identity"}}
 
     def test_diagnostic_allows_uninstalled_components_without_mutation(self):
         adb = FakeAdb(self.profile)
@@ -355,25 +368,23 @@ class HybridTests(unittest.TestCase):
         report = controller.inspect(FakeAdb(self.profile), self.profile, None, None, str(self.home))
         self.assertFalse(report["compatible"])
 
-    def test_unknown_driver_and_headset_versions_are_refused(self):
+    def test_changed_driver_layout_still_blocks_an_unfamiliar_headset(self):
         profile = dict(self.profile, pcDriverSha256="0" * 64)
         headset = dict(profile, androidVersion="unknown")
         report = controller.inspect(FakeAdb(headset), profile, "17.18.0", self.server, str(self.home))
         self.assertFalse(report["compatible"])
-        self.assertEqual(len(report["problems"]), 2)
-        self.assertIn("reinstalling the hand components will not add support", report["problems"][0])
-        self.assertIn("unknown", report["problems"][1])
-        self.assertIn("currently checks version", report["problems"][1])
+        self.assertEqual(len(report["problems"]), 1)
+        self.assertIn("driver code/layout", report["problems"][0])
+        self.assertTrue(any("unknown" in warning and "layout" in warning for warning in report["warnings"]))
 
-    def test_reported_beta_version_is_refused_without_its_android_profile(self):
+    def test_unfamiliar_headset_version_can_reach_native_layout_validation(self):
         headset = dict(self.profile, androidVersion="1.34.23.0")
         report = controller.inspect(FakeAdb(headset), self.profile, "17.18.0", self.server, str(self.home))
-        self.assertFalse(report["compatible"])
+        self.assertTrue(report["compatible"])
         self.assertTrue(report["componentsReady"])
-        self.assertEqual(len(report["problems"]), 1)
-        self.assertIn("1.34.23.0", report["problems"][0])
-        self.assertIn("1.34.22.0", report["problems"][0])
-        self.assertIn("Reinstalling the hand components does not change", report["problems"][0])
+        self.assertEqual(report["problems"], [])
+        self.assertTrue(any("1.34.23.0" in warning and "layout" in warning for warning in report["warnings"]))
+        self.assertFalse(report["runtimeValidated"])
 
     def test_individually_inspected_pc_profiles_are_admitted_independently_of_android(self):
         checked = controller.load_profile()
@@ -383,22 +394,20 @@ class HybridTests(unittest.TestCase):
         ]
         self.assertEqual(checked["additionalPcDriverSha256s"], inspected_hashes)
         for driver_hash in inspected_hashes:
-            for android_version, expected_compatible in ((checked["androidVersion"], True),
-                                                         ("1.34.23.0", False), ("1.34.25.0", False)):
+            for android_version in (checked["androidVersion"], "1.34.23.0", "1.34.25.0"):
                 with self.subTest(driver_hash=driver_hash, android_version=android_version):
                     adb = FakeAdb(dict(self.profile, androidVersion=android_version))
                     with patch.object(controller.hashlib, "sha256", return_value=SimpleNamespace(hexdigest=lambda: driver_hash)):
                         report = controller.inspect(adb, self.profile, "17.18.0", self.server, str(self.home))
-                    self.assertEqual(report["compatible"], expected_compatible)
+                    self.assertTrue(report["compatible"])
                     self.assertTrue(report["componentsReady"])
                     self.assertEqual(report["pcDriverSha256"], driver_hash)
                     self.assertFalse(report["runtimeValidated"])
-                    self.assertEqual(len(report["problems"]), 0 if expected_compatible else 1)
-                    if not expected_compatible:
-                        self.assertIn("headset Virtual Desktop version", report["problems"][0])
+                    self.assertEqual(report["problems"], [])
+                    self.assertEqual(bool(report["warnings"]), android_version != checked["androidVersion"])
                     self.assertTrue(all(call[0] == "shell" for call in adb.calls))
 
-    def test_additional_driver_admission_requires_the_complete_hash(self):
+    def test_approximate_hash_without_a_matching_layout_is_not_admitted(self):
         for unknown_hash in ("70698c13", "70698c13cf40e5a21ea0ad241874ffb8ba2f400c2ab7ace7ad4605fc8c77ddd9",
                              "9fa2b700", "9fa2b70005d4e0aea02a891ae48a5caa0314d0f30e1190001d7ea979ec10d5c0"):
             with self.subTest(unknown_hash=unknown_hash):
@@ -406,8 +415,68 @@ class HybridTests(unittest.TestCase):
                     report = controller.inspect(FakeAdb(self.profile), self.profile, "17.18.0", self.server, str(self.home))
                 self.assertFalse(report["compatible"])
                 self.assertEqual(len(report["problems"]), 1)
-                self.assertIn("Streamer driver has no validated hand profile", report["problems"][0])
+                self.assertIn("driver code/layout", report["problems"][0])
 
+    def test_unknown_driver_with_proven_layout_is_a_preflight_warning(self):
+        proof = dict(self.fixture_driver_proof(self.home / self.profile["pcDriverRelativePath"], self.profile),
+                     driverHash="b" * 64, knownHash=False, compatible=True, approvedLayoutMatched=True)
+        with patch.object(controller, "inspect_driver", return_value=proof):
+            report = controller.inspect(FakeAdb(self.profile), self.profile, "17.18.0", self.server, str(self.home))
+        self.assertTrue(report["compatible"])
+        self.assertEqual(report["pcDriverSha256"], "b" * 64)
+        self.assertFalse(report["runtimeValidated"])
+        self.assertTrue(any("matching code/layout fingerprint" in warning for warning in report["warnings"]))
+
+    def test_malformed_pe_is_not_admitted_as_a_compatible_driver(self):
+        with patch.object(controller, "inspect_driver", side_effect=controller.DriverLayoutError("Truncated PE")):
+            report = controller.inspect(FakeAdb(self.profile), self.profile, "17.18.0", self.server, str(self.home))
+        self.assertFalse(report["compatible"])
+        self.assertIn("could not be verified", report["problems"][0])
+
+    def test_runtime_proof_is_refreshed_and_requires_unknown_android_metadata(self):
+        for version, metadata in ((self.profile["androidVersion"], False), ("1.34.99.0", True)):
+            original = json.dumps(self.profile, sort_keys=True)
+            result = controller.runtime_profile(self.profile, version, str(self.home))
+            self.assertEqual(result["monoLayout"]["requireResultMetadata"], metadata)
+            self.assertEqual(result["pcImageIdentity"], {"fixture": "read-only layout identity"})
+            self.assertEqual(json.dumps(self.profile, sort_keys=True), original)
+            self.assertIsNot(result["monoLayout"], self.profile["monoLayout"])
+
+    def test_runtime_recheck_refuses_changed_or_unreadable_layout_before_supervision(self):
+        with patch.object(controller, "inspect_driver", return_value={"compatible": False}):
+            with self.assertRaisesRegex(controller.CompatibilityError, "changed before startup"):
+                controller.runtime_profile(self.profile, self.profile["androidVersion"], str(self.home))
+        with patch.object(controller, "inspect_driver", side_effect=controller.DriverLayoutError("Cannot read image")):
+            with self.assertRaisesRegex(controller.CompatibilityError, "could not be verified"):
+                controller.runtime_profile(self.profile, self.profile["androidVersion"], str(self.home))
+
+    def test_android_layout_requirement_is_refreshed_after_slow_setup(self):
+        supervisor, events, adb, _ = self.make_supervisor()
+        adb.profile = dict(self.profile, androidVersion="1.34.99.0")
+        original = json.dumps(self.profile, sort_keys=True)
+        supervisor._refresh_android_layout_requirement()
+        self.assertTrue(supervisor.profile["monoLayout"]["requireResultMetadata"])
+        self.assertEqual(json.dumps(self.profile, sort_keys=True), original)
+        self.assertEqual(events, [])
+
+    def test_stronger_android_layout_requirement_is_never_downgraded(self):
+        supervisor, events, _, _ = self.make_supervisor()
+        supervisor.profile = dict(self.profile, monoLayout=dict(self.profile["monoLayout"], requireResultMetadata=True))
+        supervisor._refresh_android_layout_requirement()
+        self.assertTrue(supervisor.profile["monoLayout"]["requireResultMetadata"])
+        self.assertEqual(events, [])
+
+    def test_unreadable_or_detached_android_process_blocks_adapter_work(self):
+        supervisor, events, adb, _ = self.make_supervisor()
+        adb.run = lambda *_args, **_kwargs: "Unable to read package"
+        with self.assertRaisesRegex(controller.CompatibilityError, "app identity changed"):
+            supervisor._refresh_android_layout_requirement()
+        self.assertEqual(events, [])
+        supervisor, events, _, _ = self.make_supervisor()
+        supervisor.detached = True
+        with self.assertRaisesRegex(RuntimeError, "disconnected"):
+            supervisor._refresh_android_layout_requirement()
+        self.assertEqual(events, [])
     def test_missing_driver_has_install_guidance_without_an_unsupported_profile_claim(self):
         (self.home / self.profile["pcDriverRelativePath"]).unlink()
         report = controller.inspect(FakeAdb(self.profile), self.profile, "17.18.0", self.server, str(self.home))
@@ -606,7 +675,7 @@ class HybridTests(unittest.TestCase):
         supervisor.adapters = [("steamvr-skeleton", adapter)]
         supervisor.active_scripts.add(id(adapter))
         records = []
-        with patch.object(controller, "inspect", return_value={"compatible": True}), patch.object(controller, "Supervisor", return_value=supervisor), patch.object(controller, "start_stop_watchers"), patch.object(controller.signal, "signal"), patch.object(supervisor, "start", side_effect=RuntimeError("original readiness timeout")), patch.object(adapter, "deactivate", side_effect=RuntimeError("script has been destroyed")), patch.object(controller, "emit", lambda event, **values: records.append((event, values))):
+        with patch.object(controller, "inspect", return_value={"compatible": True, "androidVersion": self.profile["androidVersion"]}), patch.object(controller, "runtime_profile", return_value=self.profile), patch.object(controller, "Supervisor", return_value=supervisor), patch.object(controller, "start_stop_watchers"), patch.object(controller.signal, "signal"), patch.object(supervisor, "start", side_effect=RuntimeError("original readiness timeout")), patch.object(adapter, "deactivate", side_effect=RuntimeError("script has been destroyed")), patch.object(controller, "emit", lambda event, **values: records.append((event, values))):
             code = controller.main(["--target", "serial", "--adb", "fixture",
                                     "--stop-file", str(self.home / "new-stop")])
         self.assertEqual(code, 5)

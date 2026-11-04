@@ -1,7 +1,7 @@
 """Supervise opt-in Virtual Desktop hand/controller adapters.
 
-No dependencies are installed here. Unknown builds fail before attachment; the
-read-only --check path never starts a helper or loads an adapter.
+No dependencies are installed here. Startup requires code/layout validation;
+the read-only --check path never starts a helper or loads an adapter.
 """
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ import sys
 import threading
 import time
 import uuid
+
+from driver_layout import DriverLayoutError, inspect_driver
 
 HERE = Path(__file__).resolve().parent
 HELPER = "/data/local/tmp/qpro-hands-frida"
@@ -129,18 +131,23 @@ def inspect(adb: Adb, profile: dict, frida_version: str | None,
     """Reads facts only; callers decide whether a failed check prevents startup."""
     driver = Path(program_files or os.environ.get("ProgramFiles", r"C:\Program Files")) / profile["pcDriverRelativePath"]
     problems, warnings = [], []
-    driver_hash = hashlib.sha256(driver.read_bytes()).hexdigest() if driver.is_file() else None
-    # Additional fingerprints share the individually inspected PC layout. A
-    # known PC build never admits an unknown headset version or live ABI.
-    admitted_drivers = (profile["pcDriverSha256"], *profile.get("additionalPcDriverSha256s", []))
-    if driver_hash not in admitted_drivers:
-        if driver_hash is None:
-            problems.append("The Virtual Desktop Streamer hand driver was not found. Install or repair "
-                            "Virtual Desktop Streamer, reopen SteamVR through Virtual Desktop, then check again.")
-        else:
-            problems.append("This Virtual Desktop Streamer driver has no validated hand profile. "
-                            "Send the PC driver SHA-256 from this check to Qpro support; reinstalling "
-                            "the hand components will not add support for a different driver build.")
+    driver_hash = None
+    if not driver.is_file():
+        problems.append("The Virtual Desktop Streamer hand driver was not found. Install or repair "
+                        "Virtual Desktop Streamer, reopen SteamVR through Virtual Desktop, then check again.")
+    else:
+        try:
+            proof = inspect_driver(driver, profile)
+            driver_hash = proof["driverHash"]
+            if not proof["compatible"]:
+                problems.append("This Windows Streamer driver code/layout does not match a supported hand layout. "
+                                "Use Activity > Copy diagnostics for a layout review. Reinstalling hand "
+                                "components cannot repair a changed driver layout.")
+            elif not proof["knownHash"]:
+                warnings.append("This Windows Streamer build has a matching code/layout fingerprint. "
+                                "Its loaded image and native hand interfaces will still be checked at startup.")
+        except DriverLayoutError as error:
+            problems.append("The Windows Streamer driver code/layout could not be verified: " + str(error))
     component_problems = []
     if frida_version != profile["fridaVersion"]:
         component_problems.append("Install the experimental hand components first (matching Frida is missing).")
@@ -156,9 +163,8 @@ def inspect(adb: Adb, profile: dict, frida_version: str | None,
             problems.append("The headset Virtual Desktop version could not be read. Confirm that "
                             "Virtual Desktop is installed on the selected Quest and check again.")
         else:
-            problems.append("This headset Virtual Desktop version has no validated hand profile: "
-                            + version + ". This Qpro build currently checks version " + profile["androidVersion"]
-                            + ". Reinstalling the hand components does not change that compatibility limit.")
+            warnings.append("Virtual Desktop headset version " + version + " is unfamiliar. Startup will "
+                            "validate its managed hand-result layout and native caller before enabling hands.")
     required = ("hand_tracking_enabled", "multimodal_hands_and_controllers_enabled",
                 "simultaneous_hands_and_controllers_mode")
     # --getc reads the currently active headset user. --get instead reads the
@@ -190,6 +196,20 @@ def inspect(adb: Adb, profile: dict, frida_version: str | None,
             "settings": {key: values.get(key) for key in required}, "settingSource": "current-user",
             "experimental": True, "runtimeValidated": False, "problems": problems, "warnings": warnings,
             "componentsReady": not component_problems, "componentProblems": component_problems}
+
+
+def runtime_profile(profile: dict, android_version: str, program_files: str | None = None):
+    """Recheck the disk image and give adapters their read-only validation proof."""
+    driver = Path(program_files or os.environ.get("ProgramFiles", r"C:\Program Files")) / profile["pcDriverRelativePath"]
+    try:
+        proof = inspect_driver(driver, profile)
+    except DriverLayoutError as error:
+        raise CompatibilityError("The Windows Streamer driver code/layout could not be verified: " + str(error)) from error
+    if not proof["compatible"]:
+        raise CompatibilityError("The Windows Streamer driver code/layout changed before startup. "
+                                 "Reopen SteamVR through Virtual Desktop and check again.")
+    return dict(profile, pcImageIdentity=proof["liveImageIdentity"], monoLayout=dict(
+        profile["monoLayout"], requireResultMetadata=android_version != profile["androidVersion"]))
 
 
 class RootChannel:
@@ -323,6 +343,20 @@ class Supervisor:
         if self.detached:
             raise RuntimeError("A tracking process disconnected; stopping the hand adapters.")
 
+    def _refresh_android_layout_requirement(self):
+        # Component setup can take time. Bind the legacy exemption to another
+        # observation after attaching to this process, never to the earlier
+        # preflight alone. A detached process still stops all adapter work.
+        self.checkpoint("refresh-headset-hand-layout")
+        package = self.adb.run("shell", "dumpsys", "package", self.profile["androidPackage"])
+        match = re.search(r"\bversionName=([^\s]+)", package)
+        if match is None:
+            raise CompatibilityError("The headset app identity changed or could not be read before native validation.")
+        previous = self.profile["monoLayout"].get("requireResultMetadata", False)
+        required = previous or match.group(1) != self.profile["androidVersion"]
+        self.profile = dict(self.profile, monoLayout=dict(self.profile["monoLayout"], requireResultMetadata=required))
+        self._ensure_running()
+
     def start(self):
         self._ensure_running()
         self.checkpoint("open-root-channel", allowance=12)
@@ -387,6 +421,7 @@ class Supervisor:
         if len(pids) != 1 or not pids[0].isdigit():
             raise CompatibilityError("Open Virtual Desktop on the headset and connect to this PC.")
         quest = self._attach(device, int(pids[0]), "headset-virtual-desktop")
+        self._refresh_android_layout_requirement()
         pc = self._attach(self.frida.get_local_device(), "vrserver.exe", "steamvr")
         native = self._adapter(quest, "quest_controller_adapter.js", "controller-selection")
         hands = self._adapter(quest, "quest_hand_adapter.js", "optical-hands")
@@ -597,7 +632,8 @@ def main(argv=None):
         signal.signal(signal.SIGTERM, lambda *_: stop.set())
         start_stop_watchers(stop, args.stop_file,
                             sys.stdin if args.stop_file is None or args.parent_stdin else None)
-        supervisor = Supervisor(adb, frida, profile, args.frida_server, stop)
+        validated_profile = runtime_profile(profile, report["androidVersion"])
+        supervisor = Supervisor(adb, frida, validated_profile, args.frida_server, stop)
         run_supervised(supervisor)
         return 0
     except InterruptedError:

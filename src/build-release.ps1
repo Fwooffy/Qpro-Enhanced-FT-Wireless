@@ -213,7 +213,7 @@ $packagedManifest | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $package
 $controllerSourceFiles = @(
     'controller-input.ps1', 'controller-input\manage.py',
     'controller-input\dashboard_bindings.py', 'controller-input\vrchat_bindings.py',
-    'hybrid\controller.py', 'hybrid\compatibility.json',
+    'hybrid\controller.py', 'hybrid\driver_layout.py', 'hybrid\compatibility.json',
     'hybrid\quest_hand_adapter.js', 'hybrid\quest_controller_adapter.js',
     'hybrid\steamvr_skeleton_adapter.js',
     'controller-input\third_party\openvr\LICENSE'

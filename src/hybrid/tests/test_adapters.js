@@ -5,6 +5,7 @@ const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
 const assert = require('assert');
+const crypto = require('crypto');
 const directory = path.resolve(__dirname, '..');
 const profile = JSON.parse(fs.readFileSync(path.join(directory, 'compatibility.json')));
 for (const name of ['quest_hand_adapter.js', 'quest_controller_adapter.js', 'steamvr_skeleton_adapter.js']) {
@@ -27,7 +28,7 @@ console.log('Hybrid adapters: syntax, unsupported resolver and no preflight hook
 const memoryReads = {float: 0, byteArray: 0, byteArraySize: 0, module: 0, range: 0};
 class Address {
     constructor(value, memory = new Map()) { this.value = Number(value); this.memory = memory; }
-    add(amount) { return new Address(this.value + amount, this.memory); }
+    add(amount) { return new Address(this.value + Number(amount instanceof Address ? amount.value : amount), this.memory); }
     sub(amount) { return new Address(this.value - Number(amount instanceof Address ? amount.value : amount), this.memory); }
     compare(other) { return Math.sign(this.value - other.value); }
     equals(other) { return this.value === Number(other instanceof Address ? other.value : other); }
@@ -35,13 +36,20 @@ class Address {
     toUInt32() { return this.value >>> 0; }
     toInt32() { return this.value | 0; }
     toString() { return '0x' + this.value.toString(16); }
-    readPointer() { return new Address(this.memory.get(this.value) || 0, this.memory); }
+    readPointer() {
+        if (this.memory.privateAddresses?.has(this.value)) this.memory.onPrivateRead?.();
+        return new Address(this.memory.get(this.value) || 0, this.memory);
+    }
     writePointer(value) { this.memory.set(this.value, value.value); }
     readU8() { return Number(this.memory.get(this.value) || 0); }
     readU32() { return Number(this.memory.get(this.value) || 0); }
     readFloat() { memoryReads.float++; return this.memory.has(this.value) ? Number(this.memory.get(this.value)) : 0; }
     readByteArray(size) {
         memoryReads.byteArray++; memoryReads.byteArraySize = size;
+        for (const [base, bytes] of this.memory.imageRegions || []) {
+            if (this.value >= base && this.value + size <= base + bytes.length)
+                return bytes.slice(this.value - base, this.value - base + size).buffer;
+        }
         const buffer = new ArrayBuffer(size), view = new DataView(buffer);
         for (let offset = 0; offset < size; offset += 4) view.setFloat32(offset,
             this.memory.has(this.value + offset) ? Number(this.memory.get(this.value + offset)) : 0, true);
@@ -187,12 +195,44 @@ function pcFixture(options = {}) {
     const stats = new Array(45).fill(0); stats[43] = stats[44] = 0xffffffff;
     const observed = {attachments: [], detached: 0, flushed: 0, compiled: 0, disposed: 0, enabled: false,
         sideStates: [], tick: null, interval: null, immediate: [], timers: [], modulePresent: true, now: 1000,
-        sidePublications: 0, summarySnapshots: 0, diagnosticSnapshots: 0};
+        sidePublications: 0, summarySnapshots: 0, diagnosticSnapshots: 0, nativeLookups: 0, privateReads: 0};
     let allocation = 4000000;
     const functions = new Map(), driver = {base: address(base), size: options.driverSize ?? 1000000};
+    const sha256 = value => crypto.createHash('sha256').update(new Uint8Array(value)).digest('hex');
+    const headers = new Uint8Array(512), headerView = new DataView(headers.buffer);
+    headers.set([0x4d, 0x5a]); headerView.setUint32(60, 128, true);
+    headers.set([0x50, 0x45, 0, 0], 128); headerView.setUint16(132, 0x8664, true);
+    headerView.setUint16(152, 0x20b, true); headerView.setUint32(208, driver.size, true);
+    const codeView = new Uint8Array(24);
+    codeView.set([0x52, 0x53, 0x44, 0x53]);
+    for (let index = 4; index < 20; index++) codeView[index] = index;
+    new DataView(codeView.buffer).setUint32(20, 1, true);
+    const originalCode = Uint8Array.from({length: 64}, (_, index) => index * 3 & 255);
+    const loadedCode = originalCode.slice(), preferredBase = 0x180000000;
+    const relocations = options.relocation ? [16] : [];
+    if (options.relocation) {
+        new DataView(originalCode.buffer).setBigUint64(16, BigInt(preferredBase + 0x1234), true);
+        new DataView(loadedCode.buffer).setBigUint64(16, BigInt(base + 0x1234 + (options.corruptRelocation ? 1 : 0)), true);
+    }
+    const pcImageIdentity = {
+        sizeOfImage: driver.size, sizeOfHeaders: headers.length, headerSha256: sha256(headers.buffer),
+        preferredImageBase: '0x' + preferredBase.toString(16),
+        codeView: [{rva: 0x800, guid: Buffer.from(codeView.slice(4, 20)).toString('hex'), age: 1}],
+        executableSections: [{rva: 0x2000, size: originalCode.length, sha256: sha256(originalCode.buffer), relocations}]
+    };
+    if (options.headerMismatch) headers[40] ^= 1;
+    if (options.codeViewMismatch) codeView[4] ^= 1;
+    if (options.codeMismatch) loadedCode[0] ^= 1;
+    bytes.imageRegions = [[base, headers], [base + 0x800, codeView], [base + 0x2000, loadedCode]];
+    bytes.privateAddresses = new Set([base + layout.driverContext, base + layout.driverHost,
+        base + layout.skeletonOriginal, base + layout.controllerTable, base + layout.skeletonTable]);
+    bytes.onPrivateRead = () => observed.privateReads++;
+    const fixtureProfile = {...(options.profile || profile), pcImageIdentity};
+    if (options.missingIdentity) delete fixtureProfile.pcImageIdentity;
     function exportFunction(fn) {const pointer = address(allocation++); functions.set(pointer.value, fn); return pointer;}
     const sandbox = vm.createContext({
-        QPRO_PROFILE: options.profile || profile, rpc: {exports: {}}, ptr: address, uint64: value => new Handle(value),
+        QPRO_PROFILE: fixtureProfile, rpc: {exports: {}}, ptr: address, uint64: value => new Handle(value),
+        Checksum: {compute: (type, data) => {assert.equal(type, 'sha256'); return sha256(data);}},
         Date: {now: () => observed.now},
         Process: {arch: options.arch || 'x64', pointerSize: 8,
             getModuleByName: name => name === 'kernel32.dll' ? {getExportByName: () => address(37000)} : driver,
@@ -234,6 +274,7 @@ function pcFixture(options = {}) {
             return module;
         },
         NativeFunction: function(pointer, _result, _args, settings) {
+            observed.nativeLookups++;
             if (pointer.value === 31000) return () => address(22000);
             assert.equal(settings.scheduling, 'cooperative'); assert.equal(settings.traps, 'none');
             assert(functions.has(pointer.value), 'A native export must be resolved explicitly');
@@ -251,6 +292,28 @@ function pcFixture(options = {}) {
     vm.runInContext(fs.readFileSync(path.join(directory, 'steamvr_skeleton_adapter.js'), 'utf8'), sandbox);
     return {api: sandbox.rpc.exports, sandbox, observed, bytes, stats, write, layout, driver};
 }
+
+// Image proof is checked before resolving a private pointer or creating a
+// NativeFunction. Reused build IDs cannot hide changed executable bytes.
+for (const [options, message] of [
+    [{missingIdentity: true}, /image proof is missing or invalid/],
+    [{headerMismatch: true}, /differs from the checked file/],
+    [{codeViewMismatch: true}, /build identity changed/],
+    [{codeMismatch: true}, /driver code changed/],
+    [{relocation: true, corruptRelocation: true}, /driver code changed/]
+]) {
+    const refusal = pcFixture(options);
+    assert.throws(() => refusal.api.validate(), message);
+    assert.equal(refusal.observed.privateReads, 0, 'Unknown image cannot expose private profile addresses');
+    assert.equal(refusal.observed.nativeLookups, 0, 'Unknown image cannot call a vtable function');
+    assert.equal(refusal.observed.compiled, 0);
+    assert.equal(refusal.observed.attachments.length, 0);
+}
+const relocatedImage = pcFixture({relocation: true});
+assert.equal(relocatedImage.api.validate().compatible, true,
+    'A genuine DIR64 loader fixup is normalised before comparing executable code');
+assert.equal(relocatedImage.observed.attachments.length, 0);
+
 const pc = pcFixture();
 assert.equal(pc.api.validate().callbackBackend, 'native');
 assert.equal(pc.observed.attachments.length, 0, 'Compilation and layout checks happen before hooks');
