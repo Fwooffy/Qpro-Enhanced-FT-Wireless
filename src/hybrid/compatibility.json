@@ -10,6 +10,9 @@
     "70698c13cf40e5a21ea0ad241874ffb8ba2f400c2ab7ace7ad4605fc8c77ddd8",
     "9fa2b70005d4e0aea02a891ae48a5caa0314d0f30e1190001d7ea979ec10d5c1"
   ],
+  "pcDriverLayoutSha256s": [
+    "5bb554ce5e116c1251d94c89536468f9a1c589c7a83b6b76ea56b767c46170d4"
+  ],
   "pcLayout": {
     "controllerTable": 632640,
     "skeletonTable": 632744,
