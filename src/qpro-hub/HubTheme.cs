@@ -22,12 +22,26 @@ internal sealed partial class HubForm
         label.Text = "● " + text;
         label.ForeColor = status switch { StatusKind.Good => Good, StatusKind.Warning => Warning, _ => Bad };
     }
-    private static Label SectionTitle(string text, HubIcon icon = HubIcon.None) => new HubIconLabel { Text = text, Icon = icon, AutoSize = true, Font = new Font(UiFontName, 14F, FontStyle.Bold), ForeColor = Color.White, Margin = new Padding(0, 0, 0, 10), Tag = "responsive-info" };
-    private static Label SectionCaption(string text) => new() { Text = text, AutoSize = true, Font = new Font(UiFontName, 9F, FontStyle.Bold), ForeColor = Accent, Margin = new Padding(0, 10, 0, 5) };
+    private static Label SectionTitle(string text, HubIcon icon = HubIcon.None) => new HubIconLabel { Text = text, Icon = icon, AutoSize = true, Font = new Font(UiFontName, 12F, FontStyle.Bold), ForeColor = Color.White, Margin = new Padding(0, 0, 0, 12), Tag = "responsive-info" };
+    private static Label SectionCaption(string text) => new() { Text = text, AutoSize = true, Font = new Font(UiFontName, 8.5F, FontStyle.Bold), ForeColor = Muted, Margin = new Padding(0, 12, 0, 6) };
     private static Label Info(string text) => new() { Text = text, AutoSize = true, MaximumSize = new Size(395, 0), ForeColor = Muted, Margin = new Padding(0, 0, 0, 12), Tag = "responsive-info" };
     private static Label FieldLabel(string text) => new() { Text = text, AutoSize = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Muted, Margin = new Padding(0, 3, 12, 3) };
-    private static TableLayoutPanel Card() => new BufferedTableLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Dock = DockStyle.Top, BackColor = Panel, Padding = new Padding(20, 16, 20, 16), Margin = new Padding(0, 0, 0, 14) };
-    private static DarkButton PrimaryButton(string text) => SecondaryButton(text);
+    private static TableLayoutPanel Card() => new BufferedTableLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Dock = DockStyle.Top, BackColor = Panel, Padding = new Padding(20, 18, 20, 18), Margin = new Padding(0, 0, 0, 14) };
+    private static DarkButton PrimaryButton(string text)
+    {
+        var button = SecondaryButton(text);
+        button.VisualStyle = HubButtonStyle.Primary;
+        return button;
+    }
+    private static DarkButton DisclosureButton(string text)
+    {
+        var button = SecondaryButton(text);
+        button.VisualStyle = HubButtonStyle.Disclosure;
+        button.Enabled = true;
+        button.Padding = new Padding(24, 3, 6, 3);
+        button.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        return button;
+    }
     private static DarkButton SecondaryButton(string text)
     {
         var button = new DarkButton { Text = text, AutoSize = true, BackColor = Raised, ForeColor = Color.White, Padding = new Padding(12, 6, 12, 6), Margin = new Padding(0, 0, 8, 0), Enabled = false };
@@ -86,6 +100,35 @@ internal sealed partial class HubForm
         capture.AutoSize = false; train.AutoSize = false; capture.Height = 42; train.Height = 42; capture.Dock = DockStyle.Top; train.Dock = DockStyle.Top;
         capture.Margin = train.Margin = new Padding(0, 0, 0, 8);
         actions.Controls.Add(capture, 0, 0); actions.Controls.Add(train, 0, 1);
+        void UpdateTrainingChoice()
+        {
+            queue.Enabled = queue.Items.Count > 0;
+            train.Enabled = queue.SelectedItem is DatasetChoice { Dataset: { Completed: true, SampleCount: > 0 } };
+        }
+        queue.SelectedIndexChanged += (_, _) => UpdateTrainingChoice();
+        UpdateTrainingChoice();
+        var fittingActions = false;
+        void FitCaptureActions()
+        {
+            if (fittingActions) return;
+            var sideBySide = actions.ClientSize.Width >= (int)Math.Ceiling(520 * actions.DeviceDpi / 96F);
+            var columns = sideBySide ? 2 : 1;
+            if (actions.ColumnCount == columns) return;
+            fittingActions = true;
+            actions.SuspendLayout();
+            try
+            {
+                actions.ColumnCount = columns;
+                actions.RowCount = sideBySide ? 1 : 2;
+                actions.ColumnStyles.Clear(); actions.RowStyles.Clear();
+                for (var column = 0; column < columns; column++) actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F / columns));
+                for (var row = 0; row < actions.RowCount; row++) actions.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                actions.SetCellPosition(train, new TableLayoutPanelCellPosition(sideBySide ? 1 : 0, sideBySide ? 0 : 1));
+                capture.Margin = new Padding(0, 0, sideBySide ? 8 : 0, 8);
+            }
+            finally { actions.ResumeLayout(true); fittingActions = false; }
+        }
+        actions.SizeChanged += (_, _) => FitCaptureActions();
         card.Controls.Add(actions);
         var recordings = new BufferedTableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, Margin = Padding.Empty,
@@ -96,8 +139,9 @@ internal sealed partial class HubForm
         recorded.AccessibleName = "Saved recordings (including trained)";
         recordings.Controls.Add(recorded);
         delete.AutoSize = false; delete.Height = 42; delete.Dock = DockStyle.Top; delete.Margin = Padding.Empty;
+        if (delete is DarkButton deleteButton) deleteButton.VisualStyle = HubButtonStyle.Destructive;
         recordings.Controls.Add(delete);
-        var manage = SecondaryButton("Show saved recordings");
+        var manage = DisclosureButton("Show saved recordings");
         manage.Enabled = true;
         manage.Margin = new Padding(0, 4, 8, 4);
         manage.Click += (_, _) =>
@@ -181,20 +225,25 @@ internal sealed partial class HubForm
         box.BackColor = Inset;
         box.ForeColor = Color.White;
         box.DrawMode = DrawMode.OwnerDrawFixed;
-        box.ItemHeight = 38;
+        box.ItemHeight = 56;
         box.DrawItem += (_, e) =>
         {
             if (e.Index < 0) return;
             var selected = (e.State & DrawItemState.Selected) != 0;
             using var fill = new SolidBrush(selected ? Selected : Inset);
             e.Graphics.FillRectangle(fill, e.Bounds);
-            using var border = new Pen(selected ? Accent : Border, selected ? 2 : 1);
-            e.Graphics.DrawRectangle(border, e.Bounds.X + 1, e.Bounds.Y + 1, e.Bounds.Width - 3, e.Bounds.Height - 3);
+            using var border = new Pen(Color.FromArgb(100, Border));
+            e.Graphics.DrawLine(border, e.Bounds.X + 12, e.Bounds.Bottom - 1, e.Bounds.Right - 12, e.Bounds.Bottom - 1);
+            if (selected)
+            {
+                using var marker = new SolidBrush(Accent);
+                e.Graphics.FillRectangle(marker, e.Bounds.X, e.Bounds.Y, 3, e.Bounds.Height);
+            }
             var item = box.Items[e.Index]?.ToString() ?? string.Empty;
             var textLeft = e.Bounds.X + 10;
             if (box.Items[e.Index] is FileChoice { HasMoustacheIcon: true })
                 textLeft += DrawMoustacheIcon(e.Graphics, e.Bounds, textLeft);
-            TextRenderer.DrawText(e.Graphics, (selected ? "●  " : "○  ") + item, box.Font, new Rectangle(textLeft, e.Bounds.Y, e.Bounds.Right - textLeft - 8, e.Bounds.Height), box.Enabled ? Color.White : DisabledText, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            TextRenderer.DrawText(e.Graphics, item, box.Font, new Rectangle(textLeft, e.Bounds.Y + 4, e.Bounds.Right - textLeft - 12, e.Bounds.Height - 8), box.Enabled ? Color.White : DisabledText, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
             e.DrawFocusRectangle();
         };
     }
@@ -234,7 +283,7 @@ internal sealed partial class HubForm
             Tag = "workflow-tab",
         };
         button.Dock = DockStyle.Fill;
-        button.Margin = new Padding(2);
+        button.Margin = new Padding(0, 3, 0, 3);
         button.Height = 36;
         button.Enabled = true;
         return button;
@@ -249,6 +298,7 @@ internal sealed partial class HubForm
 
     private static void StyleRunButton(Button button, bool nextAction)
     {
+        nextAction &= button.Enabled;
         button.BackColor = Raised;
         button.ForeColor = button.Enabled ? Color.White : DisabledText;
         button.FlatAppearance.BorderColor = nextAction ? Accent : Border;

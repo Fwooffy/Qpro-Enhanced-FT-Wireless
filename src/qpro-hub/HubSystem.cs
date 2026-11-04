@@ -161,7 +161,7 @@ internal sealed partial class HubForm
             ready[1] && !_environment.SteamLinkSelected, next == 1 && !_environment.SteamLinkSelected);
         StyleSetupButton(_setupSteamLinkModuleButton, "Install Steam Link module",
             ready[1] && _environment.SteamLinkSelected, next == 1 && _environment.SteamLinkSelected);
-        _setupBridgeStatus.Text = ready[1] ? "● Complete" : next == 1 ? "● Next step" : "○ Waiting";
+        _setupBridgeStatus.Text = ready[1] ? "● Module files installed" : next == 1 ? "● Next step" : "○ Waiting";
         _setupBridgeStatus.ForeColor = ready[1] ? Good : next == 1 ? Warning : Muted;
         _uninstallBridgeButton.Enabled = !_setupActionRunning && (snapshot?.BridgeUninstallAvailable ?? BridgeUninstallAvailable());
         UpdateGazeSetupStatus();
@@ -184,6 +184,7 @@ internal sealed partial class HubForm
             latestEnvironmentExists ? $"Verify / repair ROCm {HubRocmRuntime.InstallVersion}" : $"Install ROCm {HubRocmRuntime.InstallVersion}";
         TrackSetupButtonBorder(_setupAmdButton, offeredVersionReady, AmdInstallEligible);
         SetSetupButtonsEnabled(true, snapshot?.RuntimeReady, snapshot?.BridgeUninstallAvailable);
+        UpdateSetupNavigationReadiness(ready[0], ready[1]);
     }
 
     private void RememberGazeCompatibility(HubCompatibilityReport report)
@@ -387,6 +388,7 @@ internal sealed partial class HubForm
         StyleRunButton(_start, _start.Enabled);
         StyleRunButton(_stop, (running || _starting) && !_stopping);
         UpdateControllerInputAvailabilityFromSnapshot(snapshot?.RuntimeReady);
+        UpdateStreamerUpdaterAvailability();
         SetSetupButtonsEnabled(true, snapshot?.RuntimeReady, snapshot?.BridgeUninstallAvailable);
     }
 

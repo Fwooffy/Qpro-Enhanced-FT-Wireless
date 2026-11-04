@@ -84,7 +84,7 @@ internal sealed partial class HubForm
             try
             {
                 _environment.ForgetUsbHeadset();
-                AppendLog("Remembered USB headset cleared. Connect the Quest Pro you want to use, then press Reconnect USB to verify and remember it.");
+                AppendLog("Remembered USB headset cleared. Connect the Quest Pro you want to use, then press Check USB connection to verify and remember it.");
                 await RefreshStatusAsync();
             }
             catch (Exception error) { ShowWorkflowFailure("Forget USB headset", error); }
@@ -183,7 +183,7 @@ internal sealed partial class HubForm
         _usbActions.Visible = !_environment.WirelessSelected;
         _connectionModeNote.Text = _environment.WirelessSelected
             ? "Enter the Quest's Wi-Fi address below. The headset and PC must be on the same trusted network."
-            : "Connect the rooted Quest by USB. In its debugging prompt, choose Always allow from this computer. Qpro remembers the verified USB headset; use Reconnect USB if the connection stalls.";
+            : "Connect the rooted Quest by USB. In its debugging prompt, choose Always allow from this computer. Qpro remembers the verified USB headset; use Check USB connection if the connection stalls.";
         _connectionModeNote.ForeColor = Muted;
     }
 
@@ -204,7 +204,7 @@ internal sealed partial class HubForm
                 AppendLog("[USB reconnect] " + detail);
             SetActionFeedback(connected ? "USB Quest Pro connected" : "USB connection needs attention",
                 _environment.UsbConnectionMessage,
-                connected ? "Continue setup or start tracking." : "Keep the Quest awake, check its debugging prompt and USB cable, then retry Reconnect USB.",
+                connected ? "Continue setup or start tracking." : "Keep the Quest awake, check its debugging prompt and USB cable, then retry Check USB connection.",
                 !connected);
         }
         catch (Exception error)

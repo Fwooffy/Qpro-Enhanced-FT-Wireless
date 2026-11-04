@@ -282,7 +282,8 @@ internal sealed partial class HubForm
         details.Controls.Add(_healthPupil);
         details.Controls.Add(_healthModuleDetail);
         details.Controls.Add(Info("Prediction includes preparation and GPU wait/readback. These timings overlap and cannot be added to estimate total latency."));
-        var disclosure = ActionButton("Show tracking details", (_, _) => { });
+        var disclosure = DisclosureButton("Show tracking details");
+        disclosure.Enabled = true;
         disclosure.Click += (_, _) =>
         {
             details.Visible = !details.Visible;

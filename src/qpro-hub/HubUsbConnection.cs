@@ -82,10 +82,10 @@ internal sealed class HubUsbConnection
             // reselection instead of immediately remembering the old headset
             // while the user is still changing cables.
             if (selectionRequired && !forceReconnect)
-                return Fail(generation, "USB headset selection cleared. Connect the intended Quest Pro, then press Reconnect USB to verify and remember it.");
+                return Fail(generation, "USB headset selection cleared. Connect the intended Quest Pro, then press Check USB connection to verify and remember it.");
             var devices = await ListDevicesAsync(generation, remembered, forceReconnect);
             if (devices is null)
-                return Fail(generation, "The ADB server did not finish its USB connection check. Keep the headset awake and use Reconnect USB to retry.");
+                return Fail(generation, "The ADB server did not finish its USB connection check. Keep the headset awake and use Check USB connection to retry.");
 
             UsbDevice? selected;
             if (remembered is not null)
@@ -137,7 +137,7 @@ internal sealed class HubUsbConnection
             }
             var shouldReconnect = !identityVerified && (forceReconnect || allowRecovery);
             if (selected.State == "offline" && !shouldReconnect)
-                return Fail(generation, "The remembered USB headset is offline. Keep it awake, then use Reconnect USB to refresh this connection.");
+                return Fail(generation, "The remembered USB headset is offline. Keep it awake, then use Check USB connection to refresh this connection.");
             if (shouldReconnect)
             {
                 // Do not use reconnect offline: ADB applies that command to all
@@ -203,7 +203,7 @@ internal sealed class HubUsbConnection
             _lastReconnectAttempt = null;
             _persistenceWarning = null;
             _failureDetail = null;
-            _statusReason = "USB headset selection cleared. Connect the intended Quest Pro, then press Reconnect USB to verify and remember it.";
+            _statusReason = "USB headset selection cleared. Connect the intended Quest Pro, then press Check USB connection to verify and remember it.";
             try
             {
                 EnsureNoLinks(_configPath);

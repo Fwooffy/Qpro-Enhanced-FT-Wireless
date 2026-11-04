@@ -102,6 +102,8 @@ internal sealed class DarkFeatureToggle : CheckBox
             Enabled ? Color.White : HubForm.DisabledText,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak |
             TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        using var divider = new Pen(Color.FromArgb(100, HubForm.Border));
+        e.Graphics.DrawLine(divider, Px(2), Height - 1, Width - Px(2), Height - 1);
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         using var outline = new Pen(Enabled && Checked ? HubForm.Accent : HubForm.Border);
         using var trackFill = new SolidBrush(Enabled && Checked ? HubForm.Selected : HubForm.Inset);
@@ -162,11 +164,7 @@ internal sealed class DarkProgressBar : Control
         {
             var blockWidth = Math.Max(36, inner.Width / 4);
             var x = inner.X + _animationOffset - blockWidth;
-            using var fill = new LinearGradientBrush(
-                new Rectangle(x, inner.Y, blockWidth, Math.Max(1, inner.Height)),
-                Color.FromArgb(120, HubForm.Accent),
-                HubForm.Accent,
-                LinearGradientMode.Horizontal);
+            using var fill = new SolidBrush(HubForm.Accent);
             e.Graphics.SetClip(inner);
             e.Graphics.FillRectangle(fill, x, inner.Y, blockWidth, inner.Height);
             e.Graphics.ResetClip();
@@ -183,6 +181,8 @@ internal sealed class DarkProgressBar : Control
     }
 }
 
+internal enum HubButtonStyle { Secondary, Primary, Disclosure, Destructive }
+
 internal sealed class DarkButton : Button
 {
     private bool _hovered;
@@ -191,6 +191,13 @@ internal sealed class DarkButton : Button
     private Color _outlineColor = Color.Empty;
     private int _outlineWidth = 1;
     private HubIcon _icon;
+    private HubButtonStyle _visualStyle;
+    [DefaultValue(HubButtonStyle.Secondary)]
+    public HubButtonStyle VisualStyle
+    {
+        get => _visualStyle;
+        set { if (_visualStyle == value) return; _visualStyle = value; Invalidate(); }
+    }
     [DefaultValue(HubIcon.None)]
     public HubIcon Icon { get => _icon; set { if (_icon == value) return; _icon = value; Invalidate(); } }
     [DefaultValue(false)]
@@ -242,13 +249,36 @@ internal sealed class DarkButton : Button
 
     protected override void OnPaint(PaintEventArgs e)
     {
-        e.Graphics.Clear(_pressed ? HubForm.Accent : _hovered && Enabled ? HubForm.RaisedHover : BackColor);
-        var borderColor = OutlineColor.IsEmpty ? (Emphasized ? HubForm.Accent : HubForm.Border) : OutlineColor;
+        var navigation = Equals(Tag, "workflow-tab");
+        var primary = !navigation && VisualStyle == HubButtonStyle.Primary;
+        var quiet = !navigation && VisualStyle == HubButtonStyle.Disclosure;
+        var destructive = !navigation && VisualStyle == HubButtonStyle.Destructive;
+        var fillColor = quiet ? Parent?.BackColor ?? BackColor : BackColor;
+        if (primary && Enabled) fillColor = _pressed ? Color.FromArgb(81, 181, 174)
+            : _hovered ? Color.FromArgb(138, 224, 215) : HubForm.Accent;
+        else if (_pressed) fillColor = HubForm.Accent;
+        else if (_hovered && Enabled) fillColor = destructive ? Color.FromArgb(68, 43, 47) : HubForm.RaisedHover;
+        e.Graphics.Clear(fillColor);
+        var borderColor = OutlineColor.IsEmpty ? (primary && Enabled || Emphasized ? HubForm.Accent
+            : destructive && Enabled ? HubForm.Bad : HubForm.Border) : OutlineColor;
         var borderWidth = Emphasized ? Math.Max(2, OutlineWidth) : OutlineWidth;
-        using var border = new Pen(borderColor, borderWidth);
-        var inset = borderWidth > 1 ? 1 : 0;
-        e.Graphics.DrawRectangle(border, inset, inset, Width - (inset * 2 + 1), Height - (inset * 2 + 1));
-        var textColor = !Enabled ? HubForm.DisabledText : _pressed ? HubForm.Background : Color.White;
+        if (navigation)
+        {
+            if (Emphasized)
+            {
+                using var marker = new SolidBrush(HubForm.Accent);
+                var markerWidth = Math.Max(2, (int)Math.Ceiling(3F * DeviceDpi / 96F));
+                e.Graphics.FillRectangle(marker, 0, 0, markerWidth, Height);
+            }
+        }
+        else if (!quiet)
+        {
+            using var border = new Pen(borderColor, borderWidth);
+            var inset = borderWidth > 1 ? 1 : 0;
+            e.Graphics.DrawRectangle(border, inset, inset, Width - (inset * 2 + 1), Height - (inset * 2 + 1));
+        }
+        var textColor = !Enabled ? HubForm.DisabledText : primary ? HubForm.Inset
+            : _pressed ? HubForm.Background : destructive ? HubForm.Bad : quiet ? HubForm.Accent : Color.White;
         var textBounds = ClientRectangle;
         var textAlignment = TextFormatFlags.HorizontalCenter;
         if (Icon != HubIcon.None)
@@ -262,11 +292,26 @@ internal sealed class DarkButton : Button
             textBounds = new Rectangle(textLeft, 0, Math.Max(0, Width - textLeft - (int)Math.Ceiling(10 * scale)), Height);
             textAlignment = TextFormatFlags.Left;
         }
+        else if (quiet)
+        {
+            var scale = DeviceDpi / 96F;
+            int Px(int value) => Math.Max(1, (int)Math.Ceiling(value * scale));
+            var x = Px(10); var y = Height / 2;
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using var chevron = new Pen(textColor, Math.Max(1F, 1.5F * scale));
+            var expanded = Text.StartsWith("Hide ", StringComparison.Ordinal);
+            if (expanded)
+                e.Graphics.DrawLines(chevron, [new Point(x - Px(4), y - Px(2)), new Point(x, y + Px(2)), new Point(x + Px(4), y - Px(2))]);
+            else
+                e.Graphics.DrawLines(chevron, [new Point(x - Px(2), y - Px(4)), new Point(x + Px(2), y), new Point(x - Px(2), y + Px(4))]);
+            textBounds = new Rectangle(Px(24), 0, Math.Max(0, Width - Px(30)), Height);
+            textAlignment = TextFormatFlags.Left;
+        }
         TextRenderer.DrawText(e.Graphics, Text, Font, textBounds, textColor,
             textAlignment | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         // User-painted buttons must draw their own keyboard focus cue.
         if (Focused && ShowFocusCues && Width > 12 && Height > 12)
-            ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -5, -5), textColor, BackColor);
+            ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -5, -5), textColor, fillColor);
     }
 }
 

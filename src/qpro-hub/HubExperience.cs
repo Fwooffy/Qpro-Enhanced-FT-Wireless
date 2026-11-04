@@ -61,12 +61,24 @@ internal sealed partial class HubForm
         var card = Card();
         card.ColumnCount = 1;
         card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        card.Controls.Add(_actionSeverity);
+        card.Padding = new Padding(20, 14, 20, 12);
+        var heading = new BufferedTableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 2,
+            Margin = new Padding(0, 0, 0, 8), Padding = Padding.Empty };
+        heading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        heading.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _actionTitle.Margin = Padding.Empty;
+        _actionSeverity.Anchor = AnchorStyles.Right;
+        _actionSeverity.Margin = new Padding(16, 0, 0, 0);
+        heading.Controls.Add(_actionTitle, 0, 0);
+        heading.Controls.Add(_actionSeverity, 1, 0);
+        card.Controls.Add(heading);
         _actionTitle.ForeColor = Good;
-        _actionDetail.ForeColor = Good;
-        card.Controls.Add(_actionTitle);
+        _actionDetail.ForeColor = Muted;
+        _actionDetail.Margin = new Padding(0, 0, 0, 6);
         card.Controls.Add(_actionDetail);
         _actionNext.ForeColor = Accent;
+        _actionNext.Margin = new Padding(0, 0, 0, 8);
         card.Controls.Add(_actionNext);
         var actions = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = true, Margin = Padding.Empty };
         actions.Controls.Add(ActionButton("Copy diagnostics", (_, _) => CopyDiagnostics()));
@@ -95,8 +107,14 @@ internal sealed partial class HubForm
         var actions = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = true, Margin = Padding.Empty };
         _checkCompatibility = ActionButton("Check headset compatibility", async (_, _) => await CheckHeadsetCompatibilityAsync());
         actions.Controls.Add(_checkCompatibility);
-        var disclosure = ActionButton("Show firmware details", (_, _) => { });
-        disclosure.Click += (_, _) => { details.Visible = !details.Visible; disclosure.Text = details.Visible ? "Hide firmware details" : "Show firmware details"; };
+        var disclosure = DisclosureButton("Show firmware details");
+        disclosure.Enabled = true;
+        disclosure.Click += (_, _) =>
+        {
+            details.Visible = !details.Visible;
+            disclosure.Text = details.Visible ? "Hide firmware details" : "Show firmware details";
+            disclosure.AccessibleName = disclosure.Text;
+        };
         actions.Controls.Add(disclosure);
         card.Controls.Add(actions);
         card.Controls.Add(details);
@@ -120,7 +138,7 @@ internal sealed partial class HubForm
         _actionSeverity.ForeColor = ActivityColor(level);
         _actionTitle.Text = title;
         _actionTitle.ForeColor = ActivityColor(level);
-        _actionDetail.ForeColor = ActivityColor(level);
+        _actionDetail.ForeColor = Muted;
         if (level == ActivitySeverity.Error && (detail.Contains("Traceback (", StringComparison.Ordinal)
             || detail.Contains("CategoryInfo", StringComparison.Ordinal)
             || detail.Contains("FullyQualifiedErrorId", StringComparison.Ordinal)))

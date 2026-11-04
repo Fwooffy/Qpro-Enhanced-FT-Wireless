@@ -222,26 +222,33 @@ internal static class LayoutTests
         Console.WriteLine("PASS scrollbar threshold converges without alternating text widths");
         thresholdContent.MaximumSize = originalMaximum;
         thresholdPage.AutoScrollMinSize = originalExtent;
-        form.Size = new Size(1140, 850);
-        tabs.Single(tab => tab.Text == "Facial tracking").PerformClick();
-        Pump(150);
-        foreach (var name in new[] { "connection and camera settings", "eye settings and guidance", "camera settings",
-            "cheek adjustment details", "hand and controller details" })
+        void CheckExpandedPage(string pageName, params string[] disclosures)
         {
-            all.OfType<Button>().Single(button => button.Text == "Show " + name).PerformClick();
+            form.Size = new Size(1140, 850);
+            tabs.Single(tab => tab.Text == pageName).PerformClick();
             Pump(150);
+            foreach (var name in disclosures)
+            {
+                var disclosure = all.OfType<Button>().Single(button => button.Text == "Show " + name);
+                if (!disclosure.Visible) throw new Exception("Expanded settings disclosure is not on " + pageName + ": " + name);
+                disclosure.PerformClick();
+                Pump(150);
+            }
+            var expandedPage = all.OfType<Panel>().Single(panel => Equals(panel.Tag, "hub-page") && panel.Visible);
+            SendMessage(form.Handle, 0x0231, 0, 0);
+            foreach (var width in new[] { 900, 780, 1000, 1140 })
+            {
+                form.Size = new Size(width, 850); Pump(150);
+            }
+            SendMessage(form.Handle, 0x0232, 0, 0);
+            Pump(300); layouts = 0; Pump(300);
+            if (layouts != 0 || expandedPage.HorizontalScroll.Visible)
+                throw new Exception("Expanded " + pageName + " settings failed to settle within the page.");
+            Console.WriteLine("PASS expanded " + pageName + " settings settle during simulated resizing");
         }
-        var expandedPage = all.OfType<Panel>().Single(panel => Equals(panel.Tag, "hub-page") && panel.Visible);
-        SendMessage(form.Handle, 0x0231, 0, 0);
-        foreach (var width in new[] { 900, 780, 1000, 1140 })
-        {
-            form.Size = new Size(width, 850); Pump(150);
-        }
-        SendMessage(form.Handle, 0x0232, 0, 0);
-        Pump(300); layouts = 0; Pump(300);
-        if (layouts != 0 || expandedPage.HorizontalScroll.Visible)
-            throw new Exception("Expanded live settings failed to settle within the page.");
-        Console.WriteLine("PASS expanded live settings settle during simulated resizing");
+        CheckExpandedPage("Facial tracking", "connection and camera settings", "eye settings and guidance",
+            "tongue settings", "cheek adjustment details");
+        CheckExpandedPage("Controllers", "hand and controller details");
 
         tabs.Single(tab => tab.Text == "Activity").PerformClick();
         Pump(150);
@@ -336,8 +343,18 @@ internal static class LayoutTests
         finally { statuses.Layout -= CountLayout; }
         SendMessage(form.Handle, 0x0231, 0, 0);
         form.Size = new Size(780, 620);
-        if (labels.Any(label => label.MaximumSize.Width != Math.Max(100,
-                statuses.ClientSize.Width / statuses.ColumnCount - label.Parent!.Margin.Horizontal)))
+        // Readiness cells align names in a shared first column and
+        // reserve the remaining width for the value, rather than flowing both
+        // controls across the full cell. Verify both widths before pumping.
+        const TextFormatFlags labelFlags = TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix;
+        var expectedLabelWidth = labels.Select(label => label.Parent!.Controls[0])
+            .Max(name => TextRenderer.MeasureText(name.Text, name.Font, Size.Empty, labelFlags).Width
+                + name.Margin.Horizontal);
+        if (labels.Any(label =>
+            label.Parent is not TableLayoutPanel { ColumnCount: 2 } cell
+            || cell.ColumnStyles[0].Width != expectedLabelWidth
+            || label.MaximumSize.Width != Math.Max(1, Math.Max(100,
+                statuses.ClientSize.Width / statuses.ColumnCount - cell.Margin.Horizontal) - expectedLabelWidth)))
             throw new Exception("Visible readiness stopped fitting synchronously during native sizing.");
         SendMessage(form.Handle, 0x0232, 0, 0);
         using (Batch()) for (var index = 0; index < labels.Length; index++) labels[index].Text = texts[index];

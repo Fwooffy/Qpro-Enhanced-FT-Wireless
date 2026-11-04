@@ -69,7 +69,7 @@ try
     var commandsBeforeForgottenPoll = fixture.Commands.Count;
     Check(!await reopened.ProbeAsync() && fixture.Commands.Count == commandsBeforeForgottenPoll && !File.Exists(path),
         "A normal status refresh immediately restored a forgotten selection.");
-    Check(reopened.StatusReason.Contains("press Reconnect USB", StringComparison.Ordinal),
+    Check(reopened.StatusReason.Contains("press Check USB connection", StringComparison.Ordinal),
         "Forget did not explain how to explicitly select the intended headset.");
     reopened.ClearVerification();
     Check(!await reopened.ProbeAsync() && fixture.Commands.Count == commandsBeforeForgottenPoll,

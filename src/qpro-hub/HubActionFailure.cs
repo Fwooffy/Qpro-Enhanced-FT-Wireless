@@ -92,7 +92,7 @@ internal sealed record HubActionFailure(string Title, string Detail, string Next
                 "Check the package, index and download error in Activity, then retry the same setup action. This result does not establish that your GPU is unsupported.");
         if (Matches(@"(?:device|headset|Quest).*(?:offline|not found|unavailable)|no devices/emulators found"))
             return new("The headset connection is unavailable", "ADB could not reach the selected headset. This does not mean its firmware or tracking model is incompatible.",
-                "Keep the headset awake. For USB, use Reconnect USB in First-time setup; for wireless, connect using the headset's current IP and port. Retry after it shows connected.");
+                "Keep the headset awake. For USB, use Check USB connection in First-time setup; for wireless, connect using the headset's current IP and port. Retry after it shows connected.");
         return new(action + " did not complete",
             "The action stopped before it could confirm success. The original error is in the Activity log below.",
             "Check the red error lines below. Copy diagnostics if you need help before retrying.");

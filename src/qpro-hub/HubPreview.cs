@@ -14,7 +14,8 @@ internal sealed partial class HubForm
     {
         if (!_previewOnly) throw new InvalidOperationException("Sample scenarios require preview mode.");
         if (scenario is not ("ready" or "unsupported" or "runtime-error" or "magisk" or
-            "hands-ready" or "hands-blocked" or "hands-unknown" or "hands-modes" or "health-live"))
+            "hands-ready" or "hands-blocked" or "hands-unknown" or "hands-modes" or "hands-swipe" or "hands-driver-unknown" or
+            "streamer-paused" or "health-live" or "setup-connect" or "setup-runtime" or "setup-module" or "setup-complete"))
             throw new ArgumentException("Unknown preview scenario: " + scenario);
         if (source is not ("VirtualDesktop" or "SteamLink"))
             throw new ArgumentException("Unknown preview source: " + source);
@@ -33,13 +34,18 @@ internal sealed partial class HubForm
         _eyeProfiles.Items.Add(new FileChoice("Prepared eye profile · sample", "preview-eye-profile.json"));
         _eyeProfiles.SelectedIndex = 0;
         _tongueModels.Items.Clear();
-        _tongueModels.Items.Add(new FileChoice("Developer tongue model · highly experimental · sample", "preview-gate.pt", "preview-direction.pt", true));
-        _tongueModels.Items.Add(new FileChoice("Mustachio · highly experimental · sample", "preview-mustachio-gate.pt", "preview-mustachio-direction.pt", true, true));
+        _tongueModels.Items.Add(new FileChoice("Developer tongue model · highly experimental · sample", Path.Combine(_root, "models", "qpro-stereo-tongue-v15-gate.pt"), Path.Combine(_root, "models", "qpro-stereo-tongue-v15-direction.pt"), true));
+        _tongueModels.Items.Add(new FileChoice("Mustachio · highly experimental · sample", Path.Combine(_root, "models", "qpro-stereo-tongue-v9-gate.pt"), Path.Combine(_root, "models", "qpro-stereo-tongue-v9-direction.pt"), true, true));
         _tongueModels.SelectedIndex = 0;
         _modelList.Items.Clear();
         foreach (var model in _tongueModels.Items) _modelList.Items.Add(model);
         _modelList.SelectedIndex = 0;
         _modelEmpty.Visible = false;
+        foreach (var queueStatus in new[] { _quickQueueStatus, _focusedQueueStatus, _fullQueueStatus })
+        {
+            queueStatus.Text = "Queue empty — record first · sample";
+            queueStatus.ForeColor = Muted;
+        }
         _gaze.Checked = _tongue.Checked = _pupil.Checked = false;
         _hybridHands.Checked = _controllerTouchpad.Checked = _eyebrowBoost.Checked = false;
         _individualCheekPuff.Checked = _individualCheekSuck.Checked = true;
@@ -51,6 +57,14 @@ internal sealed partial class HubForm
         _tongueModelNote.Text = "PREVIEW · SAMPLE DATA. " + DeveloperModelGuidance +
             " Stop tracking before changing models, then press Start tracking to load the selection.";
         _trackingSourceLiveNote.Text = _trackingSourceSetupNote.Text = $"Preview · sample data. Face tracking source: {sourceName}.";
+        bool updaterPaused = scenario == "streamer-paused";
+        PresentStreamerUpdater(new(
+            updaterPaused ? "PC Streamer updater paused · sample" : "PC Streamer updater available · sample",
+            "PREVIEW · SAMPLE DATA. Windows Streamer 1.34.25.0. " +
+                (updaterPaused ? "Companion's program-specific network block is active. Restore removes only this block."
+                    : "No Companion updater block is active. Pause affects only the verified Windows Updater.exe."),
+            CanPause: !updaterPaused, CanRestore: updaterPaused, IsPaused: updaterPaused,
+            StreamerVersion: "1.34.25.0", RequiresAdmin: true));
 
         var rawReport = PreviewCompatibilityJson(scenario != "unsupported", scenario == "magisk");
         if (!HubCompatibilityReport.TryParse(rawReport, out var report) || report is null)
@@ -105,6 +119,7 @@ internal sealed partial class HubForm
         }
         else if (scenario == "runtime-error")
         {
+            _start.Enabled = false;
             SetStatus(_runtimeStatus, StatusKind.Bad, "Setup failed · sample");
             _setupRuntimeStatus.Text = "Needs repair · sample";
             _setupRuntimeStatus.ForeColor = Bad;
@@ -126,12 +141,13 @@ internal sealed partial class HubForm
                     : "Choose the features you want on Facial tracking, then press Start tracking.");
         }
 
-        if (scenario is "hands-ready" or "hands-blocked" or "hands-modes")
+        if (scenario is "hands-ready" or "hands-blocked" or "hands-modes" or "hands-swipe" or "hands-driver-unknown")
         {
             // Exercise the same validated report parser used by a real check.
             // These fixtures intentionally never claim runtimeValidated.
-            bool passed = scenario != "hands-blocked";
-            if (scenario == "hands-modes") _controllerTouchpad.Checked = true;
+            bool passed = scenario is not ("hands-blocked" or "hands-driver-unknown");
+            if (scenario is "hands-modes" or "hands-swipe") _controllerTouchpad.Checked = true;
+            if (scenario == "hands-swipe") _touchpadMode.SelectedItem = "Swipe";
             var sampleCheck = "HANDS_CHECK " + JsonSerializer.Serialize(new
             {
                 compatible = passed, androidVersion = "1.34.22.0 · sample",
@@ -139,7 +155,9 @@ internal sealed partial class HubForm
                 settings = new { hand_tracking_enabled = "true", multimodal_hands_and_controllers_enabled = "true",
                     simultaneous_hands_and_controllers_mode = "1" },
                 settingSource = "current-user", experimental = true, runtimeValidated = false,
-                problems = passed ? Array.Empty<string>() : ["This Virtual Desktop version has no validated hand profile. Sample result."],
+                problems = passed ? Array.Empty<string>() : scenario == "hands-driver-unknown"
+                    ? ["This Virtual Desktop Streamer driver has no validated hand profile. Sample result."]
+                    : ["This headset Virtual Desktop version has no validated hand profile. Sample result."],
                 warnings = Array.Empty<string>(), componentsReady = true, componentProblems = Array.Empty<string>(),
             });
             if (!HubControllerFeedback.TryParseCheckLine(sampleCheck, out var sampleFeedback))
@@ -168,6 +186,7 @@ internal sealed partial class HubForm
                 : scenario == "unsupported"
                     ? "[Compatibility] Independent gaze engine not validated · sample.\n[Next step] Keep independent gaze off; other features are available.\n"
                     : "[PC runtime] Import and device checks passed · sample.\n[Next step] Select tracking features; optional headset features remain unverified.\n"), "12:00:00");
+        ApplySetupPreviewScenario(scenario);
     }
 
     private static string PreviewCompatibilityJson(bool supported, bool magisk = false)

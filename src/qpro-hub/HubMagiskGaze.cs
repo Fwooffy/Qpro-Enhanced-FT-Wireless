@@ -156,7 +156,7 @@ internal sealed partial class HubForm
             }
             if (!result.Completed || result.ExitCode != 0 || !HubMagiskGazeScan.TryParse(result.Output, out var modules))
             {
-                AppendLog("[Gaze method] WARNING: The optional Magisk module check did not complete. The last confirmed gaze method was kept. Reconnect USB or check headset compatibility to retry; other features can still be used.");
+                AppendLog("[Gaze method] WARNING: The optional Magisk module check did not complete. The last confirmed gaze method was kept. Use Check USB connection or check headset compatibility to retry; other features can still be used.");
                 return;
             }
             if (!_magiskGazeState.AcceptScan(generation.Value, target, wireless, modules.Count > 0)) return;
