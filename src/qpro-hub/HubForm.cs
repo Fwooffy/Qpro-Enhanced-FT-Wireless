@@ -261,6 +261,7 @@ internal sealed partial class HubForm : Form
         InitializeTrackingHealthUi();
         InitializeTrackingSourceUi();
         InitializeControllerInputUi();
+        InitializeStreamerUpdaterUi();
         if (rememberLaunch && !previewOnly)
             Shown += (_, _) =>
             {
