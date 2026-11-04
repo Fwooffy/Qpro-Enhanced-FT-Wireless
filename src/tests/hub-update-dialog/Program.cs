@@ -80,6 +80,7 @@ internal static class UpdateDialogTests
         var restored = JsonSerializer.Deserialize(JsonSerializer.Serialize(saved, preferenceType), preferenceType)!;
         Check((bool)preferenceType.GetProperty("IncludePrereleases")!.GetValue(restored)!, "Saved prerelease preference was lost.");
         CheckInstallPaths();
+        CheckTrackingReview(stable, current);
 
         var requests = new List<Request>();
         Task<HubUpdateCheck> Recheck(bool include, CancellationToken token)
@@ -281,5 +282,53 @@ internal static class UpdateDialogTests
             Check(Directory.Exists(runtime), "Junction cleanup changed its target.");
             Directory.Delete(runtime); Directory.Delete(target); Directory.Delete(root);
         }
+    }
+
+    static void CheckTrackingReview(HubUpdateCheck release, Version current)
+    {
+        string root = Path.Combine(AppContext.BaseDirectory, "qpro-update-review-" + Guid.NewGuid().ToString("N"));
+        using var form = new HubForm(root, rememberLaunch: false, previewOnly: true);
+        var reviewBusy = typeof(HubForm).GetMethod("HubUpdateReviewIsBusy", Private)!;
+        var installBlock = typeof(HubForm).GetMethod("HubUpdateBlockReason", BindingFlags.Static | BindingFlags.NonPublic)!;
+        void Set(string field, bool value) => typeof(HubForm).GetField(field, Private)!.SetValue(form, value);
+        bool ReviewBusy() => (bool)reviewBusy.Invoke(form, null)!;
+
+        foreach (string transition in new[] { "_starting", "_stopping" })
+        {
+            Set(transition, true);
+            Check(!ReviewBusy(), "Tracking startup or stopping prevented release-note review.");
+            Set(transition, false);
+        }
+
+        // Borrow a process handle only to represent a live worker. No tracking
+        // helper, headset command, preference write or update request is run.
+        using var worker = Process.GetCurrentProcess();
+        var workers = Field<List<Process>>(form, "_trackingProcesses");
+        workers.Add(worker);
+        try
+        {
+            Check(!ReviewBusy(), "A live tracking worker prevented release-note review.");
+            string? blocked = (string?)installBlock.Invoke(null, [true, true, root]);
+            int stageCalls = 0;
+            using var dialog = new HubUpdateDialog(release, current, true, blocked, (_, _, _) =>
+            {
+                stageCalls++;
+                throw new Exception("Release-note review must not stage an update during tracking.");
+            });
+            dialog.Show(); Pump();
+            Check(Field<RichTextBox>(dialog, "_notes").Text == release.Release!.Notes,
+                "Tracking-time review did not retain the release notes.");
+            var install = Field<DarkButton>(dialog, "_install");
+            Check(!install.Enabled && Field<Label>(dialog, "_status").Text.StartsWith("Stop tracking"),
+                "Tracking-time review did not preserve the installation block.");
+            install.PerformClick(); Pump();
+            Check(stageCalls == 0 && !worker.HasExited && workers.Count == 1 && !File.Exists(Field<string>(form, "_stopFile")),
+                "Reviewing release notes staged an update or interrupted tracking.");
+            dialog.Close();
+        }
+        finally { workers.Remove(worker); }
+
+        Set("_closingInProgress", true);
+        Check(ReviewBusy(), "A closing Hub could still open the release-review dialog.");
     }
 }

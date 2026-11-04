@@ -120,8 +120,7 @@ internal sealed partial class HubForm
             reviewCheck = UpdateCheckForReview();
         }
         if (IsDisposed || Disposing || reviewCheck is null) return;
-        // An update never interrupts a capture, download or tracking recovery.
-        if (UtilityActionIsBusy()) return;
+        if (HubUpdateReviewIsBusy()) return;
         var live = _starting || _stopping || LiveTrackingRunning;
         var packaged = HubUpdateRunner.IsPackagedInstall(_root);
         string? blocked = HubUpdateBlockReason(live, packaged, _root);
@@ -209,6 +208,10 @@ internal sealed partial class HubForm
         catch (Exception error)
         { if (!IsDisposed) AppendLog("[Updates] Temporary update files could not be removed: " + error.Message); }
     }
+
+    // Release notes are safe to review during tracking. Setup, capture and
+    // recovery still block the dialog; the install block below prevents staging.
+    private bool HubUpdateReviewIsBusy() => UtilityActionIsBusy(allowTrackingTransition: true);
 
     private static string? HubUpdateBlockReason(bool live, bool packaged, string runtimeRoot)
     {
