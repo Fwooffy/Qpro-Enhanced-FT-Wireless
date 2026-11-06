@@ -91,6 +91,14 @@ validation path. The adapter must prove the actual Mono hand-result fields,
 types, sizes and layout before using its result offsets. Native query callers,
 controller roles, bone data, freshness, leases and confirmed cleanup remain
 required. Frida/components/settings errors retain their existing failure rules.
+
+Quest app **1.34.25.0** has also been inspected offline. Its seven-field hand
+result includes byte validity flags and two aim values after the finger payloads.
+The metadata guard validates that complete shape, preserving the aim data and
+existing finger offsets. This fixes the earlier guard's incorrect four-field
+assumption for this app; it does not bypass native validation or claim a live
+test of the 1.34.25 PC/headset pair.
+
 No arbitrary driver or APK is accepted, and the manual read-only check does not
 claim these runtime checks passed. See `COMPATIBILITY_FACTS.md` for historical
 inspections and the current policy boundary.
