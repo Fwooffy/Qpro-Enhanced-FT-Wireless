@@ -244,7 +244,7 @@ function validateHandResultLayout(handType, fingerType) {
         fieldsOf = api('mono_class_get_fields', 'pointer', ['pointer', 'pointer']);
     } catch (_) { failure('required Mono layout metadata is unavailable'); }
     const header = Process.pointerSize * 2;
-    const sizes = new Map(), active = new Set();
+    const sizes = new Map(), alignments = new Map(), active = new Set();
     const budget = {fields: 0};
     const primitiveSizes = new Map([[2, 1], [3, 2], [4, 1], [5, 1], [6, 2], [7, 2],
         [8, 4], [9, 4], [10, 8], [11, 8], [12, 4], [13, 8]]);
@@ -261,7 +261,7 @@ function validateHandResultLayout(handType, fingerType) {
             || !Number.isSafeInteger(align) || align < 1 || align > 16 || (align & (align - 1)) !== 0
             || instanceSize(klass) !== size + header)
             failure('value size, alignment or boxed field offsets are inconsistent');
-        sizes.set(key, size); return size;
+        sizes.set(key, size); alignments.set(key, align); return size;
     }
     function instanceFields(klass) {
         const result = [], iterator = Memory.alloc(Process.pointerSize);
@@ -301,26 +301,69 @@ function validateHandResultLayout(handType, fingerType) {
         } finally { active.delete(key); }
         return size;
     }
+    function exactFields(fields, specification, label) {
+        if (fields.length !== specification.length) failure(label + ' has unsupported instance fields');
+        const expected = new Map(specification.map(([offset, kind, klass]) => [offset, {kind, klass}]));
+        const found = new Map();
+        for (const entry of fields) {
+            const match = expected.get(entry.offset);
+            if (!match || typeKind(entry.type) !== match.kind
+                || (match.klass && !typeClass(entry.type).equals(match.klass)))
+                failure(label + ' field types, identities or offsets do not match');
+            expected.delete(entry.offset); found.set(entry.offset, entry);
+        }
+        if (expected.size) failure(label + ' fields are missing or ambiguous');
+        return found;
+    }
+    function exactValue(klass, size, alignment, label) {
+        if (classSize(klass) !== size || alignments.get(klass.toString()) !== alignment)
+            failure(label + ' size or alignment does not match');
+    }
     const handClass = requirePointer(typeClass(handType), 'Managed hand-result class is missing');
     const fingerClass = requirePointer(typeClass(fingerType), 'Managed finger-result class is missing');
     const fingerBytes = plainValue(fingerClass), handBytes = classSize(handClass);
     const [left, right] = fingerOffsets;
     if (!Number.isSafeInteger(left) || !Number.isSafeInteger(right) || left < 2
-        || right !== left + fingerBytes || handBytes !== right + fingerBytes)
+        || right !== left + fingerBytes)
         failure('the two finger payload spans do not match the adapter');
     const fields = instanceFields(handClass);
-    if (fields.length !== 4) failure('the hand result does not contain exactly four instance fields');
-    const expected = new Map([[0, 'valid'], [1, 'valid'], [left, 'finger'], [right, 'finger']]);
-    for (const entry of fields) {
-        const kind = expected.get(entry.offset);
-        if (!kind) failure('a hand-result field overlaps or moves an expected payload');
-        if (kind === 'valid' ? typeKind(entry.type) !== 2
-            : typeKind(entry.type) !== 17 || !typeClass(entry.type).equals(fingerClass))
-            failure('validity bytes or finger value identities do not match');
-        expected.delete(entry.offset);
+    let layout;
+    if (handBytes === right + fingerBytes && fields.length === 4) {
+        exactFields(fields, [[0, 2], [1, 2], [left, 17, fingerClass], [right, 17, fingerClass]], 'hand result');
+        layout = 'boolean-prefix';
+    } else {
+        // The independently inspected 1.34.25 result has byte validity flags,
+        // explicit Int16 padding and two aim records after the unchanged finger
+        // prefix. Prove that exact nested layout; an arbitrary larger buffer is
+        // not sufficient. The adapter still writes only validity/finger spans.
+        if (left !== 4 || right !== 1460) failure('the inspected finger offsets do not match');
+        exactValue(handClass, 3032, 8, 'hand result');
+        exactValue(fingerClass, 1456, 1, 'finger array');
+        const modern = exactFields(fields, [[0, 5], [1, 5], [2, 6], [left, 17, fingerClass],
+            [right, 17, fingerClass], [2920, 17], [2976, 17]], 'hand result');
+        const fixedField = exactFields(instanceFields(fingerClass), [[0, 17]], 'finger array').get(0);
+        const fixedClass = requirePointer(typeClass(fixedField.type), 'Fixed finger buffer class is missing');
+        exactValue(fixedClass, 1456, 1, 'fixed finger buffer');
+        exactFields(instanceFields(fixedClass), [[0, 5]], 'fixed finger buffer');
+
+        const aimClass = requirePointer(typeClass(modern.get(2920).type), 'Hand aim class is missing');
+        if (!typeClass(modern.get(2976).type).equals(aimClass)) failure('the two aim value identities differ');
+        plainValue(aimClass);
+        exactValue(aimClass, 56, 8, 'hand aim');
+        const aim = exactFields(instanceFields(aimClass), [[0, 10], [8, 17],
+            [36, 12], [40, 12], [44, 12], [48, 12]], 'hand aim');
+        const poseClass = requirePointer(typeClass(aim.get(8).type), 'Hand aim pose class is missing');
+        exactValue(poseClass, 28, 4, 'hand aim pose');
+        const pose = exactFields(instanceFields(poseClass), [[0, 17], [16, 17]], 'hand aim pose');
+        const rotation = requirePointer(typeClass(pose.get(0).type), 'Hand aim rotation class is missing');
+        const position = requirePointer(typeClass(pose.get(16).type), 'Hand aim position class is missing');
+        exactValue(rotation, 16, 4, 'hand aim rotation');
+        exactValue(position, 12, 4, 'hand aim position');
+        exactFields(instanceFields(rotation), [[0, 12], [4, 12], [8, 12], [12, 12]], 'hand aim rotation');
+        exactFields(instanceFields(position), [[0, 12], [4, 12], [8, 12]], 'hand aim position');
+        layout = 'byte-flags-pose-aim';
     }
-    if (expected.size) failure('hand-result fields are missing or ambiguous');
-    return {source: 'mono-metadata', handBytes, fingerBytes, fingerOffsets: [left, right]};
+    return {source: 'mono-metadata', layout, handBytes, fingerBytes, fingerOffsets: [left, right]};
 }
 function setterMethod(klass, name) {
     const found = method(klass, name, 1), types = signatureTypes(found);

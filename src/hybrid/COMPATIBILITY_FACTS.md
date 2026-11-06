@@ -139,3 +139,33 @@ The manual compatibility command remains read-only preflight and reports
 establish live finger accuracy, performance, successful restoration on another
 firmware, or compatibility with all future Virtual Desktop releases. The dated
 PC-only inspections above still do not prove a new PC/headset pair works live.
+
+## Quest app 1.34.25 metadata inspection
+
+On 2026-11-06, the installed Quest app reported `1.34.25.0`. Its base APK was
+copied read-only and inspected offline; its SHA-256 is
+`a2b86757964202885e0d80706c6a27cf39a1d77168d3325ebbe73df9cb2987ab`.
+No APK, extracted proprietary assembly or recording is included in this project.
+
+The extracted `OpenXRHMD.GetHandState` signature takes a by-reference
+`VirtualDesktop.Interfaces.HandsState` value. That value contains seven instance
+fields: two byte validity flags, a signed 16-bit padding field, two finger values
+and two aim values. The finger payloads remain 1,456 bytes at offsets 4 and 1,460.
+Each 56-byte, 8-byte-aligned aim value follows at offset 2,920 or 2,976; the full
+hand value is 3,032 bytes with alignment 8. Aim values contain a 64-bit status,
+a pose made from a quaternion/vector and four scalar floats.
+
+The first unfamiliar-version guard assumed four fields with Boolean flags and
+no aim tail. It would reject this actual app layout despite the matching finger
+prefix. The corrected guard proves the exact seven-field shape, primitive types,
+nested value layouts, alignments, padding and total size before using those same
+finger offsets. The existing four-field validation path remains available.
+An arbitrary extra tail or matching version string is insufficient. Aim data is
+left untouched; the adapter does not add tail reads or writes.
+
+The installed Windows Streamer also reported `1.34.25.0` and retained the exact
+reviewed `9fa2b700...` driver above. Its signature and approved code/layout family
+were checked again. These offline results identify and fix a metadata rejection;
+they do not establish actual native-hook execution, optical finger accuracy,
+performance or successful restoration for the 1.34.25 PC/headset pair. The user
+requested offline checks only, so live guarded startup remains unverified.
