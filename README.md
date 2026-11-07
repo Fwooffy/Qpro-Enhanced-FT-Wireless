@@ -8,7 +8,7 @@ A Windows companion for face tracking and optional controller features on a **ro
 
 Qpro Companion is the new public name. The executable, existing app/data folders and `.qptonguemodel` format retain their QproFaceTracking names for update compatibility.
 
-The **latest [VRCFaceTracking from Steam](https://store.steampowered.com/app/3329480/VRCFaceTracking/)** is required. If you used a Qpro version before V2.0, record and train a new tongue model. Working V2.0 or newer models can be exported and imported into V3.0.0 through **Model manager**.
+The **latest [VRCFaceTracking from Steam](https://store.steampowered.com/app/3329480/VRCFaceTracking/)** is required. If you used a Qpro version before V2.0, record and train a new tongue model. Working V2.0 or newer models can be exported and imported into V3.0.1 through **Model manager**.
 
 **Developer tongue model** is the default and includes the accepted v15 visibility improvement from new clean-shaven recordings while preserving the original direction outputs. **Mustachio** is a separate, opt-in, highly experimental v9 extension trained with one bearded and moustached wearer. Broader wearer and facial-hair validation remain pending. Quick refinement and Focused training extend the model selected under **Facial tracking > Lower-face tracking > Tongue model**, including Mustachio; copies made from an experimental model retain that status. Full dataset trains a new personal model.
 
@@ -18,7 +18,7 @@ An active independent-gaze Magisk module supplies gaze itself. When detected, th
 
 The Hub checks for newer stable releases at startup and shows a popup when one is available. Choose **Update** to download and verify it, then **Restart and update** to apply it in the existing folder. Your personal/imported models, recordings, saved settings and connection choices stay in place. Tracking does not restart automatically.
 
-Automatic checks can be turned off in the update window. **Include prereleases** is off by default. The updater only offers newer versions; another V3.0.0 test build needs a manual download.
+Automatic checks can be turned off in the update window. **Include prereleases** is off by default. The updater only offers newer versions; another V3.0.1 test build needs a manual download.
 
 Use **Updates > Components** separately for installed Qpro modules and private Python/PyTorch/ROCm runtimes. Stop tracking or training first. To replace the Qpro VRCFaceTracking module, close VRCFaceTracking and wait for its module helper to exit.
 
