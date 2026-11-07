@@ -16,6 +16,12 @@ internal static class UpdateDialogTests
         Application.SetColorMode(SystemColorMode.Dark);
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
         Control.CheckForIllegalCrossThreadCalls = true;
+        if (args.Length == 3 && args[0] == "--markdown-preview")
+        {
+            try { CheckMarkdownPreview(args[1], args[2]); }
+            catch (Exception error) { Console.Error.WriteLine(error); Environment.ExitCode = 1; }
+            return;
+        }
         if (args.Contains("--branding-only", StringComparer.Ordinal))
         {
             try { CheckBranding(args.FirstOrDefault(value => !value.StartsWith("--", StringComparison.Ordinal))); }
@@ -24,7 +30,8 @@ internal static class UpdateDialogTests
         }
         // A real message loop supplies the same synchronization context as the
         // app's modal update dialog. DoEvents alone creates a temporary loop.
-        using var loop = new Form { ShowInTaskbar = false, Opacity = 0, Size = new Size(1, 1) };
+        using var loop = new Form { ShowInTaskbar = false, Opacity = 0, Size = new Size(1, 1),
+            StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000) };
         loop.Shown += (_, _) =>
         {
             try { Run(args.FirstOrDefault()); }
@@ -67,6 +74,50 @@ internal static class UpdateDialogTests
         protected override bool ShowWithoutActivation => true;
     }
 
+    static void CheckMarkdownPreview(string markdownPath, string output)
+    {
+        string markdown = File.ReadAllText(markdownPath);
+        HubUpdateCheck sample = Available("3.0.1", prerelease: true);
+        var check = sample with { Release = sample.Release! with { Notes = markdown } };
+        int stageCalls = 0;
+        using var dialog = new HubUpdateDialog(check, new Version(3, 0, 0), true, null, (_, _, _) =>
+        {
+            stageCalls++;
+            throw new Exception("A release-note preview must not download an update.");
+        }, includePrereleases: true, checkUpdates: (_, _) => Task.FromResult(check));
+        using var surface = new OffscreenPreviewForm
+        {
+            Text = "Qpro Companion updates · Markdown preview", BackColor = dialog.BackColor,
+            ForeColor = dialog.ForeColor, Font = dialog.Font,
+            AutoScaleMode = dialog.AutoScaleMode, AutoScaleDimensions = dialog.AutoScaleDimensions,
+            Size = dialog.Size, MinimumSize = dialog.MinimumSize, StartPosition = FormStartPosition.Manual,
+            Location = new Point(-32000, -32000), ShowInTaskbar = false,
+        };
+        surface.Controls.Add(dialog.Controls[0]);
+        surface.Show(); Pump();
+        var notes = Field<RichTextBox>(dialog, "_notes");
+        Check(notes is HubReleaseNotesView && notes.ReadOnly, "The update dialog did not use the read-only formatted view.");
+        Check(notes.Text.Contains("Before you install") && notes.Text.Contains("rooted Quest Pro"), "The real changelog lost its installation guidance.");
+        Check(!notes.Text.Contains("## Before you install") && !notes.Text.Contains("**rooted Quest Pro**"), "The real changelog still shows Markdown markers.");
+        int heading = notes.Text.IndexOf("Before you install", StringComparison.Ordinal);
+        notes.Select(heading, "Before you install".Length);
+        using (Font? selected = notes.SelectionFont)
+            Check(selected is not null && selected.Bold && selected.Size > notes.Font.Size, "The release heading has no heading style.");
+        notes.Select(0, 0); notes.ScrollToCaret(); Pump();
+        Screenshot(surface, output, "updater-markdown-top.png");
+        int fixes = notes.Text.IndexOf("Bug fixes", StringComparison.Ordinal);
+        Check(fixes >= 0, "The real changelog lost its bug fixes.");
+        notes.Select(fixes, 0); notes.ScrollToCaret(); Pump();
+        Screenshot(surface, output, "updater-markdown-fixes.png");
+        surface.Size = new Size(620, 560); Pump();
+        Check(notes.Width > 300 && notes.Height >= 60, "The narrow update window clips the formatted notes.");
+        notes.Select(0, 0); notes.ScrollToCaret(); Pump();
+        Screenshot(surface, output, "updater-markdown-compact.png");
+        Check(stageCalls == 0 && check.Release!.Notes == markdown, "Formatting changed the release or started an update.");
+        surface.Close();
+        Console.WriteLine($"PASS: {_passed} real-changelog integration/preview checks. Offscreen preview only; no network, downloads or settings changes.");
+    }
+
     static void Run(string? output)
     {
         var current = new Version(3, 0, 0);
@@ -95,7 +146,7 @@ internal static class UpdateDialogTests
         using (var dialog = new HubUpdateDialog(stable, current, true, null, (_, _, token) =>
             { stageCalls++; stageToken = token; return stage.Task; }, checkUpdates: Recheck))
         {
-            dialog.Show(); Pump();
+            ShowForTest(dialog);
             var prereleases = Field<CheckBox>(dialog, "_prereleases");
             var install = Field<DarkButton>(dialog, "_install");
             var retry = Field<DarkButton>(dialog, "_checkAgain");
@@ -154,7 +205,7 @@ internal static class UpdateDialogTests
             (_, _, _) => Task.FromException<HubStagedUpdate>(new IOException("Sample download failure")),
             includePrereleases: true, checkUpdates: Recheck))
         {
-            failure.Show(); Pump(); Field<DarkButton>(failure, "_install").PerformClick(); Pump();
+            ShowForTest(failure); Field<DarkButton>(failure, "_install").PerformClick(); Pump();
             Check(Field<Label>(failure, "_status").ForeColor == HubForm.Bad && Field<CheckBox>(failure, "_prereleases").Enabled,
                 "A failed download did not restore channel controls.");
             failure.Close();
@@ -164,7 +215,7 @@ internal static class UpdateDialogTests
             (_, _, _) => Task.FromResult(new HubStagedUpdate("sample.exe", "sample-runtime", "sample-old", 0, [])),
             includePrereleases: true, checkUpdates: Recheck))
         {
-            ready.Show(); Pump(); Field<DarkButton>(ready, "_install").PerformClick(); Pump();
+            ShowForTest(ready); Field<DarkButton>(ready, "_install").PerformClick(); Pump();
             Check(ready.StagedUpdate is not null && !Field<CheckBox>(ready, "_prereleases").Enabled && ready.DialogResult != DialogResult.OK,
                 "Staging changed channels or applied the update without a second click.");
             Field<DarkButton>(ready, "_install").PerformClick(); Pump();
@@ -178,7 +229,7 @@ internal static class UpdateDialogTests
             attempts.Add((progress, result)); return result.Task;
         }, checkUpdates: Recheck))
         {
-            progressRetry.Show(); Pump(); Field<DarkButton>(progressRetry, "_install").PerformClick(); Pump();
+            ShowForTest(progressRetry); Field<DarkButton>(progressRetry, "_install").PerformClick(); Pump();
             attempts[0].Result.SetException(new IOException("Sample first-attempt failure")); Pump();
             Field<DarkButton>(progressRetry, "_install").PerformClick(); Pump();
             Check(attempts.Count == 2, "A failed download could not be retried.");
@@ -194,7 +245,7 @@ internal static class UpdateDialogTests
         {
             using var pending = new HubUpdateDialog(stable, current, true, null,
                 (_, _, _) => throw new Exception("Unexpected download"), checkUpdates: Recheck);
-            pending.Show(); Pump(); Field<CheckBox>(pending, "_prereleases").Checked = true; Pump();
+            ShowForTest(pending); Field<CheckBox>(pending, "_prereleases").Checked = true; Pump();
             Request request = requests[^1];
             if (directDispose) pending.Dispose(); else pending.Close();
             Check(request.Token.IsCancellationRequested, "Closing/disposal left a channel check running.");
@@ -205,7 +256,7 @@ internal static class UpdateDialogTests
         using (var blocked = new HubUpdateDialog(beta, current, false, "Sample: stop tracking before updating.",
             (_, _, _) => throw new Exception("Blocked dialog downloaded an update"), includePrereleases: true, checkUpdates: Recheck))
         {
-            blocked.Show(); Pump();
+            ShowForTest(blocked);
             Check(!Field<DarkButton>(blocked, "_install").Enabled, "A blocked app could install an update.");
             Field<DarkButton>(blocked, "_checkAgain").PerformClick(); Pump(); requests[^1].Result.SetResult(beta); Pump();
             Check(!Field<DarkButton>(blocked, "_install").Enabled, "A channel refresh cleared the installation block.");
@@ -229,6 +280,13 @@ internal static class UpdateDialogTests
     {
         var watch = Stopwatch.StartNew();
         while (watch.ElapsedMilliseconds < 150) { Application.DoEvents(); Thread.Sleep(5); }
+    }
+    static void ShowForTest(Form form)
+    {
+        form.StartPosition = FormStartPosition.Manual;
+        form.Location = new Point(-32000, -32000);
+        form.ShowInTaskbar = false;
+        form.Show(); Pump();
     }
     static void Screenshot(Form dialog, string? output, string name)
     {
@@ -315,7 +373,7 @@ internal static class UpdateDialogTests
                 stageCalls++;
                 throw new Exception("Release-note review must not stage an update during tracking.");
             });
-            dialog.Show(); Pump();
+            ShowForTest(dialog);
             Check(Field<RichTextBox>(dialog, "_notes").Text == release.Release!.Notes,
                 "Tracking-time review did not retain the release notes.");
             var install = Field<DarkButton>(dialog, "_install");

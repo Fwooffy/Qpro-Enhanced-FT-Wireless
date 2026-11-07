@@ -1,6 +1,6 @@
 namespace QproFaceTracking.Hub;
 
-// Release notes are shown as plain text; remote content is never rendered as HTML.
+// Markdown is formatted as native rich text; release content never loads a web page.
 internal sealed class HubUpdateDialog : Form
 {
     private readonly DarkButton _install = Button("Update");
@@ -13,7 +13,7 @@ internal sealed class HubUpdateDialog : Form
     private readonly Label _title = new() { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 10), UseMnemonic = false };
     private readonly Label _summary = new() { Dock = DockStyle.Fill, AutoSize = true, ForeColor = HubForm.Muted,
         Margin = new Padding(0, 0, 0, 14), UseMnemonic = false };
-    private readonly RichTextBox _notes = new() { ReadOnly = true, DetectUrls = false, Dock = DockStyle.Fill,
+    private readonly HubReleaseNotesView _notes = new() { ReadOnly = true, DetectUrls = false, Dock = DockStyle.Fill,
         BackColor = HubForm.Inset, ForeColor = Color.WhiteSmoke, BorderStyle = BorderStyle.None, ScrollBars = RichTextBoxScrollBars.Vertical };
     private readonly Label _status = new() { AutoSize = true, Dock = DockStyle.Fill, ForeColor = HubForm.Muted, Margin = new Padding(0, 8, 0, 8) };
     private readonly ProgressBar _progress = new() { Dock = DockStyle.Fill, Height = 12, Visible = false, Maximum = 1000 };
@@ -94,12 +94,8 @@ internal sealed class HubUpdateDialog : Form
         _install.Click += async (_, _) => await InstallAsync();
         _components.Click += (_, _) => { OpenComponents = true; Close(); };
         _close.Click += (_, _) => { if (_download is not null) { _closeAfterCancel = true; _download.Cancel(); } else Close(); };
-        _github.Click += (_, _) =>
-        {
-            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
-                (Release?.ReleasePage ?? HubUpdateReleaseParser.ReleasesPage).AbsoluteUri) { UseShellExecute = true }); }
-            catch (Exception error) { _status.Text = "Could not open GitHub: " + error.Message; }
-        };
+        _github.Click += (_, _) => OpenReleaseLink(Release?.ReleasePage ?? HubUpdateReleaseParser.ReleasesPage);
+        _notes.OpenLinkRequested += OpenReleaseLink;
         FormClosing += (_, e) =>
         {
             if (_download is null) return;
@@ -115,6 +111,17 @@ internal sealed class HubUpdateDialog : Form
         };
     }
 
+    private void OpenReleaseLink(Uri uri)
+    {
+        if (IsDisposed || Disposing || uri.Scheme is not ("https" or "http")) return;
+        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true }); }
+        catch (Exception error)
+        {
+            _status.ForeColor = HubForm.Bad;
+            _status.Text = "Could not open the release link: " + error.Message;
+        }
+    }
+
     private void ShowCheck(HubUpdateCheck check)
     {
         Check = check;
@@ -124,9 +131,9 @@ internal sealed class HubUpdateDialog : Form
         _summary.Text = $"Installed: V{_current}\n{check.Message}\n\n" +
             "Update this app in the same folder. Your models, recordings, options and connections are kept. The Hub restarts to apply it. " +
             "Use Components for Qpro module, runtime and GPU library updates.";
-        _notes.Text = check.Release?.Notes ?? (IncludePrereleases
+        _notes.SetMarkdown(check.Release?.Notes ?? (IncludePrereleases
             ? "Stable releases and prereleases are checked on the project's public GitHub releases page."
-            : "Stable updates are checked on the project's public GitHub releases page.");
+            : "Stable updates are checked on the project's public GitHub releases page."));
         _status.Text = _blocked ?? (check.State == HubUpdateCheckState.Available
             ? check.Release?.IsPrerelease == true ? "This is a test build and may contain bugs. Click Update to download it."
                 : "Ready to download. Nothing is installed until you click Update."
@@ -158,7 +165,7 @@ internal sealed class HubUpdateDialog : Form
         Check = null;
         _status.ForeColor = HubForm.Muted;
         _status.Text = includePrereleases ? "Checking stable releases and prereleases…" : "Checking stable releases…";
-        _notes.Text = "Checking GitHub for the selected release channel…";
+        _notes.SetMarkdown("Checking GitHub for the selected release channel…");
         UpdateActions();
         try
         {

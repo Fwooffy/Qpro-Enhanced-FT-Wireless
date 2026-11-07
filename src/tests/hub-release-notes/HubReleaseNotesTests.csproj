@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <StartupObject>ReleaseNotesTests</StartupObject>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../qpro-hub/HubReleaseNotesMarkdown.cs" Link="HubReleaseNotesMarkdown.cs" />
+    <Compile Include="../../qpro-hub/HubReleaseNotesView.cs" Link="HubReleaseNotesView.cs" />
+  </ItemGroup>
+</Project>
