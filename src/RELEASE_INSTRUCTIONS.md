@@ -1,10 +1,10 @@
-# Qpro Companion V3.0.1: text setup guide
+# Qpro Companion V3.0.2: text setup guide
 
 > **Before you start: you need a rooted Meta Quest Pro and the latest VRCFaceTracking from Steam.** This program will not work on an unrooted headset or a different Quest model. If you still need to root your Quest Pro, use [Fwooffy and glorpette's beginner root guide](https://github.com/glorpette/quest-guides/blob/main/root_guide_by_fwooffy.md). Check that your headset's exact software version is supported by [Singularity](https://github.com/Lumince/singularity) before following a root guide. [Install or update VRCFaceTracking through Steam](https://store.steampowered.com/app/3329480/VRCFaceTracking/) before using Qpro's module.
 >
-> **If you used a QproFaceTracking version before V2.0, record and train your tongue model again.** Do not import a pre-V2.0 model and assume it will work correctly. Working V2.0 or newer models can be exported and imported into V3.0.1. **Developer tongue model** is the default starting point on a fresh setup; updates keep personal/imported selections and replace retired bundled choices with the new developer model.
+> **If you used a QproFaceTracking version before V2.0, record and train your tongue model again.** Do not import a pre-V2.0 model and assume it will work correctly. Working V2.0 or newer models can be exported and imported into V3.0.2. **Developer tongue model** is the default starting point on a fresh setup; updates keep personal/imported selections and replace retired bundled choices with the new developer model.
 
-> **This guide covers the V3.0.1 release candidate.** Virtual Desktop and Steam Link are available under **Streaming app**. The two bundled tongue choices are **Developer tongue model** and **Mustachio**. Mustachio remains highly experimental; start with Developer tongue model or your existing working model.
+> **This guide covers the V3.0.2 release candidate.** Virtual Desktop and Steam Link are available under **Streaming app**. The two bundled tongue choices are **Developer tongue model** and **Mustachio**. Mustachio remains highly experimental; start with Developer tongue model or your existing working model.
 
 Start with the headset's eye tracking, then set up the PC software. **Qpro Companion** is the app; its main window is called the **Hub**. **ADB** is the connection it uses to talk to your Quest. The **Qpro module** sends tracking results to VRCFaceTracking.
 
@@ -28,17 +28,19 @@ Before switching from the Magisk gaze method to the Hub's method, disable the ga
 
 ## 2. Download and open the Hub
 
-1. Download **QproCompanion.V3.0.1.zip** when it is published on [this project's Releases page](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases), or use the supplied release candidate ZIP. Choose the named Qpro Companion ZIP, **not** GitHub's “Source code” ZIP.
+1. Download **QproCompanion.V3.0.2.zip** when it is published on [this project's Releases page](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases), or use the supplied release candidate ZIP. Choose the named Qpro Companion ZIP, **not** GitHub's “Source code” ZIP.
 2. In Windows File Explorer, right-click the ZIP and choose **Extract All**. Open the extracted folder. Keep `QproFaceTracking.exe`, `Helpers`, and `QproRuntime` together.
 3. Double-click `QproFaceTracking.exe`. It opens on **First-time setup** the first time. You can return to that page from the menu on the left.
 
-Qpro Companion is the new public name. `QproFaceTracking.exe`, existing app/data folder names and the `.qptonguemodel` format are retained for update compatibility. The legacy-named **QproFaceTracking.V3.0.1.zip** asset contains the same bytes for older updaters; use either ZIP, not both.
+Qpro Companion is the new public name. `QproFaceTracking.exe`, existing app/data folder names and the `.qptonguemodel` format are retained for update compatibility. The legacy-named **QproFaceTracking.V3.0.2.zip** asset contains the same bytes for older updaters; use either ZIP, not both.
 
 You need an internet connection and several gigabytes of free space for setup. The ZIP already includes ADB. The Hub installs the Python parts it needs, so you do not have to install ADB or Python separately for this program.
 
 ### Keep the Hub updated
 
 The Hub checks GitHub for a newer stable release when it opens. When one is available, an **Update available** popup offers **View update** to read its details or **Later** to dismiss the notice. It waits until the Hub is active and idle, and appears once per release in that Hub session. Neither choice downloads or installs anything. After **Later**, the top-right **Update available** link still opens the checked release; a temporary network failure does not discard those details. Click **Check updates** for a manual check. You can turn off **Check automatically when the Hub opens** in the update window.
+
+From V3.0.2, release notes in the update window display headings, bold and italic text, lists and code formatting. HTTP/HTTPS links open only when clicked. Reading the notes does not download or install an update. Older Hub versions continue to show plain notes until upgraded.
 
 Enable **Include prereleases** in the update window to check published test releases too. This is off by default and your choice is remembered. Updates still require clicking **Update** and **Restart and update**. A release must have a newer three-part version number, such as `v3.0.1`; a different test ZIP with the same version is not offered as an update. Suffix tags such as `v3.0.1-beta.1` require a manual download.
 
@@ -218,7 +220,7 @@ See [the experimental controller guide](https://github.com/Fwooffy/Qpro-Enhanced
 
 ## 6. Tongue training and refinement
 
-**Train if you have no personal model or used a version before V2.0. You can import a working V2.0 or newer model into V3.0.1.** The two bundled choices are **Developer tongue model** and **Mustachio**; personal imports and refinements remain available.
+**Train if you have no personal model or used a version before V2.0. You can import a working V2.0 or newer model into V3.0.2.** The two bundled choices are **Developer tongue model** and **Mustachio**; personal imports and refinements remain available.
 
 1. For Quick refinement or Focused training, choose the model to extend under **Facial tracking > Lower-face tracking > Tongue model**. **Developer tongue model** is the default on a fresh setup; updates keep personal/imported selections and replace retired bundled choices with the new developer model. Full dataset makes a new personal model instead.
 2. Open **Personalize**. Under **Capture and train**, start with **Quick refinement**, or press **Show focused and full captures** for the other modes.

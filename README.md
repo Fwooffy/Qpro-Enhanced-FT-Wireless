@@ -2,9 +2,9 @@
 
 A Windows companion for face tracking and optional controller features on a **rooted Meta Quest Pro**, based on [Qpro-Enhanced-FT by n0tmast3r](https://github.com/n0tmast3r/Qpro-Enhanced-FT). It supports Virtual Desktop or Steam Link, USB or wireless ADB, tongue tracking with NVIDIA CUDA, experimental AMD ROCm support, and CPU fallback. Optional features include independent eye gaze, relative pupil animation, individual cheek puff and suck, eyebrow sensitivity, and experimental Virtual Desktop hands + controllers and Touch Pro thumb-rest input.
 
-**V3.0.0 is released.** See the [published release notes](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases/tag/v3.0.0) for the changes and experimental features.
+**V3.0.1 is released.** See the [published release notes](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases/tag/v3.0.1) for the changes and experimental features.
 
-**[Download QproCompanion.V3.0.0.zip](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases/download/v3.0.0/QproCompanion.V3.0.0.zip).** Extract it before opening `QproFaceTracking.exe`. GitHub's automatic source ZIP does not include the Hub executable or packaged models and tools.
+**[Download QproCompanion.V3.0.1.zip](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases/download/v3.0.1/QproCompanion.V3.0.1.zip).** Extract it before opening `QproFaceTracking.exe`. GitHub's automatic source ZIP does not include the Hub executable or packaged models and tools.
 
 Qpro Companion is the new public name. The executable, existing app/data folders and `.qptonguemodel` format retain their QproFaceTracking names for update compatibility.
 
