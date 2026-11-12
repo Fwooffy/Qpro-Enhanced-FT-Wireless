@@ -122,6 +122,18 @@ using (var fixture = new ModuleFixture(false))
     observation = Read(await fixture.Latest());
     Check(observation.Snapshot!.NativeState == "untimed" && View(observation, fixture.Time).State == "untimed",
         "VD native availability is explicit and never mistaken for timestamped freshness");
+    var nativeView = View(observation, fixture.Time);
+    Check(nativeView.Summary == "Module active: Virtual Desktop source available" &&
+        nativeView.Detail.Contains("no producer timestamp") && nativeView.Detail.Contains("normal for Virtual Desktop") &&
+        nativeView.Detail.Contains("VRCFaceTracking's preview"), "VD's timestamp limitation explains the practical expression check without reporting a fault");
+    var inactive = observation with { Snapshot = observation.Snapshot with { State = "inactive" } };
+    Check(View(inactive, fixture.Time).Detail.Contains("Start tracking in VRCFaceTracking"), "Inactive module has a concrete VRCFT next step");
+    var failed = observation with { Snapshot = observation.Snapshot with { State = "failed" } };
+    Check(View(failed, fixture.Time).State == "failed" && View(failed, fixture.Time).Detail.Contains("VRCFaceTracking's log"),
+        "Module initialization failure directs to the owning app log");
+    var waiting = observation with { Snapshot = observation.Snapshot with { NativeState = "unavailable" } };
+    Check(View(waiting, fixture.Time).State == "waiting" && View(waiting, fixture.Time).Detail.Contains("Connect Virtual Desktop"),
+        "Waiting native VD output directs to the selected source");
 }
 using (var fixture = new ModuleFixture(true))
 {
@@ -139,6 +151,10 @@ using (var fixture = new ModuleFixture(true))
 }
 Check(View(HubModuleHeartbeatObservation.Missing("old module"), 1000).State == "unverified",
     "backwards-compatible module without heartbeat is unverified, not receiving");
+var missingView = View(HubModuleHeartbeatObservation.Missing("Heartbeat unavailable."), 1000);
+Check(missingView.Summary == "Module output: waiting for module status" &&
+    missingView.Detail.Contains("restart VRCFaceTracking") && missingView.Detail.Contains("Companion tracking can stay off"),
+    "Missing heartbeat explains module start/restart without requiring Companion camera overrides");
 Check(Read("{}", false).Snapshot is null && Read(new string('x', 17000)).Snapshot is null,
     "missing and oversize records fail closed");
 using (var process = Process.GetCurrentProcess())

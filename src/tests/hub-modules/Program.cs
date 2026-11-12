@@ -88,8 +88,10 @@ var vd = InstallFixture(customLibs, supplied, false);
 Check(HubModuleInstallation.HasInstalled(customLibs) && HubModuleInstallation.IsCurrent(customLibs, supplied, false) &&
     !HubModuleInstallation.IsCurrent(customLibs, supplied, true), "Own source metadata and supplied DLL parity did not determine readiness.");
 var current = HubModuleInstallation.Inspect(customLibs, supplied, false);
-Check(current.State == HubModuleState.Current && current.Detail.Contains(vd) && current.Status.Contains("input unchecked") &&
-    current.Detail.Contains("live expressions"), "Disk readiness was mistaken for a proven live connection.");
+Check(current.State == HubModuleState.Current && current.Detail.Contains(vd) && current.Status == "Installed · files verified" &&
+    current.Detail.Contains("not live expressions"), "Disk readiness was mistaken for a proven live connection.");
+Check(current.Detail.Contains("Activity > Tracking health > Show tracking details > Module output") &&
+    current.Detail.Contains("VRCFaceTracking's preview"), "Installed files had no visible path to check actual expressions.");
 Check(HubModuleInstallation.Inspect(Path.Combine(customLibs, "..", "CustomLibs"), supplied, false).IsCurrent,
     "Path normalization caused the installed Qpro source to conflict with itself.");
 if (OperatingSystem.IsWindows())

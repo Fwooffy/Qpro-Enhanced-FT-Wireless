@@ -381,6 +381,20 @@ internal sealed partial class HubForm
         connectionDetails.Controls.Add(Info("Cheek adjustments apply while Qpro tracking runs. Stop tracking or close the Hub to restore native cheek values. Eyebrow adjustments apply immediately; turn them off for native eyebrows."));
         var sessionDetails = Details(liveSource, connectionDetails, "connection and camera settings", 3);
         sessionDetails.Margin = new Padding(0, 2, 8, 0);
+        var sessionActions = new BufferedFlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
+            WrapContents = true, Margin = Padding.Empty };
+        sessionActions.Controls.Add(sessionDetails);
+        var moduleInput = ActionButton("View module input", (_, _) =>
+        {
+            activityTab.PerformClick();
+            ShowTrackingDetails();
+            if (_trackingHealthCard?.Parent is ScrollableControl healthContainer)
+                healthContainer.ScrollControlIntoView(_trackingHealthCard);
+        });
+        moduleInput.Margin = new Padding(0, 2, 0, 0);
+        moduleInput.AccessibleDescription = "Open Activity tracking details to see whether the installed module reports input. This does not start tracking.";
+        sessionActions.Controls.Add(moduleInput);
+        Span(liveSource, sessionActions, 3);
         liveLayout.Controls.Add(liveSource);
 
         var eyesCard = LiveFields();

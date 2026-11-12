@@ -133,8 +133,9 @@ internal static class HubModuleInstallation
             using var suppliedStream = File.OpenRead(suppliedDll);
             if (!SHA256.HashData(installedStream).AsSpan().SequenceEqual(SHA256.HashData(suppliedStream)))
                 return Result(HubModuleState.UpdateNeeded, "Module update needed", "The installed Qpro DLL differs from this app's module, even if both show the same version number. " + repair);
-            return Result(HubModuleState.Current, "Installed · input unchecked",
-                $"The Qpro {source} module card and DLL match this app at {folder}. This verifies installed files; confirm live expressions in VRCFaceTracking's preview.");
+            return Result(HubModuleState.Current, "Installed · files verified",
+                $"The Qpro {source} module card and DLL match this app at {folder}. This verifies installed files, not live expressions. " +
+                "For live status, open Activity > Tracking health > Show tracking details > Module output. Confirm expressions move in VRCFaceTracking's preview.");
         }
         catch (Exception error) when (IsInspectionError(error))
         {

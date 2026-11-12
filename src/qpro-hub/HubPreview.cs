@@ -80,7 +80,17 @@ internal sealed partial class HubForm
         SetStatus(_usbStatus, StatusKind.Good, "USB connected · sample");
         SetStatus(_steamStatus, StatusKind.Good, "Running · sample");
         SetStatus(_vrcftStatus, StatusKind.Good, "Running · sample");
-        SetStatus(_bridgeStatus, StatusKind.Good, "Ready · sample");
+        SetStatus(_bridgeStatus, StatusKind.Good, "Installed · files verified · sample");
+        // A preview must distinguish file verification from a simulated module
+        // observation, just as the real session does. It never reads live files.
+        _heartbeatSource = source;
+        _heartbeatHostRunning = _heartbeatModuleCurrent = true;
+        _moduleHeartbeat = new HubModuleHeartbeatObservation(new HubModuleHeartbeatSnapshot(
+            source, 0, 0, "00000000-0000-0000-0000-000000000001", 1, Environment.TickCount64,
+            "active", source == "SteamLink" ? "fresh" : "untimed", source == "SteamLink" ? 0 : -1,
+            true, true, [new("gaze-left", -1, 250, false), new("gaze-right", -1, 250, false),
+                new("tongue", -1, 300, false), new("pupil-left", -1, 350, false), new("pupil-right", -1, 350, false)]), "");
+        RefreshModuleHeartbeatDecoration();
         SetStatus(_runtimeStatus, StatusKind.Good, "Verified · sample");
         SetStatus(_gazeStatus, scenario == "magisk" ? StatusKind.Good : StatusKind.Warning,
             scenario == "magisk" ? "Magisk gaze detected · sample" : "Hub gaze off · optional");

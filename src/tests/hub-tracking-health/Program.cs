@@ -127,7 +127,26 @@ internal static class TrackingHealthTests
         form.Show();
         form.ApplyPreviewScenario("magisk", "VirtualDesktop");
         var all = Descendants(form).ToArray();
-        all.OfType<Button>().Single(button => Equals(button.Tag, "workflow-tab") && button.Text == "Activity").PerformClick();
+        var faceTab = all.OfType<Button>().Single(button => Equals(button.Tag, "workflow-tab") && button.Text == "Facial tracking");
+        faceTab.PerformClick();
+        var moduleInput = all.OfType<Button>().Single(button => button.Text == "View module input");
+        var beforeFeatures = new[] { Field<CheckBox>(form, "_tongue").Checked, Field<CheckBox>(form, "_pupil").Checked };
+        var beforeRunStatus = Field<Label>(form, "_runStatus").Text;
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            faceTab.PerformClick();
+            moduleInput.PerformClick();
+            Pump(100);
+            Check(Field<TableLayoutPanel>(form, "_trackingHealthCard").Visible && Field<Label>(form, "_healthModuleDetail").Visible &&
+                all.OfType<Button>().Single(button => button.Text == "Hide tracking details").Visible,
+                "View module input did not navigate to Activity with live module details expanded.");
+        }
+        Check(!Field<HubTrackingHealth>(form, "_trackingHealth").Running && !Field<bool>(form, "_cameraInputReady") &&
+            Field<Label>(form, "_runStatus").Text == beforeRunStatus &&
+            beforeFeatures.SequenceEqual(new[] { Field<CheckBox>(form, "_tongue").Checked, Field<CheckBox>(form, "_pupil").Checked }),
+            "Viewing module input started tracking or changed saved feature selections.");
+        all.OfType<Button>().Single(button => button.Text == "Hide tracking details").PerformClick();
+        Console.WriteLine("PASS module input shortcut opens Activity details without starting tracking or changing feature selections");
         ModuleUiTests(form);
         form.ApplyTrackingHealthPreview();
         Pump(250);
@@ -267,8 +286,13 @@ internal static class TrackingHealthTests
         SetField(form, "_moduleHeartbeat", new HubModuleHeartbeatObservation(observation with
             { Source = "VirtualDesktop", CapturedTickMs = Environment.TickCount64, NativeState = "untimed", NativeAgeMs = -1 }, ""));
         Call(form, "RefreshModuleHeartbeatDecoration");
-        Check(label.Text.Contains("age unknown") && label.AccessibleDescription!.Contains("no producer timestamp"),
-            "Native VD UI implied fresh timestamped source input.");
+        Check(label.Text == "Module active: Virtual Desktop source available" && label.AccessibleDescription!.Contains("no producer timestamp") &&
+            label.AccessibleDescription.Contains("normal for Virtual Desktop"), "Native VD UI implied timestamped freshness or hid the normal timestamp limitation.");
+        Check(label.ForeColor == HubForm.Muted, "Normal untimed Virtual Desktop input was presented as a warning.");
+        SetField(form, "_moduleHeartbeat", new HubModuleHeartbeatObservation(observation with
+            { Source = "VirtualDesktop", CapturedTickMs = Environment.TickCount64, State = "failed", NativeState = "unavailable", NativeAgeMs = -1 }, ""));
+        Call(form, "RefreshModuleHeartbeatDecoration");
+        Check(label.ForeColor == HubForm.Bad && label.AccessibleDescription!.Contains("VRCFaceTracking's log"), "Failed module lacked error styling and a concrete next step.");
         SetField(form, "_heartbeatHostRunning", false);
         Call(form, "RefreshModuleHeartbeatDecoration");
         Check(label.Text.Contains("VRCFaceTracking closed"), "Closed VRCFT retained a cached received-output claim.");

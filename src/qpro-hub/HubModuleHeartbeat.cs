@@ -157,11 +157,17 @@ internal static class HubModuleHeartbeat
     {
         if (!hostRunning) return new("closed", "Module output: VRCFaceTracking closed", "Open VRCFaceTracking to load the selected module.");
         if (!moduleCurrent) return new("unverified", "Module output: installation needs attention", "Install the current module for the selected source before verifying output.");
-        if (observation.Snapshot is not { } data) return new("unverified", "Module output: unverified", observation.Failure);
+        if (observation.Snapshot is not { } data) return new("unverified", "Module output: waiting for module status",
+            observation.Failure + " In VRCFaceTracking, check that tracking is started and the selected Qpro module is loaded. " +
+            "If you just installed or switched modules, restart VRCFaceTracking. Companion tracking can stay off while checking native face input.");
         var age = now - data.CapturedTickMs;
         if (age < 0 || age > LeaseMs) return new("stale", "Module output: heartbeat stale", "The module observation expired. Check VRCFaceTracking; a running process does not confirm live output.");
-        if (data.State is "closed" or "failed") return new(data.State, "Module output: " + data.State, "The selected module stopped or failed to initialize. Check the VRCFaceTracking log.");
-        if (data.State != "active") return new("loaded", "Module loaded: " + (data.State == "inactive" ? "inactive" : "initializing"), "The module has not confirmed ownership of active output slots.");
+        if (data.State is "closed" or "failed") return new(data.State, "Module output: " + data.State,
+            data.State == "closed" ? "The selected module stopped. Start tracking in VRCFaceTracking to load it again."
+            : "The selected module could not initialize. Open VRCFaceTracking's log for the cause; Copy diagnostics includes Companion's module status.");
+        if (data.State != "active") return new("loaded", "Module loaded: " + (data.State == "inactive" ? "inactive" : "initializing"),
+            data.State == "inactive" ? "The module is loaded but is not providing active output. Start tracking in VRCFaceTracking and check that the selected Qpro module is enabled."
+            : "The module is starting. Wait a moment, then check for moving expressions in VRCFaceTracking's preview.");
         var applied = data.Channels.Where(channel => ChannelTimeouts.ContainsKey(channel.Name) && channel.Applied && channel.AgeMs >= 0 &&
             channel.AgeMs <= channel.TimeoutMs && age <= channel.TimeoutMs - channel.AgeMs &&
             (channel.Name == "tongue" ? data.OwnsFace : data.OwnsEyes)).Select(channel => channel.Name).ToArray();
@@ -186,7 +192,11 @@ internal static class HubModuleHeartbeat
             return new("stale", "Module active: received output is stale", detail +
                 (data.NativeState == "untimed" ? " Native Virtual Desktop source age remains unknown." : " Check the selected input source."));
         if (data.NativeState == "untimed" && (data.OwnsEyes || data.OwnsFace))
-            return new("untimed", "Module loaded: native source available · age unknown", detail + " Virtual Desktop shared memory provides no producer timestamp; native freshness is unavailable.");
-        return new("waiting", "Module loaded: waiting for fresh output", detail);
+            return new("untimed", "Module active: Virtual Desktop source available", detail +
+                " Virtual Desktop shared memory provides no producer timestamp, so Companion cannot verify whether the native expressions are changing. " +
+                "This timestamp limitation is normal for Virtual Desktop. Confirm movement in VRCFaceTracking's preview.");
+        return new("waiting", "Module loaded: waiting for fresh output", detail +
+            (data.Source == "SteamLink" ? " Connect Steam Link and enable its eye/face data sharing to OSC port 9015."
+            : " Connect Virtual Desktop and enable its face and eye tracking options, then check VRCFaceTracking's preview."));
     }
 }

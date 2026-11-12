@@ -2,7 +2,7 @@ namespace QproFaceTracking.Hub;
 
 internal sealed partial class HubForm
 {
-    private readonly Label _healthModule = Info("Module output: unverified");
+    private readonly Label _healthModule = Info("Module output: not checked yet");
     private readonly Label _healthModuleDetail = Info("Module input and output are checked while VRCFaceTracking is running.");
     private HubModuleHeartbeatObservation _moduleHeartbeat = HubModuleHeartbeatObservation.Missing("No module observation yet.");
     private bool _heartbeatHostRunning;
@@ -49,7 +49,8 @@ internal sealed partial class HubForm
     {
         if (IsDisposed || Disposing || _interactiveResize || WindowState == FormWindowState.Minimized || _trackingHealthCard?.Visible != true) return;
         var view = ModuleHeartbeatView();
-        var color = view.State == "receiving" ? Good : view.State is "closed" or "loaded" or "observed" ? Muted : Warning;
+        var color = view.State == "failed" ? Bad : view.State == "receiving" ? Good
+            : view.State is "closed" or "loaded" or "observed" or "untimed" ? Muted : Warning;
         if (_healthModule.Text != view.Summary) _healthModule.Text = view.Summary;
         if (_healthModule.ForeColor != color) _healthModule.ForeColor = color;
         if (_healthModule.AccessibleDescription != view.Detail) _healthModule.AccessibleDescription = view.Detail;

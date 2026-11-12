@@ -254,6 +254,17 @@ internal sealed partial class HubForm
     private readonly Label _healthStages = Info("Decode — ms · prepare — ms · prediction total — ms · GPU wait/readback — ms");
     private readonly Label _healthPupil = Info("Pupil processing — ms · pupil result age — ms · queue delay p95 — ms");
     private TableLayoutPanel? _trackingHealthCard;
+    private Control? _trackingHealthDetails;
+    private Button? _trackingHealthDisclosure;
+
+    private void ShowTrackingDetails()
+    {
+        if (_trackingHealthDetails is null || _trackingHealthDisclosure is null) return;
+        _trackingHealthDetails.Visible = true;
+        _trackingHealthDisclosure.Text = "Hide tracking details";
+        _trackingHealthDisclosure.AccessibleName = _trackingHealthDisclosure.Text;
+        RefreshTrackingHealth();
+    }
 
     private Control BuildTrackingHealthCard()
     {
@@ -283,6 +294,8 @@ internal sealed partial class HubForm
         details.Controls.Add(_healthModuleDetail);
         details.Controls.Add(Info("Prediction includes preparation and GPU wait/readback. These timings overlap and cannot be added to estimate total latency."));
         var disclosure = DisclosureButton("Show tracking details");
+        _trackingHealthDetails = details;
+        _trackingHealthDisclosure = disclosure;
         disclosure.Enabled = true;
         disclosure.Click += (_, _) =>
         {
