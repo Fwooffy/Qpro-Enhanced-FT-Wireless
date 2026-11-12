@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.RegularExpressions;
 
 namespace QproFaceTracking.Hub;
 
@@ -149,15 +148,14 @@ internal sealed partial class HubForm
 
     private string DiagnosticText()
     {
+        var moduleOutput = ModuleHeartbeatView();
         var text = $"{ProductDisplayName} V{AppVersion}\nWindows build: {Environment.OSVersion.Version.Build}\n" +
             $"Face source: {_trackingSourceLive.Text}\n\n{_actionSeverity.Text}: {_actionTitle.Text}\n{_actionDetail.Text}\n{_actionNext.Text}\n\n" +
             _compatibilityDiagnostic + "\n\nTRACKING HEALTH\n" + _trackingHealth.DiagnosticText() +
-            "\n\nMODULE OUTPUT\n" + ModuleHeartbeatView().Summary + "\n" + ModuleHeartbeatView().Detail + "\n\nACTIVITY\n" + _log.Text;
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (!string.IsNullOrEmpty(home)) text = text.Replace(home, "%USERPROFILE%", StringComparison.OrdinalIgnoreCase);
-        // The firmware report already excludes serials. Mask common serial log
-        // fields as well, while retaining build and engine identifiers.
-        return Regex.Replace(text, @"(?im)(ADB target:|(?<!\w)serial[=:])\s*[^\r\n]+", "$1 [redacted]");
+            "\n\nMODULE OUTPUT\n" + moduleOutput.Summary + "\n" + moduleOutput.Detail +
+            "\n\nSHARING\nCommon personal paths and connection identifiers are hidden. Review the log before posting.\n\nACTIVITY\n" + ActivityDiagnosticText();
+        return HubDiagnosticPrivacy.Sanitize(text, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            GetConfiguredAdbTarget(), _environment.GetSavedWirelessTarget());
     }
 
     private void CopyDiagnostics()

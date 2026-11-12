@@ -243,6 +243,89 @@ internal static class Program
             log.TextChanged -= OnTextChanged;
             feedbackTitle.Parent!.Layout -= OnFeedbackLayout;
         }
+
+        // Pausing is a reader preference. Keep collecting a bounded, formatted
+        // history for diagnostics while the visible native control is frozen.
+        reset.Invoke(form, null);
+        Add(string.Join('\n', Enumerable.Range(0, 150).Select(index => $"Pause fixture {index:D3}")));
+        var pause = Controls(form).OfType<Button>().Single(button => button.Text == "Pause display");
+        var latest = Controls(form).OfType<Button>().Single(button => button.Text == "Jump to latest");
+        var retainedText = type.GetMethod("ActivityDiagnosticText", flags)!;
+        string CollectedText() => (string)retainedText.Invoke(form, null)!;
+        log.Select(log.Text.IndexOf("Pause fixture 050", StringComparison.Ordinal), "Pause fixture 050".Length);
+        log.ScrollToCaret();
+        var beforePauseText = log.Text;
+        var beforePauseSelection = log.SelectedText;
+        var beforePauseLine = FirstVisibleLine(log);
+        pause.PerformClick();
+        Check(pause.Text == "Resume display", "Pause did not provide a clear Resume display action.");
+        Add("WARNING: arrived while display paused");
+        Add("ERROR: original exception remains available while display paused");
+        Add("\n[Paused worker] Traceback (most recent call last):\r\n[Paused worker]   File \"probe.py\", line 8\n\n");
+        Add("[Paused worker]   raise RuntimeError('paused sample')");
+        Add("[Other worker] Normal progress while the exception continues.");
+        Check(log.Text == beforePauseText && log.SelectedText == beforePauseSelection && FirstVisibleLine(log) == beforePauseLine,
+            "Paused output changed the visible text, selection or reading position.");
+        Check(CollectedText().Contains("[ERROR] ERROR: original exception remains available while display paused", StringComparison.Ordinal),
+            "Paused display lost newly collected diagnostic text or severity.");
+        diagnostics = (string)type.GetMethod("DiagnosticText", flags)!.Invoke(form, null)!;
+        Check(diagnostics.Contains("original exception remains available while display paused", StringComparison.Ordinal),
+            "Copy/save diagnostics used the frozen display instead of current collected output.");
+        pause.PerformClick();
+        Check(pause.Text == "Pause display" && log.Text == CollectedText(), "Resume did not render the collected messages exactly once.");
+        Check(log.SelectedText == beforePauseSelection && FirstVisibleLine(log) == beforePauseLine,
+            "Resume lost a surviving selection or jumped away from older messages.");
+        CheckColor("[WARNING] WARNING: arrived while display paused", "Warning");
+        CheckColor("[ERROR] ERROR: original exception remains available while display paused", "Bad");
+        CheckColor("[ERROR] [Paused worker]   File", "Bad");
+        CheckColor("[ERROR] [Paused worker]   raise RuntimeError", "Bad");
+        CheckColor("[NORMAL] [Other worker] Normal progress", "Good");
+
+        reset.Invoke(form, null);
+        Add(string.Join('\n', Enumerable.Range(0, 3500).Select(index => $"P{index:D4}")));
+        log.Select(log.Text.IndexOf("P3490", StringComparison.Ordinal), 5);
+        log.ScrollToCaret();
+        pause.PerformClick();
+        var frozen = log.Text;
+        Add(string.Join('\n', Enumerable.Range(3500, 4700).Select(index => $"P{index:D4}")));
+        Check(log.Text == frozen, "Paused trim modified the visible history.");
+        Check(CollectedText().Length <= 180_000 && !CollectedText().Contains("P0000", StringComparison.Ordinal)
+            && CollectedText().Contains("P3490", StringComparison.Ordinal), "Paused history did not stay bounded with a surviving anchor.");
+        pause.PerformClick();
+        Check(log.Text == CollectedText() && log.SelectedText == "P3490", "Resume after trim lost or misplaced the selected surviving text.");
+        pause.PerformClick();
+        Add("Newest while paused");
+        latest.PerformClick();
+        Check(pause.Text == "Pause display" && AtBottom(log) && log.SelectionStart == log.TextLength,
+            "Jump to latest did not resume display and follow the newest output.");
+        Add("Newest after jumping");
+        Check(AtBottom(log) && log.Text.EndsWith("Newest after jumping\n", StringComparison.Ordinal),
+            "Jump to latest did not keep following subsequent output.");
+        pause.PerformClick();
+        reset.Invoke(form, null);
+        Check(pause.Text == "Pause display" && log.TextLength == 0 && CollectedText().Length == 0,
+            "Reset did not clear both histories and release paused display.");
+        Add("Clean restart after paused reset");
+        Check(log.Text == CollectedText() && log.Text.Contains("Clean restart after paused reset", StringComparison.Ordinal),
+            "Output failed after resetting a paused display.");
+        pause.PerformClick();
+        var resumeEdits = 0;
+        void CountResumeEdit(object? sender, EventArgs e) => resumeEdits++;
+        log.TextChanged += CountResumeEdit;
+        try
+        {
+            for (var index = 0; index < 2500; index++) Add($"Short normal arrival {index:D4}");
+            Check(resumeEdits == 0, "Paused short arrivals still edited the native log control.");
+            pause.PerformClick();
+            Check(log.Text == CollectedText() && log.Text.Contains("Short normal arrival 2499", StringComparison.Ordinal),
+                "Coalesced resume lost retained short-message history.");
+            Check(resumeEdits <= 3,
+                $"Resume rebuilt the native log per arrival ({resumeEdits} edits for 2500 adjacent normal messages).");
+            CheckColor("Short normal arrival 2499", "Good");
+        }
+        finally { log.TextChanged -= CountResumeEdit; }
+        Console.WriteLine("PASS: pause/resume, current diagnostics during pause, frozen reading position, bounded paused history, retained selection, jump to latest and reset.");
+        Console.WriteLine($"PASS: 2500 paused short arrivals resume in {resumeEdits} native text edits.");
         form.Close();
         Check(!Directory.Exists(root), "Preview wrote to its isolated source folder.");
         Console.WriteLine("PASS: RichTextBox severity colors, original diagnostics, bounded history and surviving selection.");

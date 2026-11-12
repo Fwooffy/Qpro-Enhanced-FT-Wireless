@@ -1058,7 +1058,8 @@ internal sealed partial class HubForm
         activityLayout.Controls.Add(healthCard, 0, 1);
         var logCard = Card(); logCard.Dock = DockStyle.Fill; logCard.AutoSize = false;
         logCard.Padding = new Padding(20, 14, 20, 14);
-        logCard.ColumnCount = 1; logCard.RowCount = 3;
+        logCard.ColumnCount = 1; logCard.RowCount = 4;
+        logCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         logCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         logCard.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         logCard.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -1071,10 +1072,12 @@ internal sealed partial class HubForm
             activityLegend.Controls.Add(new Label { Text = ActivityName(level), AutoSize = true,
                 ForeColor = ActivityColor(level), Margin = new Padding(0, 0, 20, 0) });
         logCard.Controls.Add(activityLegend, 0, 1);
+        var activityTools = BuildActivityTools();
+        logCard.Controls.Add(activityTools, 0, 2);
         _log.Margin = Padding.Empty;
         _log.ForeColor = Good;
         _log.AccessibleName = "Detailed activity";
-        logCard.Controls.Add(_log, 0, 2);
+        logCard.Controls.Add(_log, 0, 3);
         activityLayout.Controls.Add(logCard, 0, 2);
         activityPage.Controls.Add(activityLayout);
         bool fittingActivity = false;
@@ -1089,7 +1092,8 @@ internal sealed partial class HubForm
                 // the native text viewport beneath the diagnostic cards.
                 var minimumLogBody = (int)Math.Ceiling(180 * DeviceDpi / 96F);
                 var logHeaderHeight = Math.Max(logTitle.Height, logTitle.PreferredSize.Height) + logTitle.Margin.Vertical
-                    + Math.Max(activityLegend.Height, activityLegend.PreferredSize.Height) + activityLegend.Margin.Vertical;
+                    + Math.Max(activityLegend.Height, activityLegend.PreferredSize.Height) + activityLegend.Margin.Vertical
+                    + Math.Max(activityTools.Height, activityTools.PreferredSize.Height) + activityTools.Margin.Vertical;
                 var minimumLogHeight = Math.Max((int)Math.Ceiling(240 * DeviceDpi / 96F),
                     minimumLogBody + logCard.Padding.Vertical + logHeaderHeight);
                 var feedbackHeight = Math.Max(feedbackCard.Height, feedbackCard.PreferredSize.Height);
@@ -1106,6 +1110,7 @@ internal sealed partial class HubForm
         healthCard.SizeChanged += (_, _) => FitActivityHeight();
         logTitle.SizeChanged += (_, _) => FitActivityHeight();
         activityLegend.SizeChanged += (_, _) => FitActivityHeight();
+        activityTools.SizeChanged += (_, _) => FitActivityHeight();
         FitActivityHeight();
 
         var pageList = new[] { setupPage, livePage, controllersPage, personalizationPage, modelsPage, activityPage };

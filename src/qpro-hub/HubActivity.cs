@@ -37,6 +37,43 @@ internal sealed partial class HubForm
     private void AppendActivityEntries(IReadOnlyList<ActivityEntry> entries)
     {
         if (entries.Count == 0) return;
+        var runs = FormatActivityEntries(entries);
+        RememberActivityRuns(runs);
+        if (_activityDisplayPaused) return;
+        RenderActivityRuns(runs);
+    }
+
+    private List<ActivityRenderRun> FormatActivityEntries(IReadOnlyList<ActivityEntry> entries)
+    {
+        var runs = new List<ActivityRenderRun>();
+        var text = new StringBuilder();
+        ActivitySeverity? runLevel = null;
+        void FinishRun()
+        {
+            if (text.Length == 0) return;
+            runs.Add(new(text.ToString(), runLevel!.Value));
+            text.Clear();
+        }
+        foreach (var entry in entries)
+        {
+            foreach (var line in entry.Text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+            {
+                var level = entry.Severity ?? _activityClassifier.Classify(line);
+                if (runLevel != level) FinishRun();
+                runLevel = level;
+                if (!string.IsNullOrWhiteSpace(line))
+                    text.Append(entry.Timestamp).Append("  [").Append(ActivityName(level)).Append("] ").Append(line);
+                // RichEdit exposes LF text; use the same offsets in retained
+                // history so paused selections survive a later history trim.
+                text.Append('\n');
+            }
+        }
+        FinishRun();
+        return runs;
+    }
+
+    private void RenderActivityRuns(IReadOnlyList<ActivityRenderRun> runs, bool rebuild = false)
+    {
         var selectionStart = _log.SelectionStart;
         var selectionLength = _log.SelectionLength;
         var caretAtTail = selectionStart >= _log.TextLength;
@@ -54,40 +91,40 @@ internal sealed partial class HubForm
         if (suspendRedraw) ActivityMessage(_log.Handle, 0xB, 0, 0); // WM_SETREDRAW
         try
         {
-            var run = new StringBuilder();
-            ActivitySeverity? runLevel = null;
-            void AppendRun()
+            void AppendRun(string text, ActivitySeverity severity)
             {
-                if (run.Length == 0) return;
                 _log.Select(_log.TextLength, 0);
-                _log.SelectionColor = ActivityColor(runLevel!.Value);
-                _log.AppendText(run.ToString());
-                run.Clear();
+                _log.SelectionColor = ActivityColor(severity);
+                _log.AppendText(text);
             }
-            foreach (var entry in entries)
+            if (rebuild)
             {
-                foreach (var line in entry.Text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+                _log.Clear();
+                var text = new StringBuilder();
+                ActivitySeverity? severity = null;
+                foreach (var run in runs)
                 {
-                    var level = entry.Severity ?? _activityClassifier.Classify(line);
-                    if (runLevel != level) AppendRun();
-                    runLevel = level;
-                    if (!string.IsNullOrWhiteSpace(line))
-                        run.Append(entry.Timestamp).Append("  [").Append(ActivityName(level)).Append("] ").Append(line);
-                    run.AppendLine();
+                    if (severity != run.Severity && text.Length > 0)
+                    {
+                        AppendRun(text.ToString(), severity!.Value);
+                        text.Clear();
+                    }
+                    severity = run.Severity;
+                    text.Append(run.Text);
                 }
+                // A paused view can accumulate many individual arrivals. Send
+                // adjacent equal-color runs to RichEdit as one edit on resume.
+                if (text.Length > 0) AppendRun(text.ToString(), severity!.Value);
             }
-            AppendRun();
+            else
+                foreach (var run in runs) AppendRun(run.Text, run.Severity);
 
             // Remove whole old lines without replacing Text, which would discard
             // the remaining colors. A very long single line still stays bounded.
-            var removed = 0;
-            if (_log.TextLength > ActivityCharacterLimit)
+            var removed = (int)Math.Min(int.MaxValue, _activityRemovedCharacters - _activityDisplayRemovedCharacters);
+            if (!rebuild && removed > 0)
             {
-                var textToTrim = _log.Text;
-                var minimumRemoval = textToTrim.Length - ActivityCharactersToKeep;
-                var lineEnd = textToTrim.IndexOf('\n', minimumRemoval);
-                removed = lineEnd >= 0 && lineEnd < textToTrim.Length - 1 ? lineEnd + 1 : minimumRemoval;
-                _log.Select(0, removed);
+                _log.Select(0, Math.Min(removed, _log.TextLength));
                 var readOnly = _log.ReadOnly;
                 try
                 {
@@ -98,6 +135,7 @@ internal sealed partial class HubForm
                 }
                 finally { _log.ReadOnly = readOnly; }
             }
+            _activityDisplayRemovedCharacters = _activityRemovedCharacters;
             var start = followTail && caretAtTail ? _log.TextLength
                 : Math.Clamp(selectionStart - removed, 0, _log.TextLength);
             var end = Math.Clamp(selectionStart + selectionLength - removed, start, _log.TextLength);
@@ -132,6 +170,11 @@ internal sealed partial class HubForm
     {
         _log.Clear();
         _activityClassifier.Reset();
+        _activityHistory.Clear();
+        _activityHistoryCharacters = 0;
+        _activityRemovedCharacters = _activityDisplayRemovedCharacters = 0;
+        _activityDisplayPaused = false;
+        UpdateActivityDisplayTools();
     }
 
     [StructLayout(LayoutKind.Sequential)]
