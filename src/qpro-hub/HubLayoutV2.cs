@@ -827,9 +827,12 @@ internal sealed partial class HubForm
         gazeOptions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         Span(gazeOptions, Info("These tools are only for the Hub's temporary gaze method. Check gaze setup is optional diagnostics; Prepare gaze validates the headset before preparing its local patch. Neither is needed for Magisk gaze, tongue, pupils or ordinary face tracking."), 0);
         var gazeActions = new BufferedTableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
-            ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
+            AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
         gazeActions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         gazeActions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        // Reserve the action height even while the tool is hidden. Measuring
+        // Fill-docked buttons in an auto-sized row can collapse it to one pixel.
+        gazeActions.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
         _inspectGazeButton.Dock = _setupGazeButton.Dock = DockStyle.Fill;
         _inspectGazeButton.Margin = new Padding(0, 4, 8, 4);
         _setupGazeButton.Margin = new Padding(0, 4, 0, 4);
@@ -1541,6 +1544,7 @@ internal sealed partial class HubForm
                     _setupGazeButton, _recoverGazeButton, _inspectGazeButton, _resetLegacyGazeButton, _setupAmdButton, _enableWirelessButton, _connectWirelessButton, _reconnectUsbButton, _forgetUsbButton,
                     _pairWirelessButton, _disableWirelessButton, _installHandsButton, _removeHandsButton })
                     button.Height = Px(42);
+                gazeActions.RowStyles[0].Height = Px(50);
             }
             finally
             {

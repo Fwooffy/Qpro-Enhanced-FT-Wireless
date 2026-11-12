@@ -31,6 +31,7 @@ internal sealed partial class HubForm
         var fittingCategories = false;
         var fittingWorkspaceWidth = false;
         var columnDefinitions = new Dictionary<TableLayoutPanel, (SizeType Type, float Width)[]>();
+        var reservedActionRows = new Dictionary<TableLayoutPanel, Dictionary<int, (SizeType Type, float Height)>>();
         var content = new BufferedTableLayoutPanel
         {
             Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
@@ -262,6 +263,38 @@ internal sealed partial class HubForm
                 var position = table.GetPositionFromControl(child);
                 var width = position.Column < 0 ? inner : widths.Skip(position.Column).Take(table.GetColumnSpan(child)).Sum();
                 FitControlWidth(child, Math.Max(1, width - child.Margin.Horizontal));
+            }
+            // A collapsed tool can report zero preferred height for fixed-size
+            // setup controls. Reserve their rows explicitly before the body is
+            // measured, including tables populated with implicit row positions.
+            if (table.AutoSize)
+            {
+                var actionRows = table.Controls.Cast<Control>()
+                    .GroupBy(child => table.GetPositionFromControl(child).Row)
+                    .Where(row => row.Key >= 0 && row.All(child => child is Button or ComboBox) &&
+                        row.Any(child => child.Visible && (child is ComboBox || !child.AutoSize))).ToArray();
+                if (!reservedActionRows.TryGetValue(table, out var originalRows))
+                    reservedActionRows.Add(table, originalRows = new());
+                // Conditional recovery controls must leave no reserved gap when
+                // hidden after a saved-runtime scan returns no usable copies.
+                foreach (var row in originalRows.Keys.Except(actionRows.Select(row => row.Key)).ToArray())
+                {
+                    table.RowStyles[row].SizeType = originalRows[row].Type;
+                    table.RowStyles[row].Height = originalRows[row].Height;
+                    originalRows.Remove(row);
+                }
+                foreach (var row in actionRows)
+                {
+                    var actionHeight = (int)Math.Ceiling(42 * DeviceDpi / 96F);
+                    foreach (var action in row.Where(child => child is Button && !child.AutoSize))
+                        if (action.Height != actionHeight) action.Height = actionHeight;
+                    var height = row.Max(child => (child is ComboBox ? Math.Max(child.Height, child.PreferredSize.Height) : actionHeight) + child.Margin.Vertical);
+                    while (table.RowStyles.Count <= row.Key) table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                    var style = table.RowStyles[row.Key];
+                    if (!originalRows.ContainsKey(row.Key)) originalRows.Add(row.Key, (style.SizeType, style.Height));
+                    style.SizeType = SizeType.Absolute;
+                    if (style.Height != height) style.Height = height;
+                }
             }
         }
         // Complete this measurement from the setup page's responsive pass after

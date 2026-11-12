@@ -130,6 +130,31 @@ internal static class SetupNavigationTests
             context + ": compact step navigation is missing or compressed.");
     }
 
+    private static void CheckOptionalButtons(HubForm form, Panel page, Control body, string context)
+    {
+        var actions = Descendants(body).OfType<Button>().Where(button => button.Visible).ToArray();
+        Check(actions.Length > 0, context + ": optional tool has no visible actions.");
+        foreach (var action in actions)
+        {
+            var caption = TextRenderer.MeasureText(action.Text, action.Font, Size.Empty,
+                TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
+            var disclosure = action is DarkButton { VisualStyle: HubButtonStyle.Disclosure };
+            var minimumHeight = (int)Math.Ceiling((disclosure ? 24 : 32) * form.DeviceDpi / 96F);
+            Check(action.Height >= minimumHeight,
+                context + ": action collapsed vertically (" + action.Height + "px): " + action.Text);
+            var captionInset = disclosure ? (int)Math.Ceiling(30 * form.DeviceDpi / 96F) : action.Padding.Horizontal;
+            Check(action.ClientSize.Width >= caption.Width + captionInset &&
+                  action.ClientSize.Height >= caption.Height + action.Padding.Vertical,
+                context + ": action does not fit its caption: " + action.Text);
+            var bounds = action.RectangleToScreen(action.ClientRectangle);
+            // The outer page may scroll. Each intermediate container must still
+            // reserve the whole action, including controls below that viewport.
+            for (var ancestor = action.Parent; ancestor is not null && ancestor != page; ancestor = ancestor.Parent)
+                Check(ancestor.RectangleToScreen(ancestor.ClientRectangle).Contains(bounds),
+                    context + ": " + ancestor.GetType().Name + " clips action: " + action.Text);
+        }
+    }
+
     [STAThread]
     private static int Main(string[] args)
     {
@@ -319,7 +344,8 @@ internal static class SetupNavigationTests
             };
             var actionFields = new[] { "_setupGazeButton", "_inspectGazeButton", "_installHandsButton", "_removeHandsButton",
                 "_setupAmdButton", "_uninstallBridgeButton", "_recoverGazeButton", "_resetLegacyGazeButton",
-                "_checkStreamerUpdater", "_pauseStreamerUpdater", "_restoreStreamerUpdater" };
+                "_checkStreamerUpdater", "_pauseStreamerUpdater", "_restoreStreamerUpdater", "_checkCompatibility",
+                "_repairRuntimeButton", "_checkRuntimeRecoveryButton", "_restoreRuntimeButton" };
             var preservedActions = actionFields.ToDictionary(name => name, name => Field<Control>(form, name));
             var preservedHandles = preservedActions.ToDictionary(item => item.Key, item => item.Value.Handle);
             var savedOptions = form.CaptureLiveOptions();
@@ -350,6 +376,56 @@ internal static class SetupNavigationTests
                         Check(form.CaptureLiveOptions() == savedOptions, "Optional navigation changed saved feature or model choices.");
                         AssertNoWork("Open optional tool " + tool);
                         CheckGeometry(form, page, size.Width + "px optional tool " + tool);
+                        CheckOptionalButtons(form, page, optional.Parent!, size.Width + "px optional tool " + tool);
+                        var expectedButtons = tool switch
+                        {
+                            "Windows Streamer updates" or "PC runtime repair and recovery" => 3,
+                            "VRCFaceTracking module maintenance" => 1,
+                            _ => 2,
+                        };
+                        Check(Descendants(bodies[0]).OfType<Button>().Count(button => button.Visible) == expectedButtons,
+                            tool + ": expected optional actions/disclosures are missing.");
+                        var nestedName = tool == "AMD setup" ? "AMD compatibility details" :
+                            tool == "headset compatibility" ? "firmware details" : null;
+                        if (nestedName is not null)
+                        {
+                            Disclosure(form, "Show " + nestedName).PerformClick(); Pump(form);
+                            CheckGeometry(form, page, size.Width + "px expanded " + nestedName);
+                            CheckOptionalButtons(form, page, bodies[0], size.Width + "px expanded " + nestedName);
+                            AssertNoWork("Expand " + nestedName);
+                            Disclosure(form, "Hide " + nestedName).PerformClick(); Pump(form);
+                        }
+                        var visualActions = Descendants(bodies[0]).OfType<Button>().ToDictionary(button => button, button => button.Enabled);
+                        foreach (var enabled in new[] { false, true })
+                        {
+                            foreach (var action in visualActions.Keys) action.Enabled = enabled;
+                            Pump(form);
+                            CheckOptionalButtons(form, page, bodies[0], size.Width + "px " + tool + " enabled=" + enabled);
+                        }
+                        foreach (var action in visualActions) action.Key.Enabled = action.Value;
+                        if (tool == "AMD setup")
+                        {
+                            var amdAction = Field<Button>(form, "_setupAmdButton");
+                            var caption = amdAction.Text;
+                            amdAction.Text = $"Verify / repair ROCm {HubRocmRuntime.InstallVersion}"; Pump(form);
+                            CheckOptionalButtons(form, page, bodies[0], size.Width + "px long AMD caption");
+                            amdAction.Text = caption; Pump(form);
+                        }
+                        if (tool == "PC runtime repair and recovery")
+                        {
+                            var copies = Field<ComboBox>(form, "_runtimeRecoveryCopies");
+                            var restore = Field<Button>(form, "_restoreRuntimeButton");
+                            var expandedHeight = bodies[0].Height;
+                            var hiddenHeight = copies.Height + copies.Margin.Vertical + restore.Height + restore.Margin.Vertical;
+                            copies.Visible = restore.Visible = false; Pump(form);
+                            Check(bodies[0].Height <= expandedHeight - hiddenHeight,
+                                size.Width + "px no saved runtime: hidden recovery controls left reserved gaps.");
+                            CheckGeometry(form, page, size.Width + "px no saved runtime");
+                            CheckOptionalButtons(form, page, bodies[0], size.Width + "px no saved runtime");
+                            copies.Visible = restore.Visible = true; Pump(form);
+                            CheckGeometry(form, page, size.Width + "px saved runtime controls restored");
+                            CheckOptionalButtons(form, page, bodies[0], size.Width + "px saved runtime controls restored");
+                        }
                         if (tool == "hands setup and uninstall")
                         {
                             var names = Descendants(bodies[0]).OfType<Label>().Where(label => label.Text is "Quest" or "Singularity").ToArray();
@@ -358,16 +434,14 @@ internal static class SetupNavigationTests
                                 "Hands prerequisites wrapped their short field names into fragments.");
                         }
                         if (tool == "gaze setup")
+                        {
                             Check(!Field<Button>(form, "_setupGazeButton").Enabled && !Field<Button>(form, "_inspectGazeButton").Enabled,
                                 "Optional category navigation bypassed the Magisk gate.");
+                        }
                     }
                 }
             }
-            foreach (var (category, tool) in new[]
-            {
-                ("Optional features", "hands setup and uninstall"),
-                ("Recovery", "PC runtime repair and recovery"),
-            })
+            foreach (var (category, tool) in optionalGroups.SelectMany(group => group.Item2.Select(tool => (group.Item1, tool))))
             {
                 form.Size = new Size(1280, 900); Pump(form);
                 NamedButton(form, "Optional tools category: " + category).PerformClick(); Pump(form);
@@ -393,6 +467,7 @@ internal static class SetupNavigationTests
                         "Restore recreated an optional action: " + item.Key);
                 AssertNoWork("Restore expanded optional tool " + tool);
                 CheckGeometry(form, page, "Restored optional tool " + tool);
+                CheckOptionalButtons(form, page, optional.Parent!, "Restored optional tool " + tool);
             }
             Disclosure(form, "Hide optional tools and recovery").PerformClick(); Pump(form);
             Check(!Descendants(page).Any(control => control.Visible && Equals(control.Tag, "optional-tool-body")),
