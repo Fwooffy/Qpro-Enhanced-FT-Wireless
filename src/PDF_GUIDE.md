@@ -174,7 +174,7 @@ Open **Show optional tools and recovery > Recovery > Show PC runtime repair and 
 Its card is **Qpro Companion — Virtual Desktop** or **Qpro Companion — Steam Link**, using the Hub's release version. Older QproFaceTracking cards remain recognized.
 
 > [!NOTE] What a module check proves
-> **Installed · input unchecked** checks files. Tracking details also show a module heartbeat and recent applied output. Virtual Desktop's native shared memory has no timestamp, so its input age is unknown. Confirm expressions in VRCFaceTracking's preview; heartbeat does not prove avatar movement.
+> **Installed · files verified** confirms the module files match. **Facial tracking > View module input** opens the live status in Activity without starting tracking. **Virtual Desktop source available** is neutral: native shared memory has no timestamp. Confirm moving expressions in VRCFaceTracking's preview; Companion tracking can stay off for that check.
 
 Junctions, symlinks and Windows Cloud Files are supported. For OneDrive, keep the whole app available offline. Recovery copies go under `%LOCALAPPDATA%\QproFaceTracking\module-recovery`; **Activity** gives the exact path.
 
@@ -417,7 +417,7 @@ For thumb-rest sessions, Qpro hash-checks the installed add-on DLL against this 
 ### Start each session
 
 1. Choose **Virtual Desktop** under **Facial tracking > Your session > Streaming app**. Open **Controllers** and press **Check hand/controller compatibility**.
-2. **Hand/controller prechecks passed** is a read-only preflight result, not live native-hook validation or a performance test. Unknown-version warnings still need startup checks. Follow Activity's next step.
+2. **Controller requirements ready** is a read-only preflight result, not proof of live fingers or performance. Its detail says whether native hook validation is pending. Unknown-version warnings still need startup checks. Follow Activity's next step.
 3. Turn on **Experimental hands + controllers** and press **Start tracking**. Leave **Experimental Touch Pro thumb-rest input** off for this first finger check; it is separate.
 4. Hold the controllers with your hands visible to the headset cameras. Move individual fingers and check **both** hands in VRChat while movement and buttons still work.
 
@@ -532,7 +532,11 @@ Check source, module, camera, model and avatar before retraining.
 
 ### Send useful diagnostics
 
+**Pause display** holds the log still while tracking and logging continue. **Resume display** keeps your reading position where possible; **Jump to latest** resumes and follows new messages. Copy/save includes arrivals while paused, within the recent-history limit.
+
 Open **Activity**, then **Copy diagnostics** or **Save log…**. Include the first error and nearby lines, exact Quest build, GPU/driver, USB/wireless, streaming app and ZIP/version. Recordings are personal data; share only if you choose to.
+
+Copy/save masks common user-folder paths, headset IDs and local addresses. Review the text before posting; automatic masking cannot recognize every personal detail. Models and recordings are not attached, and nothing is uploaded automatically.
 
 Use [GitHub Issues](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/issues) or [community Discord](https://discord.gg/ghvuJTpRu4), which is not owned by Fwooffy. Green means normal, yellow a warning and red an error; include the explanation, not just its colour.
 
