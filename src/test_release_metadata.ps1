@@ -88,7 +88,7 @@ try {
         'tests\hub-updater-lifetime\HubUpdaterLifetimeTests.csproj', 'tests\hub-updater-lifetime\Program.cs',
         'tests\hub-update-dialog\HubUpdateDialogTests.csproj', 'tests\hub-update-dialog\Program.cs',
         'tests\hub-component-updates\HubComponentUpdateTests.csproj', 'tests\hub-component-updates\Program.cs',
-        'tests\check-release-zip.py', 'tests\README.md', 'tests\helper.ps1')
+        'tests\check-release-zip.py', 'tests\test-release-package.ps1', 'tests\README.md', 'tests\helper.ps1')
     $excludedSources = @('tests\hub-updates\bin\Program.cs', 'tests\hub-updates\obj\Generated.cs',
         'tests\artifacts\private.cs', 'tests\captures\capture.py', 'tests\training\train.py',
         'tests\private\private.md', 'tests\__pycache__\module.py', 'tests\hub-updates\recording.qpcap',
@@ -123,9 +123,11 @@ try {
     foreach ($shared in Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'shared') -File -Filter '*.cs') {
         Assert-Equal $true ($listedSources -contains ('shared\' + $shared.Name)) 'Every shared C# dependency exported'
     }
-    foreach ($required in @('test_rocm_environment_isolation.ps1', 'test_vrcft_module_preflight.ps1')) {
+    foreach ($required in @('test_rocm_environment_isolation.ps1', 'test_vrcft_module_preflight.ps1',
+        'release-package.ps1', 'companion_lifecycle.py', 'RELEASE_NOTES_V3.0.2.md')) {
         Assert-Equal $true ($listedSources -contains $required) "Public regression inventory: $required"
     }
+    Assert-Equal $true ($actualExport -contains 'tests\test-release-package.ps1') 'Release ZIP regression exported with its helper'
     $privateSource = Join-Path $fixture 'external-private-source'
     New-Item -ItemType Directory -Path $privateSource | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $privateSource 'private.cs'), 'Private fixture must stay out of export')

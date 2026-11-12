@@ -22,6 +22,11 @@ def main() -> None:
         if len(roots) != 1:
             raise SystemExit(f"Expected one top-level folder; found {roots}")
         root = roots.pop()
+        if not root.lower().startswith("qprofacetracking"):
+            raise SystemExit(
+                "The ZIP's app folder must keep the QproFaceTracking name so installed "
+                "V3.0.0 updaters can open it; the download filename may use QproCompanion"
+            )
         manifest_name = f"{root}/SHA256SUMS.txt"
         manifest = archive.read(manifest_name).decode("utf-8-sig")
         expected = {}

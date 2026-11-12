@@ -54,6 +54,7 @@ function Get-QproPublicTestSources([string]$SourceRoot) {
 $sourceFiles = @(
     "build-and-run.ps1",
     "build-release.ps1",
+    "release-package.ps1",
     "build-guide.py",
     "PDF_GUIDE.md",
     "build-github-source.ps1",
@@ -110,6 +111,7 @@ $sourceFiles = @(
     "requirements-runtime.txt",
     "python-runtime\README.txt",
     "receiver.py",
+    "companion_lifecycle.py",
     "qpro_gpu.py",
     "gpu_readback.py",
     "test_gpu_readback.py",
@@ -176,6 +178,7 @@ $sourceFiles = @(
     "RELEASE_README.md",
     "RELEASE_NOTES_V3.0.0.md",
     "RELEASE_NOTES_V3.0.1.md",
+    "RELEASE_NOTES_V3.0.2.md",
     "RELEASE_FIX_NOTES.md",
     "UPDATER_MIGRATION_NOTES.md",
     "RELEASE_INSTRUCTIONS.md",

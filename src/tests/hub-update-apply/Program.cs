@@ -52,10 +52,10 @@ void Seal(string package)
         .Select(path => Hash(path) + "  " + Path.GetRelativePath(package, path).Replace('\\', '/')).ToArray();
     File.WriteAllLines(Path.Combine(package, "SHA256SUMS.txt"), hashes);
 }
-(string Stage, string Destination) Make(string name, bool equalModels = false)
+(string Stage, string Destination) Make(string name, bool equalModels = false, string stagedFolder = "QproFaceTracking-2.1.3")
 {
     string parent = Path.Combine(fixture, name);
-    string staged = Path.Combine(parent, "staging", "QproFaceTracking-2.1.3");
+    string staged = Path.Combine(parent, "staging", stagedFolder);
     string destination = Path.Combine(parent, "installed");
     foreach (var (root, identity) in new[] { (staged, "new"), (destination, "old") })
     {
@@ -434,6 +434,23 @@ try
 
     var equal = Make("equal", equalModels: true);
     Check(!HubUpdateApply.Apply(equal.Stage, equal.Destination, version).Warnings.Any(warning => warning.Contains("v8", StringComparison.Ordinal)), "Equal model files should be skipped without a collision warning.");
+
+    var renamed = Make("renamed-package", stagedFolder: "QproCompanion.V2.1.3");
+    Write(renamed.Destination, "config/live-options.json", "{\"TongueEnabled\":true,\"PupilEnabled\":false}");
+    Write(renamed.Stage, "config/live-options.json", "{\"TongueEnabled\":false,\"PupilEnabled\":true}");
+    Seal(Directory.GetParent(renamed.Stage)!.FullName);
+    var renamedBefore = Snapshot(renamed.Destination);
+    HubUpdateApply.Apply(renamed.Stage, renamed.Destination, version);
+    Check(File.ReadAllText(Path.Combine(Directory.GetParent(renamed.Destination)!.FullName, "QproFaceTracking.exe")) == "new executable",
+        "Renamed package did not update the existing app in place.");
+    var renamedPrivate = renamedBefore.Where(file => file.Key.Replace('\\', '/').StartsWith("QproRuntime/config/", StringComparison.OrdinalIgnoreCase) ||
+        file.Key.Replace('\\', '/').StartsWith("QproRuntime/models/", StringComparison.OrdinalIgnoreCase)).ToArray();
+    Check(renamedPrivate.Length == 8, "Renamed package fixture must cover models, live options and both saved connection files.");
+    foreach (var file in renamedPrivate)
+        Check(Hash(Path.Combine(Directory.GetParent(renamed.Destination)!.FullName, file.Key)) == file.Value,
+            "Renamed package changed a saved model, option or connection: " + file.Key);
+    Check(!Directory.Exists(Path.Combine(Directory.GetParent(renamed.Destination)!.FullName, "QproCompanion.V2.1.3")),
+        "Renamed package created a second app folder inside the installed copy.");
 
     var partial = Make("partial");
     File.Delete(Path.Combine(partial.Destination, "models", "qpro-stereo-tongue-v8-direction.pt"));

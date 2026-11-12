@@ -220,11 +220,11 @@ try
         return files;
     }
     string Archive(Dictionary<string, byte[]> files, string? extra = null, bool bom = false, Action<ZipArchive>? modify = null,
-        string packageVersion = "2.1.3")
+        string packageVersion = "2.1.3", string? packageFolder = null)
     {
         string path = Path.Combine(fixture, Guid.NewGuid().ToString("N") + ".zip");
         using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
-        string folder = "QproFaceTracking V" + packageVersion + "/";
+        string folder = (packageFolder ?? "QproFaceTracking V" + packageVersion) + "/";
         foreach ((string name, byte[] bytes) in files)
         {
             using Stream output = archive.CreateEntry(folder + name).Open();
@@ -266,6 +266,35 @@ try
     HubUpdatePackage.Discard(staged, storage);
     Check(!File.Exists(staged.ExecutablePath), "discard private stage");
     Reject(() => HubUpdatePackage.Discard(staged with { RuntimeRoot = oldRoot }, storage), "discard old app folder");
+    // The asset name was already accepted after the rename, but its app folder
+    // was not. Exercise staging as well as release selection for both brands.
+    var brandedVersion = new Version(3, 0, 1);
+    Dictionary<string, byte[]> brandedFiles = ValidFiles(manifestVersion: brandedVersion.ToString());
+    foreach (string helper in new[] { "runtime-recovery.ps1", "tracking_budget.py" })
+        brandedFiles["QproRuntime/" + helper] = Encoding.UTF8.GetBytes("Fixture " + helper);
+    foreach (string folder in new[] { "QproCompanion.V3.0.1", "qprocompanion V3.0.1", "QproFaceTracking.V3.0.1" })
+    {
+        HubStagedUpdate branded = Stage(Archive(brandedFiles, packageFolder: folder), packageVersion: brandedVersion);
+        Check(Path.GetFileName(Directory.GetParent(branded.RuntimeRoot)!.FullName) == folder,
+            "renamed and legacy archive roots stage without rewriting the package: " + folder);
+        HubUpdatePackage.ValidateStagedRelease(branded.RuntimeRoot, brandedVersion);
+        Check(File.ReadAllText(branded.ExecutablePath) == "Offline fixture; never executable",
+            "renamed archive retains the compatible executable identity");
+        HubUpdatePackage.Discard(branded, storage);
+        Check(!File.Exists(branded.ExecutablePath), "renamed archive staging can be discarded safely");
+    }
+    Reject(() => Stage(Archive(brandedFiles, packageFolder: "OtherApp.V3.0.1"), packageVersion: brandedVersion),
+        "unrelated archive root with otherwise valid app contents");
+    foreach (string unsafePath in new[] { "QproCompanion.V3.0.1/../../escape.txt", "OtherApp/file.txt",
+                 "QproFaceTracking.V3.0.1/file.txt", "QproCompanion.V3.0.1/QPROFACETRACKING.EXE",
+                 "QproCompanion.V3.0.1/unlisted.txt" })
+        Reject(() => Stage(Archive(brandedFiles, packageFolder: "QproCompanion.V3.0.1", extra: unsafePath),
+            packageVersion: brandedVersion), "renamed archive keeps path, single-root and checksum safeguards: " + unsafePath);
+    var wrongBrandManifest = new Dictionary<string, byte[]>(brandedFiles, StringComparer.Ordinal);
+    wrongBrandManifest["QproRuntime/release-manifest.json"] = Encoding.UTF8.GetBytes(
+        "{\"name\":\"OtherApp\",\"version\":\"3.0.1\",\"updateFormat\":1}");
+    Reject(() => Stage(Archive(wrongBrandManifest, packageFolder: "QproCompanion.V3.0.1"), packageVersion: brandedVersion),
+        "renamed archive still requires the Qpro manifest identity");
     foreach (Version target in new[] { new Version(3, 0, 0), new Version(4, 0, 0) })
     {
         Dictionary<string, byte[]> complete = ValidFiles(manifestVersion: target.ToString());

@@ -20,6 +20,8 @@ $releaseName = if ([string]::IsNullOrWhiteSpace($PackageName)) { "QproFaceTracki
 if ($releaseName -match '[\\/:*?"<>|]' -or $releaseName -in @(".", "..") -or $releaseName.EndsWith(" ") -or $releaseName.EndsWith(".")) {
     throw "Invalid package folder name: $releaseName"
 }
+. (Join-Path $root 'release-package.ps1')
+$archiveRootName = Get-QproReleaseArchiveRootName $releaseName
 $distRoot = [System.IO.Path]::GetFullPath((Join-Path $root "dist"))
 $releaseRoot = [System.IO.Path]::GetFullPath((Join-Path $distRoot $releaseName))
 $runtimeRoot = Join-Path $releaseRoot "QproRuntime"
@@ -423,7 +425,7 @@ $forbidden = @(
         $_.Name -eq "bolt-independent-axes.ptl" -or
         $_.Name -eq "GITHUB_PUBLISHING.md" -or
         $_.Name -like "*.csproj" -or
-        $_.Name -in @("Program.cs", "TrackingModule.cs", "streamer.c", "relay.c", "injector.c", "build-release.ps1", "build-github-source.ps1") -or
+        $_.Name -in @("Program.cs", "TrackingModule.cs", "streamer.c", "relay.c", "injector.c", "build-release.ps1", "build-github-source.ps1", "release-package.ps1") -or
         $_.FullName -match '\\(test_|__pycache__|training\\.+\.(npy|npz))'
     }
 )
@@ -470,31 +472,7 @@ Set-Content -LiteralPath (Join-Path $releaseRoot "SHA256SUMS.txt") -Value $hashL
 
 $archive = "$releaseRoot.zip"
 if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
-# ZIP entry names use '/' on every platform. Compress-Archive writes Windows
-# separators on some PowerShell versions, which breaks non-Windows extractors.
-$archiveStream = [System.IO.File]::Open($archive, [System.IO.FileMode]::CreateNew)
-try {
-    $zipWriter = [System.IO.Compression.ZipArchive]::new(
-        $archiveStream, [System.IO.Compression.ZipArchiveMode]::Create, $true
-    )
-    try {
-        foreach ($file in Get-ChildItem -LiteralPath $releaseRoot -Recurse -File | Sort-Object FullName) {
-            $relative = $file.FullName.Substring($distRoot.Length + 1).Replace('\', '/')
-            $entry = $zipWriter.CreateEntry($relative, [System.IO.Compression.CompressionLevel]::Optimal)
-            $inputStream = [System.IO.File]::OpenRead($file.FullName)
-            try {
-                $outputStream = $entry.Open()
-                try { $inputStream.CopyTo($outputStream) } finally { $outputStream.Dispose() }
-            } finally {
-                $inputStream.Dispose()
-            }
-        }
-    } finally {
-        $zipWriter.Dispose()
-    }
-} finally {
-    $archiveStream.Dispose()
-}
+$archiveRootName = Write-QproReleaseArchive -ReleaseRoot $releaseRoot -ArchivePath $archive
 
 $releaseZip = [System.IO.Compression.ZipFile]::OpenRead($archive)
 try {
@@ -504,7 +482,7 @@ try {
     }
     $missingArchiveFiles = @(
         @($runtimeFiles) + @('python-runtime\python.3.12.10.nupkg', 'python-runtime\LICENSE.txt', 'python-runtime\README.txt') | Where-Object {
-            $entry = "$releaseName/QproRuntime/$($_.Replace('\', '/'))"
+            $entry = "$archiveRootName/QproRuntime/$($_.Replace('\', '/'))"
             -not $archiveNames.Contains($entry)
         }
     )
@@ -519,7 +497,7 @@ $releaseZip = [System.IO.Compression.ZipFile]::OpenRead($archive)
 try {
     $missingArchiveFiles = @(
         $runtimeFiles | Where-Object {
-            $entry = "$releaseName/QproRuntime/$($_.Replace('\', '/'))"
+            $entry = "$archiveRootName/QproRuntime/$($_.Replace('\', '/'))"
             $null -eq $releaseZip.GetEntry($entry)
         }
     )

@@ -136,8 +136,11 @@ internal static class HubUpdatePackage
         if (roots.Count != 1 || filePaths.Overlaps(directories))
             throw new InvalidDataException("The update ZIP does not have one consistent app folder.");
         packageName = roots.Single();
-        if (!packageName.StartsWith("QproFaceTracking", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("The update ZIP does not contain a Qpro app folder.");
+        // Release ZIPs may use either product name. The executable, manifest
+        // identity and checksums below still define the supported app format.
+        if (!packageName.StartsWith("QproFaceTracking", StringComparison.OrdinalIgnoreCase) &&
+            !packageName.StartsWith("QproCompanion", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("The update ZIP has an unrecognized app folder. Download the Qpro Companion release ZIP from the release page; GitHub's source archives cannot be installed as app updates.");
         foreach (string required in new[] { "QproFaceTracking.exe", "QproRuntime/release-manifest.json", "SHA256SUMS.txt" })
             if (!filePaths.Contains(packageName + "/" + required))
                 throw new InvalidDataException("The update ZIP is missing " + required + ".");
