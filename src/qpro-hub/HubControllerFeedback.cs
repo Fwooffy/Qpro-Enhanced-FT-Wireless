@@ -26,7 +26,7 @@ internal sealed record HubControllerFeedback(
             var compatible = ReportJson.Boolean(result.GetProperty("compatible"));
             var components = ReportJson.Boolean(result.GetProperty("componentsReady"));
             _ = ReportJson.Boolean(result.GetProperty("experimental"));
-            _ = ReportJson.Boolean(result.GetProperty("runtimeValidated"));
+            var runtimeValidated = ReportJson.Boolean(result.GetProperty("runtimeValidated"));
             var version = ReportJson.NullableText(result.GetProperty("androidVersion"), 128);
             var hash = ReportJson.NullableText(result.GetProperty("pcDriverSha256"), 64);
             var fridaVersion = ReportJson.NullableText(result.GetProperty("fridaVersion"), 64);
@@ -54,18 +54,25 @@ internal sealed record HubControllerFeedback(
                 .OrderBy(reason => MissingPcProfile(reason) ? 0 : MissingHeadsetProfile(reason) ? 1 : 2).ToArray();
             var detail = blocked
                 ? reasons.Length == 0 ? "The required hand/controller checks did not pass." : string.Join("\n", reasons)
-                : $"Virtual Desktop headset version: {version ?? "not reported"}. Component and driver layout prechecks passed. Native hook validation is still pending; live optical input has not been verified." +
+                : $"Virtual Desktop headset version: {version ?? "not reported"}. Required components and driver layout checks passed. " +
+                    (runtimeValidated ? "The helper reported native hook validation; live optical input has not been verified."
+                        : "Native hook validation is still pending; live optical input has not been verified.") +
                     (warnings.Length == 0 ? string.Empty : "\n" + string.Join("\n", warnings));
             // A missing version profile needs compatibility work. Component repair alone
             // cannot resolve it, so do not send users into a repeated installation loop.
             var unsupportedProfile = problems.Any(problem =>
                 problem.Contains("no validated hand profile", StringComparison.OrdinalIgnoreCase) ||
                 problem.Contains("Controller ABI", StringComparison.OrdinalIgnoreCase) || MissingPcProfile(problem));
+            var settingsProblem = problems.Any(problem =>
+                problem.Contains("hand_tracking_enabled", StringComparison.OrdinalIgnoreCase) ||
+                problem.Contains("multimodal_hands_and_controllers_enabled", StringComparison.OrdinalIgnoreCase) ||
+                problem.Contains("simultaneous_hands_and_controllers_mode", StringComparison.OrdinalIgnoreCase));
             if (blocked)
                 detail += $"\nQuest app version: {version ?? "not reported"}.\nWindows Streamer driver SHA-256: {hash ?? "not reported"}.";
             var next = unsupportedProfile
                 ? "Keep Hands + controllers off. Use Activity > Copy diagnostics to share the Quest app version and Windows Streamer driver SHA-256 for a compatibility review."
                 : !components ? "Close SteamVR and install the hand/controller components, reopen SteamVR through Virtual Desktop, then check again."
+                : settingsProblem ? "On Quest, open Hands & eyes and enable Hand tracking and Automatically switch between controllers and hands. In Singularity > AIO Tweaks, enable Simultaneous Hands & Controllers. Keep the headset awake, reconnect Virtual Desktop, then check again."
                 : !compatible ? "Follow the reported detail and check again. Native hooks must pass code and data-layout validation before activation."
                 : "Start tracking with Hands + controllers selected, then wait for valid live finger input. A preliminary inactive setting is a warning, not proof that the menu switch is off.";
             var title = pcProfile && headsetProfile ? "Windows Streamer driver and Quest app both need hand profiles"
@@ -73,7 +80,8 @@ internal sealed record HubControllerFeedback(
                 : headsetProfile ? "Quest Virtual Desktop app needs a hand profile"
                 : unsupportedProfile ? "Virtual Desktop hand profile needs review"
                 : !components ? "Hand/controller components need attention"
-                : !compatible ? "Hand/controller compatibility needs attention" : "Hand/controller prechecks passed";
+                : settingsProblem ? "Check the Quest hand settings"
+                : !compatible ? "Hand/controller compatibility needs attention" : "Controller requirements ready";
             feedback = new(ControllerFeedbackState.Checked, title, detail, next, blocked);
             return true;
         }

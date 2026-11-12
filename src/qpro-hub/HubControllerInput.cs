@@ -290,8 +290,10 @@ internal sealed partial class HubForm
     {
         if (!_hybridHands.Checked && !_controllerTouchpad.Checked) return;
         PresentControllerStatus("Checking controller input…",
-            "Startup checks are running. Live optical fingers have not arrived yet.",
-            "Keep the headset connected and your fingers in view.", Warning);
+            _hybridHands.Checked ? "Startup checks are running. Live optical fingers have not arrived yet."
+                : $"Starting {_touchpadMode.SelectedItem} on {_touchpadSide.SelectedItem}. Waiting for thumb-rest sensor input.",
+            _hybridHands.Checked ? "Keep the headset connected and your fingers in view."
+                : "Keep the selected controller awake and connected to the headset.", Warning);
         _controllerFeedback = null;
         _controllerInputStopped = false;
         _handsReady = _touchpadReady = false;
@@ -435,15 +437,27 @@ internal sealed partial class HubForm
         }
         else if (line.StartsWith("TOUCHPAD_READY ", StringComparison.Ordinal))
         {
+            if (!HubThumbRestReady.TryParse(line, out var ready) || ready!.Mode != TouchpadModeValue() || ready.Side != TouchpadSideValue())
+            {
+                _touchpadReady = false;
+                PresentControllerStatus("Thumb-rest input is unverified",
+                    "The sensor report is incomplete or does not match the selected mode and controllers.",
+                    "Stop tracking, check the selected mode and controllers, then retry. Copy diagnostics if this repeats.", Warning);
+                UpdateSessionReadiness();
+                return;
+            }
             _touchpadReady = true;
-            if (TouchpadModeValue() == "mouse")
+            var scope = $"{_touchpadMode.SelectedItem} · {_touchpadSide.SelectedItem}. ";
+            if (ready.Mode == "mouse")
                 PresentControllerStatus("Desktop mouse input received",
-                    "Valid thumb-rest packets are being read for Windows pointer control.",
+                    scope + "Valid thumb-rest packets are being read for Windows pointer control.",
                     "Confirm the pointer moves and the thumb-rest press clicks. Stop tracking releases the mouse input.", Good);
             else
                 PresentControllerStatus("Live thumb-rest input received",
-                    "Valid thumb-rest packets are being forwarded to SteamVR.",
-                    "Confirm the controller add-on loaded and assign the extra input in your app's SteamVR binding.", Good);
+                    scope + "Valid sensor packets are being forwarded to the SteamVR add-on; the game response still needs checking.",
+                    ready.Mode == "swipe"
+                        ? "Point at a scrollable Dashboard or VRChat list and try both directions. If it does not scroll, check the binding result in Activity. Stop tracking before changing Swipe sensitivity."
+                        : "Confirm the controller add-on loaded and assign the extra input in your app's SteamVR binding.", Good);
         }
         else if (liveHandLine)
         {
@@ -494,10 +508,33 @@ internal sealed partial class HubForm
         // Green prechecks confirm the static report only. The report's detail
         // still says that live optical input and game performance are unverified.
         var color = feedback.IsError ? Bad : feedback.State == ControllerFeedbackState.Waiting ? Warning : Good;
-        var next = feedback.State == ControllerFeedbackState.Checked && !feedback.IsError
-            ? "Choose your optional inputs and press Start tracking; confirm real finger movement and any thumb-rest bindings in your game."
-            : feedback.NextStep;
-        PresentControllerStatus(feedback.Title, feedback.Detail, next, color);
+        PresentControllerStatus(feedback.Title, feedback.Detail, feedback.NextStep, color);
+    }
+}
+
+// A readiness prefix alone is not sensor evidence. Match the worker's protocol
+// and session selection before marking thumb-rest input as received.
+internal sealed record HubThumbRestReady(string Mode, string Side)
+{
+    internal static bool TryParse(string line, out HubThumbRestReady? ready)
+    {
+        ready = null;
+        const string prefix = "TOUCHPAD_READY ";
+        if (!line.StartsWith(prefix, StringComparison.Ordinal) || line.Length > 4096) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(line[prefix.Length..], new JsonDocumentOptions { MaxDepth = 4 });
+            var result = document.RootElement;
+            ReportJson.RequireKeys(result, "protocol", "mode", "side");
+            if (ReportJson.Text(result.GetProperty("protocol"), 32) != "QPTP-v1") return false;
+            var mode = ReportJson.Text(result.GetProperty("mode"), 32);
+            var side = ReportJson.Text(result.GetProperty("side"), 16);
+            if (mode is not ("trackpad" or "joystick" or "swipe" or "mouse") || side is not ("both" or "left" or "right")) return false;
+            ready = new(mode, side);
+            return true;
+        }
+        catch (Exception error) when (error is JsonException or KeyNotFoundException or InvalidOperationException or FormatException or ArgumentException)
+        { return false; }
     }
 }
 

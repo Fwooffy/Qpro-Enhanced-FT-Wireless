@@ -114,6 +114,22 @@ var hands = HandCheck();
 Check(HubControllerFeedback.TryParseCheckLine(HubControllerFeedback.CheckPrefix + hands.ToJsonString(), out var handResult) &&
     !handResult!.IsError && handResult.Detail.Contains("live optical input has not been verified") &&
     handResult.NextStep.Contains("warning"), "Preliminary inactive values became a blocking menu failure or live readiness.");
+Check(handResult!.Title == "Controller requirements ready", "Successful preliminary checks must describe requirements, not claim live input.");
+var reportedNativeValidation = HandCheck();
+reportedNativeValidation["runtimeValidated"] = true;
+Check(HubControllerFeedback.TryParseCheckLine(HubControllerFeedback.CheckPrefix + reportedNativeValidation.ToJsonString(), out var nativeResult) &&
+    nativeResult!.Detail.Contains("helper reported native hook validation") &&
+    nativeResult.Detail.Contains("live optical input has not been verified") &&
+    !nativeResult.Detail.Contains("still pending"),
+    "Reported native validation must remain distinct from actual live optical evidence.");
+var settingsMissing = HandCheck(false);
+settingsMissing["settings"]!["simultaneous_hands_and_controllers_mode"] = "0";
+settingsMissing["problems"] = new JsonArray("Headset current-user setting simultaneous_hands_and_controllers_mode must be 1.");
+Check(HubControllerFeedback.TryParseCheckLine(HubControllerFeedback.CheckPrefix + settingsMissing.ToJsonString(), out var settingsResult) &&
+    settingsResult!.IsError && settingsResult.Title == "Check the Quest hand settings" &&
+    settingsResult.NextStep.Contains("Automatically switch between controllers and hands") &&
+    settingsResult.NextStep.Contains("Singularity > AIO Tweaks") && !settingsResult.NextStep.Contains("install"),
+    "A missing headset prerequisite must point to both actual settings without unnecessary component reinstall advice.");
 var unfamiliar = HandCheck();
 unfamiliar["androidVersion"] = "1.34.99.0";
 unfamiliar["warnings"] = new JsonArray("Unfamiliar version; managed hand-result and native caller validation will run at startup.");

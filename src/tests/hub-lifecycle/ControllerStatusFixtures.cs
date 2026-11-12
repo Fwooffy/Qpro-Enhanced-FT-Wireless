@@ -127,16 +127,40 @@ internal static class ControllerStatusFixtures
             mode.SelectedItem = name;
             Check(Get<Label>("_controllerModeHint").Text.StartsWith(name + ":"), "mode guidance follows " + name);
         }
-        Observe("TOUCHPAD_READY {\"mode\":\"mouse\"}");
+        Get<CheckBox>("_controllerTouchpad").Checked = true;
+        side.SelectedItem = "Right (R)";
+        Observe("TOUCHPAD_READY {\"protocol\":\"QPTP-v1\",\"mode\":\"mouse\",\"side\":\"right\"}");
         Check(Get<Label>("_handsStatusDetail").Text.Contains("Windows pointer") &&
             !Get<Label>("_handsStatusDetail").Text.Contains("SteamVR") &&
+            Get<Label>("_handsStatusDetail").Text.Contains("Right (R)") &&
             Get<Label>("_handsStatusNext").Text.Contains("Stop tracking releases"),
             "Desktop mouse readiness explains pointer control rather than SteamVR binding");
         mode.SelectedItem = "Trackpad";
-        Observe("TOUCHPAD_READY {\"mode\":\"trackpad\"}");
+        Observe("TOUCHPAD_READY {\"protocol\":\"QPTP-v1\",\"mode\":\"trackpad\",\"side\":\"right\"}");
         Check(Get<Label>("_handsStatusDetail").Text.Contains("SteamVR") &&
             Get<Label>("_handsStatusNext").Text.Contains("binding"),
             "trackpad readiness retains the SteamVR add-on and binding guidance");
+        mode.SelectedItem = "Swipe";
+        Observe("TOUCHPAD_READY {\"protocol\":\"QPTP-v1\",\"mode\":\"swipe\",\"side\":\"right\"}");
+        Check(Get<bool>("_touchpadReady") && Get<Label>("_handsStatusDetail").Text.Contains("Swipe · Right (R)") &&
+            Get<Label>("_handsStatusNext").Text.Contains("scrollable Dashboard or VRChat list") &&
+            Get<Label>("_handsStatusNext").Text.Contains("Swipe sensitivity"),
+            "Swipe readiness displays selected scope and its actual scrolling check");
+        foreach (var invalid in new[]
+        {
+            "TOUCHPAD_READY invalid", "TOUCHPAD_READY {\"mode\":\"swipe\"}",
+            "TOUCHPAD_READY {\"protocol\":\"QPTP-v1\",\"mode\":\"swipe\",\"side\":\"left\"}",
+            "TOUCHPAD_READY {\"protocol\":\"QPTP-v1\",\"mode\":\"mouse\",\"side\":\"right\"}",
+            "TOUCHPAD_READY {\"protocol\":\"QPTP-v2\",\"mode\":\"swipe\",\"side\":\"right\"}",
+            "TOUCHPAD_READY {\"protocol\":\"QPTP-v1\",\"mode\":\"swipe\",\"side\":\"right\",\"side\":\"right\"}",
+        })
+        {
+            Observe(invalid);
+            Check(!Get<bool>("_touchpadReady") && Get<Label>("_handsStatus").Text == "Thumb-rest input is unverified",
+                "incomplete or different-session thumb-rest evidence does not leave a green ready result");
+        }
+        Observe("TOUCHPAD_READY {\"protocol\":\"QPTP-v1\",\"mode\":\"swipe\",\"side\":\"right\"}");
+        Check(Get<bool>("_touchpadReady"), "a matching thumb-rest report restores readiness");
     }
 
     static void Check(bool passed, string message)
