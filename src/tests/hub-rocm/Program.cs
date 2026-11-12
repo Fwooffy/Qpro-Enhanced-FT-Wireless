@@ -61,6 +61,18 @@ try
     WriteReady(custom, false, version: "10.2.0");
     Check(!HubRocmRuntime.IsReady(custom, false, "gfx1100"), "An unreviewed future ROCm version was accepted.");
     WriteReady(custom, false, version: "10.1.0");
+    var status = HubRocmRuntime.ReadStatus(release, "gfx1100", legacyEligible: true, local);
+    Check(status == new HubRocmStatus("10.1.0", true, true), "The combined status did not retain latest-version and legacy readiness.");
+    Check(HubRocmRuntime.ReadStatus(release, "gfx1100", legacyEligible: false, local) ==
+        new HubRocmStatus("10.1.0", false, true), "A legacy fallback appeared for an ineligible GPU.");
+    Check(HubRocmRuntime.ReadStatus(release, "gfx1031", legacyEligible: true, local) ==
+        new HubRocmStatus(null, false, true), "Wrong-GPU installs became ready in the combined status.");
+    File.WriteAllText(Path.Combine(custom, "qpro-rocm-ready.json"), "partial repair");
+    Check(HubRocmRuntime.ReadStatus(release, "gfx1100", legacyEligible: true, local).LatestReadyVersion == "10.0.0",
+        "A fresh status did not notice a broken latest marker and fall back to the healthy older runtime.");
+    WriteReady(custom, false, version: "10.1.0");
+    Check(HubRocmRuntime.ReadStatus(release, "gfx1100", legacyEligible: true, local).LatestReadyVersion == "10.1.0",
+        "A fresh status did not notice a repaired marker.");
     var previousCustom = Path.Combine(root, "prior custom runtime");
     WriteReady(previousCustom, false);
     File.WriteAllText(index, JsonSerializer.Serialize(new { schema = 1, latestEnvironment = custom, latestFallbackEnvironments = new[] { previousCustom } }));
@@ -92,6 +104,8 @@ try
     WriteReady(latest, false);
     File.Delete(Path.Combine(latest, "Scripts", "python.exe"));
     Check(!HubRocmRuntime.IsReady(latest, false, "gfx1100"), "Missing interpreter was marked ready.");
+    Check(HubRocmRuntime.ReadStatus(release, "gfx1100", legacyEligible: false, local) ==
+        new HubRocmStatus(null, false, false), "A missing interpreter or obsolete index kept readiness cached.");
     Console.WriteLine("PASS: Hub ROCm OS policy requires Windows 10 22H2 opt-in and preserves Windows 11; routing rejects wrong GPU, incomplete installs and damaged metadata.");
 }
 finally

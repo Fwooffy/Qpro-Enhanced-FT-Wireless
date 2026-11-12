@@ -131,19 +131,7 @@ internal sealed class HubEnvironment
     {
         if (!File.Exists(TrackingSourcePath)) return false;
         var selectedAt = File.GetLastWriteTimeUtc(TrackingSourcePath);
-        foreach (var process in Process.GetProcessesByName("VRCFaceTracking"))
-        {
-            using (process)
-            {
-                try
-                {
-                    if (process.StartTime.ToUniversalTime() < selectedAt) return true;
-                }
-                catch (InvalidOperationException) { }
-                catch (Win32Exception) { return true; }
-            }
-        }
-        return false;
+        return HubProcessProbe.StartedBefore("VRCFaceTracking", selectedAt);
     }
 
     internal string? GetConfiguredAdbTarget()

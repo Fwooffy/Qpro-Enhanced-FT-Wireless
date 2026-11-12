@@ -44,18 +44,13 @@ internal sealed partial class HubForm
 
     private HubStatusSnapshot ReadStatusSnapshot()
     {
-        static bool Running(string name)
-        {
-            var processes = Process.GetProcessesByName(name);
-            try { return processes.Length > 0; }
-            finally { foreach (var process in processes) process.Dispose(); }
-        }
-        var steam = Running("vrserver");
-        var vrcft = Running("VRCFaceTracking");
+        var steam = HubProcessProbe.AnyRunning("vrserver");
+        var vrcft = HubProcessProbe.AnyRunning("VRCFaceTracking");
         var module = _environment.InspectModuleInstallation();
         var needsRestart = module.IsCurrent && vrcft && _environment.TrackingSourceRequiresVrcftRestart();
-        return new(steam, vrcft, module, needsRestart, _environment.BackendReady(), BridgeUninstallAvailable(),
-            LatestRocmInstalledVersion(), LegacyRocmInstalled(), LatestRocmEnvironmentExists());
+        var rocm = HubRocmRuntime.ReadStatus(_root, _amdGpuLatestTarget, _amdGpuLegacyEligible);
+        return new(steam, vrcft, module, needsRestart, _environment.BackendReady(), module.IsCurrent || BridgeUninstallAvailable(),
+            rocm.LatestReadyVersion, rocm.LegacyReady, rocm.LatestEnvironmentExists);
     }
 
     private ProcessStartInfo PowerShellStart(string script, IEnumerable<string> args, bool hidden)
@@ -337,7 +332,7 @@ internal sealed partial class HubForm
     private bool BridgeInstalled() => _environment.BridgeInstalled();
     private static bool VrcftModuleProcessRunning() =>
         new[] { "VRCFaceTracking", "VRCFaceTracking.ModuleProcess", "ModuleProcess" }
-            .Any(name => Process.GetProcessesByName(name).Length > 0);
+            .Any(HubProcessProbe.AnyRunning);
     private bool BridgeUninstallAvailable()
     {
         return BridgeInstalled() || HubModuleInstallation.HasSavedBackups(Path.Combine(_root, "research"));

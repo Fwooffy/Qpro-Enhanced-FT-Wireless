@@ -3,11 +3,28 @@ using System.Text.RegularExpressions;
 
 namespace QproFaceTracking.Hub;
 
+internal sealed record HubRocmStatus(string? LatestReadyVersion, bool LegacyReady, bool LatestEnvironmentExists);
+
 // Keep setup status aligned with runtime-python.ps1: verified shared installs
 // survive ZIP upgrades, while older release-local environments remain usable.
 internal static class HubRocmRuntime
 {
     internal const string InstallVersion = "10.1";
+
+    internal static HubRocmStatus ReadStatus(string releaseRoot, string? gfxTarget, bool legacyEligible,
+        string? localAppData = null)
+    {
+        // Reuse discovery within this refresh. The next refresh still reads the
+        // index and markers afresh, so installs and repairs are never cached away.
+        var latest = Candidates(releaseRoot, legacy: false, localAppData);
+        var latestVersion = latest.Select(path => ReadyVersion(path, legacy: false, gfxTarget))
+            .OfType<string>().OrderByDescending(version => version, StringComparer.Ordinal).FirstOrDefault();
+        var latestExists = latest.Any(path => File.Exists(Path.Combine(path, "Scripts", "python.exe")));
+        var legacyReady = legacyEligible && Candidates(releaseRoot, legacy: true, localAppData)
+            .Any(path => IsReady(path, legacy: true, gfxTarget));
+        return new(latestVersion, legacyReady, latestExists);
+    }
+
     internal static IReadOnlyList<string> Candidates(string releaseRoot, bool legacy, string? localAppData = null)
     {
         localAppData ??= Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
