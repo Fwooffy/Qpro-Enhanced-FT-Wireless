@@ -1,7 +1,7 @@
 # Build-only freshness receipt. Hashes detect stale/mixed local stages; they do
 # not attest where a binary came from or establish live hardware compatibility.
 function Get-QproNativeInputPaths {
-    @('headset_reader.c', 'sensor_profile.h', 'reader_lifetime.h', 'protocol.h',
+    @('headset_reader.c', 'sensor_profile.h', 'layout_probe.h', 'reader_lifetime.h', 'protocol.h',
         'steamvr_provider.cpp', 'controller_logic.hpp', 'settings.hpp',
         'driver_health.hpp', 'dashboard_scroll.hpp',
         'third_party/openvr/openvr_driver.h', 'third_party/openvr/SDK_REVISION.txt',

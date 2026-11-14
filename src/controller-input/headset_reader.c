@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "sensor_profile.h"
+#include "layout_probe.h"
 #include "reader_lifetime.h"
 #include <dirent.h>
 #include <arpa/inet.h>
@@ -16,9 +17,10 @@
 #include <time.h>
 #include <unistd.h>
 
-// This layout is an experimental firmware profile, not a claim of live validation.
-static const char *profile_name = "legacy-51503870024400340";
-static const char *firmware_build = "51503870024400340";
+// This experimental profile names the shared-page ABI, not an OS release.
+// Probing is read-only; matching data does not verify physical signal meaning.
+static const char *profile_name = "touch-pro-shared-pages-v1";
+static const char *legacy_profile_name = "legacy-51503870024400340";
 enum { PAGE_SIZE = QPTP_PAGE_SIZE };
 typedef struct {
     const uint8_t *address;
@@ -66,7 +68,7 @@ static int read_build(char out[128]) {
 static pid_t tracking_pid(void) {
     // /proc is read-only discovery; there is no service restart or code injection.
     DIR *directory = opendir("/proc"); if (!directory) return -1;
-    struct dirent *entry;
+    struct dirent *entry; pid_t found = -1;
     while ((entry = readdir(directory))) {
         char *end; long number = strtol(entry->d_name, &end, 10);
         if (!*entry->d_name || *end || number < 1 || number > INT32_MAX) continue;
@@ -74,10 +76,13 @@ static pid_t tracking_pid(void) {
         char path[64], name[256]; snprintf(path, sizeof path, "/proc/%d/cmdline", (int)pid);
         if (!read_file(path, name, sizeof name)) continue;
         const char *base = strrchr(name, '/'); base = base ? base + 1 : name;
-        if (!strcmp(base, "trackingservice")) { closedir(directory); return pid; }
+        if (!strcmp(base, "trackingservice")) {
+            if (found > 0) { closedir(directory); return -1; }
+            found = pid;
+        }
     }
     closedir(directory);
-    return -1;
+    return found;
 }
 static int locate(pid_t pid, int side, Page *result) {
     char path[64], text[1024], expected[96];
@@ -117,10 +122,43 @@ static int refresh(Source *source) {
         if (mapping == MAP_FAILED) { release(source); return 0; }
         source->hand[side] = locations[side]; source->hand[side].address = mapping;
     }
-    return 1;
+    return 2; // A new producer/mapping requires another capability probe.
 }
 static QptpSide sample(Page *page, uint64_t now) {
     return qptp_read_sample(page->address, &page->last_counter, &page->changed_ns, now);
+}
+static int observe_layout(Source *source, QptpLayoutProbe *probe, uint64_t now, int allow_idle_side) {
+    for (int side = 0; side < 2; ++side) {
+        QptpLayoutSnapshot snapshot;
+        Page *page = &source->hand[side];
+        if (!qptp_layout_snapshot(page->address, PAGE_SIZE, &snapshot)) {
+            qptp_layout_probe_observe(probe, side, 0, (QptpSide){0});
+            return 0;
+        }
+        QptpSide value = sample(page, now);
+        // Do not combine publications when the writer advanced during the read.
+        if (snapshot.sequence != page->last_counter) return 0;
+        // An already-admitted sleeping controller stays neutral without
+        // disabling its awake partner. Malformed slots still revoke the pair.
+        if (allow_idle_side && !(value.flags & QPTP_VALID)) continue;
+        qptp_layout_probe_observe(probe, side, snapshot.sequence, value);
+    }
+    return qptp_layout_probe_ready(probe);
+}
+static int wait_layout(Source *source, QptpLayoutProbe *probe) {
+    const uint64_t until = now_ns() + UINT64_C(3000000000);
+    qptp_layout_probe_init(probe);
+    do {
+        int refreshed = refresh(source);
+        if (refreshed != 1) qptp_layout_probe_init(probe);
+        if (refreshed && observe_layout(source, probe, now_ns(), 0)) return 1;
+        usleep(10000);
+    } while (!stopping && now_ns() < until);
+    return 0;
+}
+static void refused_check(const char *build, const char *reason) {
+    printf("QPTP_CHECK_REFUSED build=%s profile=%s reason=%s\n", build, profile_name, reason);
+    puts("QPTP_STOPPED");
 }
 static int send_pair(int client, const uint8_t *bytes, int final) {
     size_t offset = 0;
@@ -148,11 +186,11 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--rate") && i + 1 < argc) rate = integer(argv[++i], 40, 90);
         else { fprintf(stderr, "Usage: %s --profile %s [--check] [--port 27063] [--rate 60] [--stop-file PATH]\n", argv[0], profile_name); return 2; }
     }
-    if (!selected || strcmp(selected, profile_name) || port < 0 || rate < 0) {
+    if (!selected || (strcmp(selected, profile_name) && strcmp(selected, legacy_profile_name)) || port < 0 || rate < 0) {
         fputs("QPTP_UNSUPPORTED explicit experimental profile and valid arguments required\n", stderr); return 2;
     }
     char build[128] = {0};
-    if (!read_build(build) || strcmp(build, firmware_build)) {
+    if (!read_build(build) || !qptp_layout_build_identified(build)) {
         fprintf(stderr, "QPTP_UNSUPPORTED build=%s profile=%s; no controller memory was mapped\n", build, selected); return 3;
     }
     if (getuid() != 0) { fputs("QPTP_ROOT_REQUIRED\n", stderr); return 4; }
@@ -171,27 +209,36 @@ int main(int argc, char **argv) {
         }
     }
     if (!refresh(&source)) {
-        fputs("QPTP_SOURCE_UNAVAILABLE controller shared pages could not be mapped read-only\n", stderr);
+        release(&source);
+        if (check) refused_check(build, "source-unavailable");
+        else fputs("QPTP_SOURCE_UNAVAILABLE controller shared pages could not be mapped read-only\n", stderr);
         if (server >= 0) close(server); return 5;
     }
-    printf("QPTP_PROFILE build=%s experimental=1 live_validated=0 transport=read-only-shared-pages\n", build); fflush(stdout);
+    QptpLayoutProbe probe;
+    if (!wait_layout(&source, &probe)) {
+        release(&source);
+        if (server >= 0) close(server);
+        if (check) refused_check(build, "layout-inconclusive");
+        else { fputs("QPTP_LAYOUT_INCONCLUSIVE no fresh consistent controller layout; output stayed disabled\n", stderr); puts("QPTP_STOPPED"); }
+        return 6;
+    }
     uint64_t sequence = 0;
     if (check) {
-        uint64_t until = now_ns() + UINT64_C(3000000000);
-        do {
-            uint64_t now = now_ns(); QptpSide left = sample(&source.hand[0], now), right = sample(&source.hand[1], now);
-            if ((left.flags & QPTP_VALID) && (right.flags & QPTP_VALID)) {
-                printf("QPTP_CHECK_READY left_flags=%u right_flags=%u left_xy=%.3f,%.3f right_xy=%.3f,%.3f\n",
-                    left.flags, right.flags, left.x, left.y, right.x, right.y); release(&source); return 0;
-            }
-            usleep(10000);
-        } while (!stopping && now_ns() < until);
-        release(&source); fputs("QPTP_CHECK_INVALID no fresh semantically valid pair; keep controllers awake\n", stderr); return 6;
+        uint64_t now = now_ns(); QptpSide left = sample(&source.hand[0], now), right = sample(&source.hand[1], now);
+        if (!(left.flags & QPTP_VALID) || !(right.flags & QPTP_VALID)) {
+            release(&source); refused_check(build, "layout-inconclusive"); return 6;
+        }
+        printf("QPTP_PROFILE build=%s profile=%s experimental=1 live_validated=0 transport=read-only-shared-pages\n", build, profile_name);
+        printf("QPTP_CHECK_READY left_flags=%u right_flags=%u left_xy=%.3f,%.3f right_xy=%.3f,%.3f left_samples=%u right_samples=%u\n",
+            left.flags, right.flags, left.x, left.y, right.x, right.y,
+            qptp_layout_probe_count(&probe, 0), qptp_layout_probe_count(&probe, 1));
+        release(&source); return 0;
     }
+    printf("QPTP_PROFILE build=%s profile=%s experimental=1 live_validated=0 transport=read-only-shared-pages\n", build, profile_name); fflush(stdout);
     printf("QPTP_LISTENING address=127.0.0.1 port=%d rate=%d\n", port, rate); fflush(stdout);
     int client = -1; uint64_t next = 0, inspected = 0;
     QptpReaderLifetime lifetime; qptp_lifetime_start(&lifetime, now_ns());
-    int exit_status = 0;
+    int exit_status = 0, layout_ready = 1;
     while (!stopping && !(stop_file && access(stop_file, F_OK) == 0)) {
         uint64_t now = now_ns();
         if (qptp_lifetime_expired(&lifetime, now)) {
@@ -199,14 +246,20 @@ int main(int argc, char **argv) {
             if (!lifetime.ever_connected) exit_status = 8;
             break;
         }
-        if (now - inspected >= UINT64_C(500000000)) { refresh(&source); inspected = now; }
+        if (now - inspected >= UINT64_C(500000000)) {
+            if (refresh(&source) != 1) { layout_ready = 0; qptp_layout_probe_init(&probe); }
+            inspected = now;
+        }
         if (client < 0) {
             client = accept4(server, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
             if (client >= 0) { qptp_lifetime_connect(&lifetime); next = 0; }
         }
         if (client >= 0 && now >= next) {
             QptpPacket packet = { .sequence = ++sequence, .monotonic_ns = now };
-            packet.sides[0] = sample(&source.hand[0], now); packet.sides[1] = sample(&source.hand[1], now);
+            layout_ready = observe_layout(&source, &probe, now, qptp_layout_probe_ready(&probe));
+            if (layout_ready) {
+                packet.sides[0] = sample(&source.hand[0], now); packet.sides[1] = sample(&source.hand[1], now);
+            }
             uint8_t wire[QPTP_PACKET_BYTES]; qptp_encode(&packet, wire);
             if (!send_pair(client, wire, 0)) {
                 close(client); client = -1; qptp_lifetime_disconnect(&lifetime, now_ns());

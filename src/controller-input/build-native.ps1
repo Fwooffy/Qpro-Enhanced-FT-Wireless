@@ -13,6 +13,8 @@ $env:ZIG_GLOBAL_CACHE_DIR = Join-Path $output '.zig-cache'
 $reader = Join-Path $output 'qpro-controller-input'
 $logicTest = Join-Path $output 'test-controller-logic.exe'
 $readerTest = Join-Path $output 'test-controller-reader.exe'
+$layoutTest = Join-Path $output 'test-controller-layout.exe'
+$layoutIntegrationTest = Join-Path $output 'test-controller-layout-integration.exe'
 $dashboardTest = Join-Path $output 'test-dashboard-scroll.exe'
 $adoptionTest = Join-Path $output 'test-controller-adoption.exe'
 $mouseTest = Join-Path $output 'test-mouse-smoothing.exe'
@@ -28,6 +30,16 @@ function Invoke-Compiler([string[]]$CompilerArguments) {
 Push-Location -LiteralPath $PSScriptRoot
 try {
     & (Join-Path $PSScriptRoot 'tests\test_native_receipt.ps1')
+    # Compile the production page types and observation function into the fake-
+    # page fixture, so recovery and sleeping-controller checks exercise the reader.
+    $readerSource = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'headset_reader.c'))
+    foreach ($section in @(@{ Start = 'typedef struct {'; End = 'static volatile'; File = 'reader_types.inc' },
+                           @{ Start = 'static QptpSide sample('; End = 'static int wait_layout('; File = 'reader_probe.inc' })) {
+        $sectionStart = $readerSource.IndexOf($section.Start, [StringComparison]::Ordinal)
+        $sectionEnd = if ($sectionStart -ge 0) { $readerSource.IndexOf($section.End, $sectionStart, [StringComparison]::Ordinal) } else { -1 }
+        if ($sectionStart -lt 0 -or $sectionEnd -le $sectionStart) { throw "Reader integration test boundary is missing: $($section.File)" }
+        [IO.File]::WriteAllText((Join-Path $output $section.File), $readerSource.Substring($sectionStart, $sectionEnd - $sectionStart), [Text.UTF8Encoding]::new($false))
+    }
     # Exercise the real adoption function against fake OpenVR state, including
     # failed component creation and verified profile restoration.
     $providerSource = Get-Content -LiteralPath 'steamvr_provider.cpp' -Raw
@@ -38,6 +50,8 @@ try {
     [IO.File]::WriteAllText((Join-Path $output 'adopt_under_test.inc'), $providerSource.Substring($adoptStart, $adoptEnd - $adoptStart), [Text.UTF8Encoding]::new($false))
     Invoke-Compiler @('c++', '-target', 'x86_64-windows-gnu', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', 'tests/test_logic.cpp', '-o', $logicTest)
     Invoke-Compiler @('cc', '-target', 'x86_64-windows-gnu', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', 'tests/test_reader.c', '-o', $readerTest)
+    Invoke-Compiler @('cc', '-target', 'x86_64-windows-gnu', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', 'tests/test_layout_probe.c', '-o', $layoutTest)
+    Invoke-Compiler @('cc', '-target', 'x86_64-windows-gnu', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', "-I$output", 'tests/test_layout_integration.c', '-o', $layoutIntegrationTest)
     Invoke-Compiler @('c++', '-target', 'x86_64-windows-gnu', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', 'tests/test_dashboard_scroll.cpp', '-o', $dashboardTest)
     Invoke-Compiler @('c++', '-target', 'x86_64-windows-gnu', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', "-I$output", 'tests/test_adoption.cpp', '-o', $adoptionTest)
     Invoke-Compiler @('c++', '-target', 'x86_64-windows-gnu', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', 'tests/test_mouse_smoothing.cpp', '-o', $mouseTest)
@@ -46,6 +60,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Controller logic checks failed with code $LASTEXITCODE." }
     & $readerTest
     if ($LASTEXITCODE -ne 0) { throw "Fake-page/lifetime checks failed with code $LASTEXITCODE." }
+    & $layoutTest
+    if ($LASTEXITCODE -ne 0) { throw "Controller layout checks failed with code $LASTEXITCODE." }
+    & $layoutIntegrationTest
+    if ($LASTEXITCODE -ne 0) { throw "Reader layout integration checks failed with code $LASTEXITCODE." }
     & $dashboardTest
     if ($LASTEXITCODE -ne 0) { throw "Dashboard scroll checks failed with code $LASTEXITCODE." }
     & $adoptionTest
@@ -70,7 +88,8 @@ try {
         nativeInputHashes = $nativeInputHashes
         resourceHashes = Get-QproNativeHashes $PSScriptRoot @((Get-QproNativeResourcePaths).Keys)
         liveValidated = $false
-        firmwareProfile = 'legacy-51503870024400340'
+        firmwareProfile = 'touch-pro-shared-pages-v1'
+        firmwareAdmission = 'experimental-layout-probe'
         sdkRevision = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'third_party\openvr\SDK_REVISION.txt') -Raw).Trim()
         readerSha256 = (Get-FileHash -LiteralPath $reader -Algorithm SHA256).Hash.ToLowerInvariant()
         driverSha256 = (Get-FileHash -LiteralPath $driver -Algorithm SHA256).Hash.ToLowerInvariant()

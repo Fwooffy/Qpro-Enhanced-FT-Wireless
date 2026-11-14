@@ -58,7 +58,7 @@ try {
         Assert-Rejected { Assert-QproNativeStage $fixtureSource $fixtureStage } 'changed native binary bytes'
         Write-FixtureFile $binary $original
     }
-    foreach ($relative in @('controller_logic.hpp', 'settings.hpp', 'headset_reader.c',
+    foreach ($relative in @('controller_logic.hpp', 'settings.hpp', 'headset_reader.c', 'layout_probe.h',
                             'third_party/openvr/openvr_driver.h', 'third_party/openvr/SDK_REVISION.txt')) {
         $path = Join-Path $fixtureSource $relative
         $original = [IO.File]::ReadAllText($path)
