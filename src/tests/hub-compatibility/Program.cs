@@ -235,6 +235,18 @@ Check(pendingCleanup.Complete(false, 0)?.IsError == true, "A helper exit cleared
 var completedCleanup = new HubControllerUtilityResult();
 completedCleanup.Observe("""CONTROLLER_CLEANUP {"confirmed":true,"restoration":"confirmed","reader":"stopped","problems":[]}""");
 Check(completedCleanup.Complete(false, 0)?.State == ControllerFeedbackState.Restored, "Explicit cleanup confirmation was not retained.");
+var unsupportedThumbRest = new HubControllerUtilityResult();
+unsupportedThumbRest.Observe("""CONTROLLER_READER {"phase":"unsupported-build","exitCode":3,"message":"Thumb-rest input does not support this headset build yet."}""");
+unsupportedThumbRest.Observe("""CONTROLLER_CLEANUP {"reader":"stopped","inputs":"disabled","message":"Firmware check refused before controller memory was mapped."}""");
+Check(unsupportedThumbRest.CompleteRestoration(true).IsError,
+    "An early firmware refusal without final supervisor evidence confirmed restoration.");
+unsupportedThumbRest.Observe("""CONTROLLER_CLEANUP {"confirmed":true,"restoration":"confirmed","reader":"stopped","problems":[]}""");
+Check(unsupportedThumbRest.CompleteRestoration(true).State == ControllerFeedbackState.Restored,
+    "A clean firmware refusal with final supervisor confirmation was reported as failed restoration.");
+Check(unsupportedThumbRest.Complete(false, 3) is null,
+    "Confirmed cleanup turned an unsupported-firmware exit into a successful controller check.");
+Check(unsupportedThumbRest.CompleteRestoration(false).IsError,
+    "A firmware refusal with undrained output bypassed restoration supervision.");
 var concurrentReports = new HubControllerUtilityResult();
 Parallel.Invoke(() => concurrentReports.Observe(validHandLine), () => concurrentReports.Observe(validHandLine));
 Check(concurrentReports.Complete(true, 0)?.IsError == true, "Concurrent stream callbacks lost duplicate-result evidence.");

@@ -32,7 +32,8 @@ WHEEL_URL = 'https://files.pythonhosted.org/packages/71/8a/0d271ce04b7eaf73eca97
 WHEEL_HASH = '4bcf171a0ae184e30e95f414ce3a8f5e92e75e5c8c04ce36cea5eafe632070b1'
 SERVER_URL = 'https://github.com/frida/frida/releases/download/17.18.0/frida-server-17.18.0-android-arm64.xz'
 SERVER_HASH = '77c2a4aadf6010c69766abea5b6a408c66f5e2da43b3f2c920cf75a5fa1ec7f5'
-PROFILE = 'legacy-51503870024400340'
+PROFILE = 'touch-pro-shared-pages-v1'
+LEGACY_PROFILE = 'legacy-51503870024400340'
 READER_PATH = '/data/local/tmp/qpro-controller-input'
 REMOTE_STOP = READER_PATH + '.stop'
 OWNER_FORMAT = 'qpro-controller-addon-v1'
@@ -50,6 +51,12 @@ class WorkerFailure(RuntimeError):
         self.returncode = returncode
 
 
+class CommandFailure(RuntimeError):
+    def __init__(self, executable, returncode, output):
+        super().__init__(f'{Path(str(executable)).name} failed ({returncode}): ' + output)
+        self.returncode, self.output = returncode, output
+
+
 def report(stage: str, **values):
     with OUTPUT_LOCK:
         print(stage + ' ' + json.dumps(values, sort_keys=True), flush=True)
@@ -59,8 +66,8 @@ def command(args, timeout=20, capture=True):
     result = subprocess.run([str(x) for x in args], timeout=timeout,
                             text=True, capture_output=capture, creationflags=NO_WINDOW)
     if result.returncode:
-        raise RuntimeError(f'{Path(str(args[0])).name} failed ({result.returncode}): '
-                           + ((result.stdout or '') + (result.stderr or '')).strip())
+        raise CommandFailure(args[0], result.returncode,
+                             ((result.stdout or '') + (result.stderr or '')).strip())
     return (result.stdout or '').strip()
 
 
@@ -834,7 +841,51 @@ def relay(root: Path, local: Path, adb: Path, target: str, stop_file: Path, mode
     # Profile probing happens before enabling the SteamVR add-on or starting a reader.
     command(base + ['push', str(reader), READER_PATH])
     command(base + ['shell', 'chmod', '700', READER_PATH])
-    command(base + ['shell', 'su', '-c', shlex.quote(READER_PATH + ' --profile ' + PROFILE + ' --check')])
+    try:
+        checked = command(base + ['shell', 'su', '-c', shlex.quote(READER_PATH + ' --profile ' + PROFILE + ' --check')])
+        # Keep the actual build and experimental layout evidence visible. A
+        # successful probe is not live finger/thumb semantic validation.
+        forward_output(checked)
+    except CommandFailure as error:
+        # Require the completed preflight's exact protocol. Older readers
+        # refuse before mapping; layout-probing readers explicitly release
+        # their read-only mappings before QPTP_STOPPED. A substring in a later
+        # worker error or incomplete transport output is not cleanup evidence.
+        normalized = error.output.replace('\r\n', '\n')
+        legacy = re.fullmatch(r'QPTP_UNSUPPORTED build=([0-9]{1,32}) profile='
+                             + re.escape(LEGACY_PROFILE) + r'; no controller memory was mapped', normalized)
+        layout = re.fullmatch(r'QPTP_CHECK_REFUSED build=([0-9]{1,32}) profile=' + re.escape(PROFILE)
+                             + r' reason=(source-unavailable|layout-inconclusive)\nQPTP_STOPPED', normalized)
+        if error.returncode == 3 and legacy is not None:
+            phase = 'unsupported-build'
+            message = ('Experimental Touch Pro thumb-rest input does not support headset build '
+                       + legacy[1] + ' with reader profile ' + LEGACY_PROFILE + '. '
+                       'No controller memory was mapped. Keep thumb-rest input off until a '
+                       'firmware-compatible reader update is available; reinstalling the '
+                       'same controller components will not add support.')
+        elif layout is not None and error.returncode == {'source-unavailable': 5, 'layout-inconclusive': 6}[layout[2]]:
+            phase = layout[2]
+            message = ('The experimental Touch Pro read-only layout check did not pass on headset build '
+                       + layout[1] + ' (' + phase + '). No thumb-rest output was enabled. '
+                       'Keep both controllers awake and connected, then retry. If this repeats, '
+                       'keep thumb-rest input off and share Activity diagnostics for a reader compatibility review.')
+        else:
+            raise
+        report('CONTROLLER_READER', phase=phase, exitCode=error.returncode,
+               listening=False, diagnostic=error.output, outputError=None, message=message)
+        try:
+            set_input_enabled(addon, False, mode, side, **input_options)
+        except (OSError, ValueError, RuntimeError) as cleanup_error:
+            report('CONTROLLER_CLEANUP', reader='unconfirmed',
+                   message='The firmware check refused before the foreground reader started.',
+                   problems=['Could not disable the controller add-on: ' + str(cleanup_error)])
+            raise RuntimeError('Controller cleanup needs attention: ' + str(cleanup_error)
+                               + ' Original failure: ' + message) from cleanup_error
+        # No foreground reader, socket or ADB forward was started. The add-on
+        # settings are disabled; there is no active reader to stop or restore.
+        report('CONTROLLER_CLEANUP', reader='stopped', inputs='disabled',
+               message='The firmware check refused before the foreground reader started.')
+        raise WorkerFailure(message, error.returncode) from error
     process = None
     stream = None
     output = None
@@ -1203,7 +1254,10 @@ def run(args, local: Path, adb: Path, target: str):
                     # workers finish; never orphan a still-restoring adapter.
                     report('CONTROLLER_CLEANUP', workerPid=child.pid, restoration='still-running')
             worker.finish()
-            if worker.cleanup_confirmed is not True or child.returncode == 5:
+            # Exit 5 is the hands adapter's cleanup-failure status. The
+            # thumb-rest preflight also uses it for a clean source refusal;
+            # that worker must still provide its explicit cleanup evidence.
+            if worker.cleanup_confirmed is not True or worker.name == 'hands' and child.returncode == 5:
                 detail = worker.name + ' worker cleanup was not confirmed (exit ' + str(child.returncode) + ').'
                 if worker.failure_reason:
                     detail += ' Original failure: ' + bounded_reason(worker.failure_reason, 3800)
@@ -1289,7 +1343,7 @@ def main(argv=None):
                 detail = (output + errors).strip()
                 raise WorkerFailure(reasons[0] if reasons else fallback + (' ' + detail if detail else ''),
                                     result.returncode)
-            report('CONTROLLER_CHECK', touchpad='Sensor compatibility is checked at start; legacy firmware profile required',
+            report('CONTROLLER_CHECK', touchpad='Experimental read-only sensor layout and freshness are checked at start; live controller behaviour still needs testing',
                    frida='installed' if (managed_paths(local)[0] / 'ready.json').is_file() else 'not-installed')
         elif args.action == 'run':
             run(args, local, adb, target)

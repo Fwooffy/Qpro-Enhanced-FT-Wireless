@@ -261,7 +261,8 @@ class ComponentTests(unittest.TestCase):
                                   right_flags, 0, 0, 0, 0)
 
     def run_relay(self, native, stream=None, parent_closed=None, connect_check=None, send_check=None,
-                  input_update=None, mode='trackpad', side='both', health_update=None, swipe_gain=None):
+                  input_update=None, mode='trackpad', side='both', health_update=None, swipe_gain=None,
+                  preflight_result=None, preflight_error=None):
         self.relay_activity = io.StringIO()
         with tempfile.TemporaryDirectory(dir=HERE / 'artifacts') as temporary:
             local = Path(temporary)
@@ -276,6 +277,7 @@ class ComponentTests(unittest.TestCase):
             stop = local / 'stop'
             self.relay_stop = stop
             enabled = []
+            self.relay_enabled = enabled
             self.relay_configurations = []
             self.relay_swipe_gains = []
             def input_enabled(_addon, state, _mode, _side, swipe_gain=None):
@@ -286,7 +288,14 @@ class ComponentTests(unittest.TestCase):
                 if input_update:
                     input_update(_addon, state, _mode, _side)
             forwards = []
+            native_command = module.command
             def execute(args, **_kwargs):
+                if args[-1] == module.shlex.quote(module.READER_PATH + ' --profile ' + module.PROFILE + ' --check'):
+                    if preflight_error is not None:
+                        raise preflight_error
+                    if preflight_result is not None:
+                        with patch.object(module.subprocess, 'run', return_value=preflight_result):
+                            return native_command(args, **_kwargs)
                 if args[-1] == 'id':
                     return 'uid=0'
                 if args[-2:] == ['forward', '--list']:
@@ -532,6 +541,151 @@ class ComponentTests(unittest.TestCase):
         self.assertEqual(self.relay_enabled, [False])
         self.assertTrue(native.waited)
         self.assertIn('"reader": "unconfirmed"', self.relay_activity.getvalue())
+
+    def test_completed_preflight_build_refusal_confirms_no_reader_started(self):
+        diagnostic = ('QPTP_UNSUPPORTED build=51503870035800340 profile=' + module.LEGACY_PROFILE
+                      + '; no controller memory was mapped')
+        result = SimpleNamespace(returncode=3, stdout='', stderr=diagnostic + '\r\n')
+        with self.assertRaisesRegex(module.WorkerFailure, 'does not support headset build 51503870035800340') as failure:
+            self.run_relay(ReaderProcess(), preflight_result=result)
+        self.assertEqual(failure.exception.returncode, 3)
+        self.reader_launch.assert_not_called()
+        self.reader_connect.assert_not_called()
+        self.assertEqual(self.relay_enabled, [False])
+        self.assertFalse(any('--no-rebind' in arguments for arguments in self.relay_commands))
+        preflight = module.shlex.quote(module.READER_PATH + ' --profile ' + module.PROFILE + ' --check')
+        self.assertEqual(sum(arguments[-1] == preflight for arguments in self.relay_commands), 1)
+        lines = self.relay_activity.getvalue().splitlines()
+        reader = json.loads(next(line.partition(' ')[2] for line in lines
+                                 if line.startswith('CONTROLLER_READER ')))
+        self.assertEqual(reader['phase'], 'unsupported-build')
+        self.assertEqual(reader['diagnostic'], diagnostic)
+        self.assertFalse(reader['listening'])
+        cleanup = json.loads(next(line.partition(' ')[2] for line in lines
+                                  if line.startswith('CONTROLLER_CLEANUP ')))
+        self.assertEqual(cleanup['reader'], 'stopped')
+        self.assertEqual(cleanup['inputs'], 'disabled')
+        # Keep the established interim schema; the supervisor supplies final
+        # confirmation and the Hub must not latch an unknown-field failure.
+        self.assertEqual(set(cleanup), {'reader', 'inputs', 'message'})
+        output = self.relay_activity.getvalue()
+        with self.assertRaisesRegex(module.WorkerFailure, 'does not support headset build') as aggregated:
+            self.run_workers([FakeWorker(output, code=3)], hands=False, touchpad=True)
+        self.assertEqual(aggregated.exception.returncode, 3)
+        self.assertTrue(self.aggregate()['confirmed'])
+        self.assertEqual(self.aggregate()['restoration'], 'confirmed')
+        self.assertNotIn('cleanup was not confirmed', str(aggregated.exception))
+
+    def test_preflight_cleanup_requires_the_exact_completed_build_refusal(self):
+        diagnostic = ('QPTP_UNSUPPORTED build=51503870035800340 profile=' + module.LEGACY_PROFILE
+                      + '; no controller memory was mapped')
+        cases = [(1, diagnostic), (3, 'prefix ' + diagnostic), (3, diagnostic + '\nQPTP_STOPPED'),
+                 (3, diagnostic.replace(module.LEGACY_PROFILE, 'another-profile')),
+                 (3, diagnostic.replace('51503870035800340', 'unknown')),
+                 (3, diagnostic.replace('51503870035800340', '5' * 33)),
+                 (3, 'QPTP_UNSUPPORTED build=51503870035800340'),
+                 (3, 'adb.exe: error: transport failed; ' + diagnostic)]
+        for code, output in cases:
+            with self.subTest(code=code, output=output):
+                result = SimpleNamespace(returncode=code, stdout=output, stderr='')
+                with self.assertRaises(module.CommandFailure):
+                    self.run_relay(ReaderProcess(), preflight_result=result)
+                self.reader_launch.assert_not_called()
+                self.reader_connect.assert_not_called()
+                self.assertEqual(self.relay_enabled, [])
+                self.assertNotIn('CONTROLLER_CLEANUP ', self.relay_activity.getvalue())
+
+    def test_preflight_transport_failure_or_text_only_exception_is_not_cleanup_proof(self):
+        diagnostic = ('QPTP_UNSUPPORTED build=51503870035800340 profile=' + module.LEGACY_PROFILE
+                      + '; no controller memory was mapped')
+        for error in (RuntimeError('adb.exe failed (3): ' + diagnostic),
+                      module.subprocess.TimeoutExpired('fixture-adb', 20), OSError('USB disconnected')):
+            with self.subTest(error=error), self.assertRaises(type(error)):
+                self.run_relay(ReaderProcess(), preflight_error=error)
+            self.reader_launch.assert_not_called()
+            self.assertEqual(self.relay_enabled, [])
+            self.assertNotIn('CONTROLLER_CLEANUP ', self.relay_activity.getvalue())
+
+    def test_preflight_refusal_cannot_confirm_cleanup_when_addon_disable_fails(self):
+        diagnostic = ('QPTP_UNSUPPORTED build=51503870035800340 profile=' + module.LEGACY_PROFILE
+                      + '; no controller memory was mapped')
+        result = SimpleNamespace(returncode=3, stdout=diagnostic, stderr='')
+        def fail_disable(_addon, _state, _mode, _side):
+            raise PermissionError('fixture settings locked')
+        with self.assertRaisesRegex(RuntimeError, 'cleanup needs attention.*fixture settings locked.*does not support'):
+            self.run_relay(ReaderProcess(), preflight_result=result, input_update=fail_disable)
+        self.reader_launch.assert_not_called()
+        self.reader_connect.assert_not_called()
+        output = self.relay_activity.getvalue()
+        cleanup = json.loads(next(line.partition(' ')[2] for line in output.splitlines()
+                                  if line.startswith('CONTROLLER_CLEANUP ')))
+        self.assertEqual(cleanup['reader'], 'unconfirmed')
+        self.assertNotIn('inputs', cleanup)
+        with self.assertRaisesRegex(RuntimeError, 'cleanup was not confirmed.*does not support'):
+            self.run_workers([FakeWorker(output)], hands=False, touchpad=True)
+        self.assertFalse(self.aggregate()['confirmed'])
+
+    def test_newer_build_successful_layout_probe_is_visible_before_live_input(self):
+        checked = ('QPTP_PROFILE build=51503870035800340 profile=touch-pro-shared-pages-v1 '
+                   'experimental=1 live_validated=0 transport=read-only-shared-pages\n'
+                   'QPTP_CHECK_READY left_flags=3 right_flags=3 left_xy=0.200,0.300 '
+                   'right_xy=0.400,0.500 left_samples=4 right_samples=4\n')
+        result = SimpleNamespace(returncode=0, stdout=checked, stderr='')
+        closed = threading.Event()
+        def stopped():
+            closed.set()
+            return b''
+        self.run_relay(ReaderProcess(), RelayStream([self.packet(), stopped]),
+                       parent_closed=closed, preflight_result=result)
+        activity = self.relay_activity.getvalue()
+        self.assertIn(checked, activity)
+        self.assertLess(activity.index('QPTP_CHECK_READY'), activity.index('TOUCHPAD_READY '))
+        self.assertEqual(self.relay_enabled, [True, False])
+        launched = self.reader_launch.call_args.args[0][-1]
+        self.assertIn('--profile touch-pro-shared-pages-v1 ', launched)
+        self.assertNotIn(module.LEGACY_PROFILE, launched)
+
+    def test_completed_layout_refusals_confirm_cleanup_but_preserve_failure(self):
+        for code, reason in ((5, 'source-unavailable'), (6, 'layout-inconclusive')):
+            with self.subTest(code=code):
+                diagnostic = ('QPTP_CHECK_REFUSED build=51503870035800340 profile=' + module.PROFILE
+                              + ' reason=' + reason + '\r\nQPTP_STOPPED\r\n')
+                result = SimpleNamespace(returncode=code, stdout=diagnostic, stderr='')
+                with self.assertRaisesRegex(module.WorkerFailure, 'layout check did not pass.*' + reason) as failure:
+                    self.run_relay(ReaderProcess(), preflight_result=result)
+                self.assertEqual(failure.exception.returncode, code)
+                self.reader_launch.assert_not_called()
+                self.reader_connect.assert_not_called()
+                self.assertEqual(self.relay_enabled, [False])
+                self.assertFalse(any('--no-rebind' in arguments for arguments in self.relay_commands))
+                output = self.relay_activity.getvalue()
+                report = json.loads(next(line.partition(' ')[2] for line in output.splitlines()
+                                         if line.startswith('CONTROLLER_READER ')))
+                self.assertEqual(report['phase'], reason)
+                self.assertEqual(report['exitCode'], code)
+                with self.assertRaisesRegex(module.WorkerFailure, reason) as aggregated:
+                    self.run_workers([FakeWorker(output, code=code)], hands=False, touchpad=True)
+                self.assertEqual(aggregated.exception.returncode, code)
+                self.assertTrue(self.aggregate()['confirmed'])
+
+    def test_layout_refusal_requires_matching_status_profile_and_complete_stop(self):
+        prefix = 'QPTP_CHECK_REFUSED build=51503870035800340 profile=' + module.PROFILE + ' reason='
+        diagnostic = prefix + 'source-unavailable\nQPTP_STOPPED'
+        cases = [(6, diagnostic), (3, diagnostic), (5, prefix + 'layout-inconclusive\nQPTP_STOPPED'),
+                 (5, prefix + 'source-unavailable'), (5, diagnostic + '\nQPTP_LISTENING'),
+                 (5, diagnostic.replace(module.PROFILE, module.LEGACY_PROFILE)),
+                 (5, diagnostic.replace('51503870035800340', 'unknown')),
+                 (5, diagnostic.replace('source-unavailable', 'unknown-layout')),
+                 (5, 'prefix ' + diagnostic),
+                 (2, 'QPTP_UNSUPPORTED explicit experimental profile and valid arguments required')]
+        for code, output in cases:
+            with self.subTest(code=code, output=output):
+                result = SimpleNamespace(returncode=code, stdout=output, stderr='')
+                with self.assertRaises(module.CommandFailure):
+                    self.run_relay(ReaderProcess(), preflight_result=result)
+                self.reader_launch.assert_not_called()
+                self.assertEqual(self.relay_enabled, [])
+                self.assertNotIn('CONTROLLER_CLEANUP ', self.relay_activity.getvalue())
 
     def test_relay_cleanup_requires_native_stop_marker_and_zero_exit(self):
         for marker, code in (('', 0), ('QPTP_STOPPED\n', 0),
