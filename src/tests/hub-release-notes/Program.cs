@@ -129,8 +129,11 @@ internal static class ReleaseNotesTests
         string? path = requested is not null && File.Exists(requested) ? requested : null;
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory); path is null && directory is not null; directory = directory.Parent)
         {
-            string candidate = Path.Combine(directory.FullName, "RELEASE_NOTES_V3.0.1.md");
-            if (File.Exists(candidate)) path = candidate;
+            path = directory.EnumerateFiles("RELEASE_NOTES_V*.md")
+                .Select(file => (file.FullName, Number: Version.TryParse(file.Name[15..^3], out var version) ? version : null))
+                .Where(file => file.Number is not null)
+                .OrderByDescending(file => file.Number)
+                .Select(file => file.FullName).FirstOrDefault();
         }
         Check(path is not null, "The real release-note fixture could not be found.");
         string markdown = File.ReadAllText(path!);
@@ -138,7 +141,8 @@ internal static class ReleaseNotesTests
         Check(document.Text.Contains("Before you install") && document.Text.Contains("Qpro Companion"), "The release's meaningful content was lost.");
         Check(!document.Text.Contains("## Before you install") && !document.Text.Contains("**"), "The real changelog still displays formatting markers.");
         Check(document.Links.Count > 0 && document.Links.All(link => link.Target.Scheme is "https" or "http"), "The published links were lost or unsafe.");
-        Check(document.Text.Contains("Checks & Updates"), "An ampersand in the actual UI name was altered.");
+        if (markdown.Contains("Checks & Updates"))
+            Check(document.Text.Contains("Checks & Updates"), "An ampersand in the actual UI name was altered.");
         CheckRanges(document);
     }
 
