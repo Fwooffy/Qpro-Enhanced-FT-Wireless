@@ -1,10 +1,10 @@
-# Qpro Companion V3.0.2: text setup guide
+# Qpro Companion V3.0.3: text setup guide
 
 > **Before you start: you need a rooted Meta Quest Pro and the latest VRCFaceTracking from Steam.** This program will not work on an unrooted headset or a different Quest model. If you still need to root your Quest Pro, use [Fwooffy and glorpette's beginner root guide](https://github.com/glorpette/quest-guides/blob/main/root_guide_by_fwooffy.md). Check that your headset's exact software version is supported by [Singularity](https://github.com/Lumince/singularity) before following a root guide. [Install or update VRCFaceTracking through Steam](https://store.steampowered.com/app/3329480/VRCFaceTracking/) before using Qpro's module.
 >
-> **If you used a QproFaceTracking version before V2.0, record and train your tongue model again.** Do not import a pre-V2.0 model and assume it will work correctly. Working V2.0 or newer models can be exported and imported into V3.0.2. **Developer tongue model** is the default starting point on a fresh setup; updates keep personal/imported selections and replace retired bundled choices with the new developer model.
+> **If you used a QproFaceTracking version before V2.0, record and train your tongue model again.** Do not import a pre-V2.0 model and assume it will work correctly. Working V2.0 or newer models can be exported and imported into V3.0.3. **Developer tongue model** is the default starting point on a fresh setup; updates keep personal/imported selections and replace retired bundled choices with the new developer model.
 
-> **This guide covers the V3.0.2 release candidate.** Virtual Desktop and Steam Link are available under **Streaming app**. The two bundled tongue choices are **Developer tongue model** and **Mustachio**. Mustachio remains highly experimental; start with Developer tongue model or your existing working model.
+> **This guide covers the V3.0.3 release.** Virtual Desktop and Steam Link are available under **Streaming app**. The two bundled tongue choices are **Developer tongue model** and **Mustachio**. Mustachio remains highly experimental; start with Developer tongue model or your existing working model.
 
 Start with the headset's eye tracking, then set up the PC software. **Qpro Companion** is the app; its main window is called the **Hub**. **ADB** is the connection it uses to talk to your Quest. The **Qpro module** sends tracking results to VRCFaceTracking.
 
@@ -28,11 +28,11 @@ Before switching from the Magisk gaze method to the Hub's method, disable the ga
 
 ## 2. Download and open the Hub
 
-1. Download **QproCompanion.V3.0.2.zip** when it is published on [this project's Releases page](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases), or use the supplied release candidate ZIP. Choose the named Qpro Companion ZIP, **not** GitHub's “Source code” ZIP.
+1. Download **QproCompanion.V3.0.3.zip** from [this project's Releases page](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases), or use the supplied release ZIP. Choose the named Qpro Companion ZIP, **not** GitHub's “Source code” ZIP.
 2. In Windows File Explorer, right-click the ZIP and choose **Extract All**. Open the extracted folder. Keep `QproFaceTracking.exe`, `Helpers`, and `QproRuntime` together.
 3. Double-click `QproFaceTracking.exe`. It opens on **First-time setup** the first time. You can return to that page from the menu on the left.
 
-Qpro Companion is the new public name. `QproFaceTracking.exe`, existing app/data folder names and the `.qptonguemodel` format are retained for update compatibility. The legacy-named **QproFaceTracking.V3.0.2.zip** asset contains the same bytes for older updaters; use either ZIP, not both.
+Qpro Companion is the new public name. `QproFaceTracking.exe`, existing app/data folder names and the `.qptonguemodel` format are retained for update compatibility. The legacy-named **QproFaceTracking.V3.0.3.zip** asset contains the same bytes for older updaters; use either ZIP, not both.
 
 You need an internet connection and several gigabytes of free space for setup. The ZIP already includes ADB. The Hub installs the Python parts it needs, so you do not have to install ADB or Python separately for this program.
 
@@ -198,7 +198,9 @@ For the initial check, keep Virtual Desktop **Emulate Index controllers** off. T
 - **Unsupported PC code/layout family, Mono hand-result layout or controller ABI:** keep Hands + controllers off and copy the full diagnostics. Face tracking can continue without this option. A changed version label can attempt guarded startup, but an unrecognized private layout still needs review.
 - **No fingers after startup or a disconnect:** keep the headset on, hold a controller, and keep the hand visible. Reconnect Virtual Desktop if its stream stopped, then use **Stop tracking** before retrying. The compatibility button checks installed versions and settings; it does not start tracking.
 
-**Optional thumb-rest input:** **Experimental Touch Pro thumb-rest input** is separate from finger tracking. It adds SteamVR trackpad inputs from the controllers' thumb-rest sensors. Its first sensor profile is limited to firmware build **51503870024400340** and remains unvalidated on a live headset. On **Controllers**, the controls sit directly below the two feature toggles. Choose **Thumb-rest mode**: **Trackpad**, **Relative joystick**, **Swipe**, or **Desktop mouse**. Choose **Apply mode to**: **Left (L)**, **Right (R)**, or **Both** (default). This selection affects only the extra thumb-rest input; normal controller buttons, movement and optical fingers remain available on both sides. Keep both controllers awake during the initial thumb-rest check, even when applying the mode to one side.
+**Optional thumb-rest input:** **Experimental Touch Pro thumb-rest input** is separate from finger tracking. It adds SteamVR trackpad inputs from the controllers' thumb-rest sensors. The experimental **touch-pro-shared-pages-v1** profile checks the actual shared-page layout instead of requiring an exact firmware number. Newer numeric builds, including **51503870035800340**, may attempt the same read-only check without a new app release for every build. Both named pages, both sample buffers and fresh counter progression must pass before extra input is enabled. Missing or inconclusive data keeps it off. A real sensor-format change can still require a new reader profile; consistent data does not prove physical signal meaning on an unfamiliar firmware. The earlier live check is limited to build **51503870024400340**. On newer firmware, verify left/right motion, lift/contact and pressure after the check passes.
+
+On **Controllers**, the controls sit directly below the two feature toggles. Choose **Thumb-rest mode**: **Trackpad**, **Relative joystick**, **Swipe**, or **Desktop mouse**. Choose **Apply mode to**: **Left (L)**, **Right (R)**, or **Both** (default). This selection affects only the extra thumb-rest input; normal controller buttons, movement and optical fingers remain available on both sides. Keep both controllers awake during the initial thumb-rest check, even when applying the mode to one side.
 
 Before starting input workers for a thumb-rest session, Qpro hash-checks the installed controller add-on DLL against the one bundled with this build. An outdated or unreadable copy blocks startup. If it does not match, **close SteamVR**, reinstall the controller add-on from the current build using **First-time setup > Show optional tools and recovery > Optional features > Show hands setup and uninstall > Install hand/controller components**, then reopen SteamVR **through Virtual Desktop**. This makes the required driver acknowledgement available. Matching files on disk is only a precheck; it does not prove SteamVR loaded that driver. Received input, driver diagnostics and live checks still matter.
 
@@ -220,7 +222,7 @@ See [the experimental controller guide](https://github.com/Fwooffy/Qpro-Enhanced
 
 ## 6. Tongue training and refinement
 
-**Train if you have no personal model or used a version before V2.0. You can import a working V2.0 or newer model into V3.0.2.** The two bundled choices are **Developer tongue model** and **Mustachio**; personal imports and refinements remain available.
+**Train if you have no personal model or used a version before V2.0. You can import a working V2.0 or newer model into V3.0.3.** The two bundled choices are **Developer tongue model** and **Mustachio**; personal imports and refinements remain available.
 
 1. For Quick refinement or Focused training, choose the model to extend under **Facial tracking > Lower-face tracking > Tongue model**. **Developer tongue model** is the default on a fresh setup; updates keep personal/imported selections and replace retired bundled choices with the new developer model. Full dataset makes a new personal model instead.
 2. Open **Personalize**. Under **Capture and train**, start with **Quick refinement**, or press **Show focused and full captures** for the other modes.

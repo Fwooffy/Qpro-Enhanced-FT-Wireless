@@ -265,7 +265,7 @@ def cover(version: str):
     cover_title = ParagraphStyle("cover title", parent=TITLE, fontSize=32, leading=38)
     return [paragraph("QUEST PRO  /  ROOTED HEADSET", KICKER), Spacer(1, 10),
             paragraph("Qpro Companion", cover_title), paragraph("Set up once.\nChoose what you track.", TITLE),
-            paragraph(f"{version} release candidate\nUSB or wireless ADB - Virtual Desktop or Steam Link", DECK),
+            paragraph(f"{version} release\nUSB or wireless ADB - Virtual Desktop or Steam Link", DECK),
             CoverMark(), Spacer(1, 24), paragraph("Start here", H3),
             paragraph("Get ordinary face tracking moving first. Then add tongue tracking, cheek controls, "
                       "pupil dilation or other optional features at your own pace."),

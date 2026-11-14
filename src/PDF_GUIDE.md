@@ -45,14 +45,14 @@ Read only the optional feature pages you need. The top-right **Contents** link r
 
 Install **SteamVR**, the [latest VRCFaceTracking from Steam](https://store.steampowered.com/app/3329480/VRCFaceTracking/) and your streaming app's PC software. Setup needs internet access and several gigabytes of free space.
 
-1. Download **QproCompanion.V3.0.2.zip** from [Releases](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases) when published, or use the supplied release candidate ZIP.
+1. Download **QproCompanion.V3.0.3.zip** from [Releases](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases), or use the supplied release ZIP.
 2. Right-click the ZIP in File Explorer and choose **Extract All**. Keep `QproFaceTracking.exe`, `Helpers` and `QproRuntime` together.
 3. Open `QproFaceTracking.exe`. For OneDrive, first choose **Always keep on this device** for the whole extracted folder.
 
 > [!NOTE] Independent gaze is optional
 > You do not need a gaze Magisk module or the Hub's gaze preparation for ordinary face tracking, tongue tracking or pupil dilation.
 
-ADB and private Python are supplied. For update compatibility, the executable, app/data folders and `.qptonguemodel` format keep their old names. The legacy **QproFaceTracking.V3.0.2.zip** is the same package for older updaters; use either ZIP. GitHub's **Source code** archives are not the app.
+ADB and private Python are supplied. For update compatibility, the executable, app/data folders and `.qptonguemodel` format keep their old names. The legacy **QproFaceTracking.V3.0.3.zip** is the same package for older updaters; use either ZIP. GitHub's **Source code** archives are not the app.
 
 ## Virtual Desktop and Steam Link
 
@@ -444,7 +444,7 @@ New version labels may attempt guarded startup. Unknown PC full hashes require a
 
 ### Experimental Touch Pro thumb-rest input
 
-Sensor profile **51503870024400340** has a live check on one headset; other firmware remains unverified. Directly below the two feature switches, choose **Thumb-rest mode** and **Apply mode to**: **Left (L)**, **Right (R)** or **Both**. This affects extra inputs only; keep both controllers awake for the initial check.
+Newer firmware can attempt experimental layout/freshness checks; physical signals on **51503870035800340** remain unverified. Directly below the two feature switches, choose **Thumb-rest mode** and **Apply mode to**: **Left (L)**, **Right (R)** or **Both**. This affects extra inputs only; keep both controllers awake for the initial check.
 
 | Thumb-rest mode | What it does |
 | --- | --- |
@@ -470,6 +470,8 @@ Assign **Qpro thumb-rest surface (extra)** to additional game actions in SteamVR
 **VRChat menu scrolling:** setup extends a recognized binding. Automatic selection requires an existing binding selection the installer can verify; otherwise select the prepared binding manually. Preparation is not proof of live scrolling. Unrecognized formats or ambiguous choices stay unchanged with a warning.
 
 On the checked headset, **Both / 100%** scrolled well in Dashboard and VRChat, with ordinary buttons working. Desktop mouse movement also felt smoother. Stop cleared scrolling and restored neutral output without errors or remaining workers. Other firmware and app bindings need their own checks.
+
+Build numbers alone no longer block thumb-rest checks. Both buffers and fresh updates must pass; failed checks keep input off. A changed sensor format can still need a new reader profile.
 
 ### Stop or remove the add-on
 

@@ -23,13 +23,22 @@ unverified; offline tests do not establish their compatibility.
 ## Requirements and boundaries
 
 - Rooted Quest Pro, Touch Pro controllers and SteamVR on Windows x64.
-- Explicit experimental reader profile `legacy-51503870024400340`. The reader
-  checks the exact incremental firmware build `51503870024400340`; other builds
-  exit before mapping memory. Live checks cover one headset with this layout,
-  not every headset or controller revision.
+- Experimental layout profile `touch-pro-shared-pages-v1`. Firmware build numbers
+  are diagnostic information rather than an allowlist. Newer builds, including
+  `51503870035800340`, can run the same read-only capability check without a new
+  application release. This permits an experimental attempt; it does not claim
+  that the newer firmware has been tested with physical controllers.
 - Both named 4 KiB controller shared pages must be present in `trackingservice`.
   They are opened read-only through `/proc/<pid>/map_files`. The reader neither
   modifies these pages nor restarts or injects into a headset service.
+- Before either a check or continuous output, both ring buffers must have stable,
+  finite fields in the expected ranges. Each controller must provide at least
+  four distinct forward counter publications with fresh samples within three
+  seconds. Missing, ambiguous, stale or inconclusive sources remain disabled.
+  A producer or mapping change makes continuous output neutral until this check
+  passes again. Consistent bytes cannot prove the physical meaning of a changed
+  firmware's fields: check left/right movement, lift and pressure after updating.
+  An actual shared-page format change still needs a compatible reader profile.
 - The PC relay needs no external server. It owns the ADB forwarding, foreground
   reader and this add-on's settings file. Binding setup separately manages only
   verified application selections, with recovery copies.
@@ -44,20 +53,26 @@ restart SteamVR after removing the add-on.
 ## Reader CLI
 
 ```text
-qpro-controller-input --profile legacy-51503870024400340 --check
-qpro-controller-input --profile legacy-51503870024400340 --port 27063 --rate 60 --stop-file /data/local/tmp/<owned-session>.stop
+qpro-controller-input --profile touch-pro-shared-pages-v1 --check
+qpro-controller-input --profile touch-pro-shared-pages-v1 --port 27063 --rate 60 --stop-file /data/local/tmp/<owned-session>.stop
 ```
 
-`--check` reads for at most three seconds and needs a fresh, valid pair of sensor
-samples. Keep both controllers awake. The continuous mode listens only on headset
+`--check` probes for at most three seconds after source discovery and needs fresh,
+consistent updates from both controllers. Keep both controllers awake. Activity
+reports the actual build, layout profile and evidence counts; `live_validated=0`
+remains explicit on unfamiliar firmware. The old profile name is accepted as a
+CLI alias, with the same capability checks. The continuous mode listens only on headset
 loopback TCP, with rates from 40 to 90 Hz. The port is acquired before mapping,
 so a duplicate reader cannot attach while that port is owned. No first client
 within 15 seconds exits with code 8. A disconnect allows two seconds to reconnect,
 then closes the socket and releases both mappings. SIGTERM, SIGINT and the owned
 stop file also end the foreground reader; it attempts a bounded neutral packet.
 
-Exit codes: 2 arguments/profile, 3 build mismatch, 4 root required, 5 source
-unavailable, 6 invalid/stale samples, 7 port unavailable, 8 initial client timeout.
+Exit codes: 2 arguments/profile, 3 unreadable build identity, 4 root required,
+5 source unavailable, 6 inconclusive layout/samples, 7 port unavailable,
+8 initial client timeout. Completed capability refusals report `QPTP_CHECK_REFUSED`
+and `QPTP_STOPPED`; the PC supervisor disables the add-on before confirming cleanup.
+Interrupted ADB or incomplete output still requires cleanup attention.
 
 ## Packet and settings contract
 

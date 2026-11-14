@@ -35,6 +35,7 @@ Trigger-slide input is not included.
 | PC Streamer driver | Reviewed full hashes or a conservative approved PE code/layout-family fingerprint | Loaded image and native interfaces checked before fixed-offset hooks; a family match is not a live test of a new PC/headset pair |
 | Python and Android helper | Frida 17.18.0, Windows x64 / Android ARM64 | Official downloads pinned by SHA-256 |
 | Thumb-rest sensor layout | Firmware build `51503870024400340` | Both thumbs scrolled well at 100% on one headset; Stop restored neutral output and ordinary controls; Desktop mouse felt smoother |
+| Newer thumb-rest firmware | Experimental `touch-pro-shared-pages-v1` capability probe, including `51503870035800340` | No build allowlist; both named pages, buffers and fresh counter progression must pass. Physical movement on newer firmware remains unverified. |
 | Steam Link | Not admitted | Controller identity and optical transport need separate validation |
 
 Before starting Qpro hands, enable both **Hand tracking** and **Automatically
