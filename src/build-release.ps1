@@ -394,7 +394,7 @@ foreach ($launcher in @(
 Copy-Item -LiteralPath (Join-Path $root "RELEASE_HELPERS_README.md") -Destination (Join-Path $helpersRoot "README.md")
 $docsRoot = Join-Path $releaseRoot "Docs"
 New-Item -ItemType Directory -Force -Path $docsRoot | Out-Null
-foreach ($document in @("LICENSE", "THIRD_PARTY_NOTICES.md", "UPSTREAM-README.md", "RELEASE_INSTRUCTIONS.md", "RELEASE_NOTES_V3.0.0.md", "RELEASE_NOTES_V3.0.1.md", "RELEASE_NOTES_V3.0.2.md", "RELEASE_FIX_NOTES.md", "UPDATER_MIGRATION_NOTES.md", "CONTROLLER_INPUT.md", "GAZE_ENGINE_TEST_NOTES.md")) {
+foreach ($document in @("LICENSE", "THIRD_PARTY_NOTICES.md", "UPSTREAM-README.md", "RELEASE_INSTRUCTIONS.md", "RELEASE_NOTES_V3.0.0.md", "RELEASE_NOTES_V3.0.1.md", "RELEASE_NOTES_V3.0.2.md", "RELEASE_NOTES_V3.0.3.md", "RELEASE_FIX_NOTES.md", "UPDATER_MIGRATION_NOTES.md", "CONTROLLER_INPUT.md", "GAZE_ENGINE_TEST_NOTES.md")) {
     $documentSource = Join-Path $root $document
     if (-not (Test-Path -LiteralPath $documentSource) -and $assetRootResolved) {
         $documentSource = Join-Path $assetRootResolved $document

@@ -6,7 +6,7 @@
   "bundledEyeProfile": "qpro-independent-visual-axis-v2.json",
   "bundledTongueModel": "qpro-stereo-tongue-v15",
   "stockMetaModelIncluded": false,
-  "status": "release candidate with experimental gaze, pupil and opt-in tongue features",
+  "status": "release with experimental gaze, pupil, tongue and controller features",
   "edition": "Virtual Desktop and Steam Link Edition",
   "gpuBackends": [
     "AMD ROCm (optional install)",
