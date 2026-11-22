@@ -19,6 +19,10 @@ internal sealed partial class HubForm
     }
 
     private IReadOnlyList<DatasetInfo> FindDatasets(TongueDatasetKind kind, bool requireCompleted, DateTime? newerThan = null)
+        => ReadDatasets(kind, requireCompleted, newerThan).Select(entry => entry.Dataset).ToArray();
+
+    private IReadOnlyList<(TongueDatasetKind Kind, DatasetInfo Dataset)> ReadDatasets(
+        TongueDatasetKind? requestedKind = null, bool requireCompleted = false, DateTime? newerThan = null)
     {
         var captureDirectories = new List<string> { Path.Combine(_root, "captures") };
         var rootInfo = new DirectoryInfo(_root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
@@ -40,7 +44,7 @@ internal sealed partial class HubForm
             .OrderByDescending(File.GetLastWriteTimeUtc)
             .ToList();
         if (sessionPaths.Count == 0) return [];
-        var result = new List<DatasetInfo>();
+        var result = new List<(TongueDatasetKind Kind, DatasetInfo Dataset)>();
         foreach (var path in sessionPaths)
         {
             if (newerThan is not null && File.GetLastWriteTimeUtc(path) < newerThan.Value) continue;
@@ -49,6 +53,8 @@ internal sealed partial class HubForm
                 var node = JsonNode.Parse(File.ReadAllText(path))?.AsObject();
                 if (node is null) continue;
                 var sessionType = node["sessionType"]?.GetValue<string>() ?? string.Empty;
+                var kind = requestedKind ?? Enum.GetValues<TongueDatasetKind>()
+                    .FirstOrDefault(candidate => HubTongueDatasetKind.MatchesSessionType(candidate, sessionType));
                 if (!HubTongueDatasetKind.MatchesSessionType(kind, sessionType)) continue;
                 var completed = node["completed"]?.GetValue<bool>() ?? false;
                 if (requireCompleted && !completed) continue;
@@ -59,7 +65,7 @@ internal sealed partial class HubForm
                 var displayName = node["displayName"]?.GetValue<string>()?.Trim();
                 var legacyDiagonalOnly = kind == TongueDatasetKind.Focused &&
                     HubTongueDatasetKind.IsLegacyDiagonalOnly(node["prompts"] as JsonArray);
-                result.Add(new DatasetInfo(path, capture, string.IsNullOrWhiteSpace(displayName) ? fallback : displayName, samples?.Count ?? 0, completed, legacyDiagonalOnly));
+                result.Add((kind, new DatasetInfo(path, capture, string.IsNullOrWhiteSpace(displayName) ? fallback : displayName, samples?.Count ?? 0, completed, legacyDiagonalOnly)));
             }
             catch { }
         }
@@ -89,19 +95,27 @@ internal sealed partial class HubForm
             }
         }
 
-        LoadQueue(_quickDatasets, _quickQueueStatus, TongueDatasetKind.Quick, quickSelection, trainedSessions);
-        LoadQueue(_focusedDatasets, _focusedQueueStatus, TongueDatasetKind.Focused, focusedSelection, trainedSessions);
-        LoadQueue(_fullDatasets, _fullQueueStatus, TongueDatasetKind.Full, fullSelection, trainedSessions);
-        LoadRecordedDatasets(_quickRecordedDatasets, TongueDatasetKind.Quick, quickRecordedSelection, trainedSessions);
-        LoadRecordedDatasets(_focusedRecordedDatasets, TongueDatasetKind.Focused, focusedRecordedSelection, trainedSessions);
-        LoadRecordedDatasets(_fullRecordedDatasets, TongueDatasetKind.Full, fullRecordedSelection, trainedSessions);
+        // Session files can contain thousands of samples. Share one fresh scan
+        // across all six lists instead of reading and parsing each file six times.
+        var datasets = ReadDatasets();
+        IReadOnlyList<DatasetInfo> ForKind(TongueDatasetKind kind) => datasets
+            .Where(entry => entry.Kind == kind).Select(entry => entry.Dataset).ToArray();
+        var quick = ForKind(TongueDatasetKind.Quick);
+        var focused = ForKind(TongueDatasetKind.Focused);
+        var full = ForKind(TongueDatasetKind.Full);
+        LoadQueue(_quickDatasets, _quickQueueStatus, quick, quickSelection, trainedSessions);
+        LoadQueue(_focusedDatasets, _focusedQueueStatus, focused, focusedSelection, trainedSessions);
+        LoadQueue(_fullDatasets, _fullQueueStatus, full, fullSelection, trainedSessions);
+        LoadRecordedDatasets(_quickRecordedDatasets, quick, quickRecordedSelection, trainedSessions);
+        LoadRecordedDatasets(_focusedRecordedDatasets, focused, focusedRecordedSelection, trainedSessions);
+        LoadRecordedDatasets(_fullRecordedDatasets, full, fullRecordedSelection, trainedSessions);
     }
 
-    private void LoadRecordedDatasets(ComboBox box, TongueDatasetKind kind, string? previous, HashSet<string> trainedSessions)
+    private void LoadRecordedDatasets(ComboBox box, IReadOnlyList<DatasetInfo> datasets, string? previous, HashSet<string> trainedSessions)
     {
         // The training queue also finds older release folders. The delete list is limited to this extracted copy.
         var captures = Path.GetFullPath(Path.Combine(_root, "captures"));
-        var all = FindDatasets(kind, requireCompleted: false)
+        var all = datasets
             .Where(dataset => string.Equals(Path.GetDirectoryName(Path.GetFullPath(dataset.SessionPath)), captures, StringComparison.OrdinalIgnoreCase));
         box.Items.Clear();
         foreach (var dataset in all)
@@ -180,9 +194,8 @@ internal sealed partial class HubForm
         foreach (var path in caches.Where(Directory.Exists)) Directory.Delete(path, recursive: true);
     }
 
-    private void LoadQueue(ComboBox box, Label status, TongueDatasetKind kind, string? previous, HashSet<string> trainedSessions)
+    private void LoadQueue(ComboBox box, Label status, IReadOnlyList<DatasetInfo> all, string? previous, HashSet<string> trainedSessions)
     {
-        var all = FindDatasets(kind, requireCompleted: false).ToList();
         var ready = all.Where(dataset => dataset.Completed && dataset.SampleCount > 0 && !trainedSessions.Contains(Path.GetFileName(dataset.SessionPath))).ToList();
         box.Items.Clear();
         foreach (var dataset in ready) box.Items.Add(new DatasetChoice(dataset));
