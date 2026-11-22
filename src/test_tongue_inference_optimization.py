@@ -88,6 +88,21 @@ class TongueInferenceOptimizationTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             torch.testing.assert_close(calls[0], torch.cat((inputs[:, 0:1], inputs[:, 1:2])))
 
+    def test_single_stereo_pair_reuses_input_storage_in_view_order(self):
+        model = create_model("spatial-stereo-resnet-v2", list(TONGUE_TARGET_NAMES))
+        optimized = _prepare_inference_model(model, torch.device("cpu"))
+        inputs = torch.rand(1, 2, 32, 32)
+        captured = []
+        hook = model.encoder.register_forward_pre_hook(lambda _module, args: captured.append(args[0]))
+        try:
+            with torch.inference_mode():
+                optimized(inputs)
+        finally:
+            hook.remove()
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].data_ptr(), inputs.data_ptr())
+        torch.testing.assert_close(captured[0], torch.cat((inputs[:, 0:1], inputs[:, 1:2])))
+
     def test_gpu_models_retain_original_two_pass_encoder(self):
         model = create_model("legacy-late-fusion-v1", list(TONGUE_TARGET_NAMES)).eval()
         with mock.patch.object(model, "to", return_value=model):

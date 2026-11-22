@@ -102,7 +102,7 @@ class TongueModelPreviewInputTests(unittest.TestCase):
         full_strip = rng.integers(0, 256, (400, 2000), dtype=np.uint8)
         strip = full_strip[:, 800:1600]
         original = full_strip.copy()
-        for size in (32, 64, 128, 160, 224):
+        for size in (32, 64, 128, 160, 192, 224):
             for mode in ("raw-v1", "clahe-v1"):
                 with self.subTest(size=size, mode=mode):
                     resized = np.stack([cv2.resize(strip[:, view * 400:(view + 1) * 400],
@@ -112,6 +112,24 @@ class TongueModelPreviewInputTests(unittest.TestCase):
                     actual = preview._inputs(strip, size, mode).numpy()
                     np.testing.assert_array_equal(actual, expected)
         np.testing.assert_array_equal(full_strip, original)
+
+    def test_resizing_non_byte_strips_preserves_conversion_to_byte(self):
+        preview, _models = self.load_preview(self.checkpoint())
+        strip = self.strip.astype(np.float32) + 0.25
+        expected = np.stack([
+            cv2.resize(strip[:, view * 400:(view + 1) * 400], (64, 64),
+                       interpolation=cv2.INTER_AREA).astype(np.uint8)
+            for view in range(2)
+        ]).astype(np.float32)[None] / 255.0
+        np.testing.assert_array_equal(preview._inputs(strip, 64).numpy(), expected)
+
+    def test_gpu_inputs_enqueue_upload_without_waiting(self):
+        preview, _models = self.load_preview(self.checkpoint())
+        for device in ("cpu", "cuda:1"):
+            with self.subTest(device=device), mock.patch.object(torch.Tensor, "to") as transfer:
+                preview.device = torch.device(device)
+                preview._inputs(self.strip, 64)
+            transfer.assert_called_once_with(preview.device, non_blocking=device.startswith("cuda"))
 
     def test_each_branch_uses_its_own_preprocessing_contract(self):
         for gate_mode, direction_mode in (("raw-v1", "clahe-v1"), ("clahe-v1", "raw-v1")):

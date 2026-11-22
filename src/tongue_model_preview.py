@@ -114,7 +114,11 @@ class _BatchedStereoInferenceModel(torch.nn.Module):
 
     @staticmethod
     def _features(model: torch.nn.Module, cameras: torch.Tensor) -> torch.Tensor:
-        views = torch.cat((cameras[:, 0:1], cameras[:, 1:2]), dim=0)
+        if cameras.shape[0] == 1 and cameras.shape[1] == 2:
+            # A live stereo pair already stores its two views in order.
+            views = cameras.squeeze(0).unsqueeze(1)
+        else:
+            views = torch.cat((cameras[:, 0:1], cameras[:, 1:2]), dim=0)
         left, right = model.encoder(views).chunk(2, dim=0)
         stereo = torch.cat((left, right, torch.abs(left - right), left * right), dim=1)
         if isinstance(model, SpatialStereoTongueModel):
@@ -495,9 +499,14 @@ class LiveTongueModelPreview:
         cameras = np.empty((2, image_size, image_size), dtype=np.uint8)
         for view in range(2):
             panel = strip[:, view * 400:(view + 1) * 400]
-            cameras[view] = cv2.resize(
-                panel, (image_size, image_size), interpolation=cv2.INTER_AREA
+            resized = cv2.resize(
+                panel, (image_size, image_size), dst=cameras[view],
+                interpolation=cv2.INTER_AREA,
             )
+            # For a non-byte strip, OpenCV allocates an output of its source
+            # dtype instead. Preserve the earlier cast into the byte buffer.
+            if strip.dtype != np.uint8:
+                cameras[view] = resized
         # Match the cache/trainer order. Contrast is part of the checkpoint's
         # input contract, so legacy weights continue to receive raw pixels.
         cameras = preprocess_stereo_images(cameras, preprocessing)
@@ -505,7 +514,11 @@ class LiveTongueModelPreview:
         # each branch avoids another equally sized float32 allocation.
         normalized = cameras.astype(np.float32)[None]
         normalized /= 255.0
-        return torch.from_numpy(normalized).to(self.device)
+        # Stream ordering protects both model inputs. Waiting for upload here
+        # would also wait for any queued gate kernels before direction runs.
+        return torch.from_numpy(normalized).to(
+            self.device, non_blocking=self.device.type == "cuda",
+        )
 
     def set_readback_cancelled(self, cancelled) -> None:
         self._readback_cancelled = cancelled
