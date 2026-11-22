@@ -2,6 +2,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from capture_format import (
     CaptureWriter, TRANSPORT_HEADER, inspect_capture, scan_stereo_mouth_stills,
@@ -9,6 +10,33 @@ from capture_format import (
 
 
 class CaptureFormatTests(unittest.TestCase):
+    def test_close_failure_closes_handle_and_preserves_first_error(self):
+        for stage in ("flush", "header"):
+            with self.subTest(stage=stage):
+                writer = CaptureWriter.__new__(CaptureWriter)
+                writer._file = mock.Mock(closed=False)
+                error = OSError("disk write failed")
+                writer._write_file_header = mock.Mock()
+                if stage == "flush":
+                    writer._file.flush.side_effect = error
+                else:
+                    writer._write_file_header.side_effect = error
+                writer._file.close.side_effect = OSError("later close error")
+                with self.assertRaises(OSError) as failed:
+                    writer.close()
+                self.assertIs(failed.exception, error)
+                writer._file.close.assert_called_once()
+                if stage == "flush":
+                    writer._write_file_header.assert_not_called()
+
+    def test_constructor_header_failure_does_not_leak_file(self):
+        handle = mock.Mock()
+        with (tempfile.TemporaryDirectory() as directory,
+              mock.patch.object(Path, "open", return_value=handle),
+              mock.patch.object(CaptureWriter, "_write_file_header", side_effect=OSError("header failed")),
+              self.assertRaisesRegex(OSError, "header failed")):
+            CaptureWriter(Path(directory) / "fixture.qpcap")
+        handle.close.assert_called_once()
     def test_stereo_still_scanner_supports_old_face_and_new_mouth_capture(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             for name, width, mask in (("old-face", 1200, 0x1C), ("mouth", 800, 0x0C)):
@@ -30,7 +58,7 @@ class CaptureFormatTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "face.qpcap"
             writer = CaptureWriter(path)
-            payload = bytes(1200 * 400)
+            payload = memoryview(bytearray(1200 * 400)).toreadonly()
             for sequence in (10, 12):
                 source_header = TRANSPORT_HEADER.pack(
                     b"QPLIVE3\0", 3, TRANSPORT_HEADER.size, sequence,

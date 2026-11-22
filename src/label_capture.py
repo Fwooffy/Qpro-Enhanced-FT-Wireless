@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_left
 import collections
 import json
 import math
@@ -114,6 +115,27 @@ class LabelSidecarRecorder:
             self.path.open("x", encoding="utf-8", buffering=1024 * 1024)
             if self.path is not None else None
         )
+        self._receive_error: Exception | None = None
+        self._lifecycle_lock = threading.Lock()
+        self._receiver_finished = False
+        self._deferred_file_close = False
+        self._socket = None
+        try:
+            self._initialize_receiver(port)
+        except BaseException:
+            if self._socket is not None:
+                try:
+                    self._socket.close()
+                except Exception:
+                    pass
+            if self._file is not None:
+                try:
+                    self._file.close()
+                except Exception:
+                    pass
+            raise
+
+    def _initialize_receiver(self, port: int) -> None:
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._socket.bind(("127.0.0.1", port))
         self._socket.settimeout(0.2)
@@ -128,11 +150,29 @@ class LabelSidecarRecorder:
             }
         )
         self._thread = threading.Thread(
-            target=self._receive_loop,
+            target=self._run_receive_loop,
             name="vrcft-label-receiver",
             daemon=True,
         )
         self._thread.start()
+
+    def _run_receive_loop(self) -> None:
+        try:
+            self._receive_loop()
+        except Exception as error:
+            # A disk/write failure must be surfaced by close, rather than
+            # finalizing an apparently complete sidecar after ingest died.
+            self._receive_error = error
+        finally:
+            with self._lifecycle_lock:
+                self._receiver_finished = True
+                deferred_close = self._deferred_file_close
+            if deferred_close and self._file is not None:
+                try:
+                    self._file.close()
+                except Exception as error:
+                    if self._receive_error is None:
+                        self._receive_error = error
 
     def _write(self, value: dict[str, object]) -> None:
         if self._file is None:
@@ -148,6 +188,8 @@ class LabelSidecarRecorder:
             except socket.timeout:
                 continue
             except OSError:
+                if self._running:
+                    raise
                 break
             if address[0] != "127.0.0.1":
                 self.invalid_count += 1
@@ -273,7 +315,7 @@ class LabelSidecarRecorder:
                 last_flush = now
 
     def label_age_seconds(self) -> float | None:
-        if self.last_sample_monotonic_ns is None:
+        if self._receive_error is not None or self.last_sample_monotonic_ns is None:
             return None
         return (time.monotonic_ns() - self.last_sample_monotonic_ns) / 1_000_000_000
 
@@ -310,13 +352,23 @@ class LabelSidecarRecorder:
         with self._recent_lock:
             if not self._recent_samples:
                 return None
-            sample = min(
-                self._recent_samples,
-                key=lambda value: abs(
-                    int(value["arrivalMonotonicNs"]) - monotonic_ns
-                ),
-            )
-            return dict(sample)
+
+            def arrival(value: dict[str, object]) -> int:
+                return int(value["arrivalMonotonicNs"])
+
+            # Receive-loop arrivals are monotonic. Search only the samples
+            # bracketing the requested time instead of scanning under the
+            # ingest lock. min() chose the earliest entry on equal distances.
+            samples = self._recent_samples
+            index = bisect_left(samples, monotonic_ns, key=arrival)
+            if index > 0:
+                before = arrival(samples[index - 1])
+                if (index == len(samples)
+                        or monotonic_ns - before <= arrival(samples[index]) - monotonic_ns):
+                    # The preceding time can have duplicates; retain the first
+                    # arrival at that time, including queries beyond the tail.
+                    index = bisect_left(samples, before, 0, index, key=arrival)
+            return dict(samples[index])
 
     def close(self) -> None:
         if not self._running:
@@ -324,17 +376,40 @@ class LabelSidecarRecorder:
         self._running = False
         self._socket.close()
         self._thread.join(timeout=1.0)
+        with self._lifecycle_lock:
+            if not self._receiver_finished:
+                # A blocked disk write still owns the file. Hand its closure
+                # to the receiver instead of racing an end record/close with
+                # that write. The caller must report finalization unconfirmed.
+                self._deferred_file_close = True
+                error = TimeoutError("Factory label receiver did not finish; sidecar finalization is unconfirmed")
+                if self._receive_error is None:
+                    self._receive_error = error
+                raise self._receive_error
+        failure = self._receive_error
         if self._file is not None:
-            self._write(
-                {
-                    "type": "end",
-                    "completedWallNs": time.time_ns(),
-                    "samples": self.sample_count,
-                    "invalidDatagrams": self.invalid_count,
-                }
-            )
-            self._file.flush()
-            self._file.close()
+            try:
+                if failure is None:
+                    self._file.flush()
+                    self._write(
+                        {
+                            "type": "end",
+                            "completedWallNs": time.time_ns(),
+                            "samples": self.sample_count,
+                            "invalidDatagrams": self.invalid_count,
+                        }
+                    )
+                self._file.flush()
+            except Exception as error:
+                if failure is None:
+                    failure = error
+            try:
+                self._file.close()
+            except Exception as error:
+                if failure is None:
+                    failure = error
+        if failure is not None:
+            raise failure
 
 
 def inspect_sidecar(path: str | Path) -> dict[str, object]:

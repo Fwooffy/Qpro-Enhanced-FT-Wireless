@@ -29,7 +29,14 @@ class CaptureWriter:
         self.created_monotonic_ns = time.monotonic_ns()
         self.frame_count = 0
         self._file = self.path.open("xb", buffering=1024 * 1024)
-        self._write_file_header(completed=False)
+        try:
+            self._write_file_header(completed=False)
+        except BaseException:
+            try:
+                self._file.close()
+            except Exception:
+                pass
+            raise
 
     def _write_file_header(self, completed: bool) -> None:
         self._file.seek(0)
@@ -50,7 +57,7 @@ class CaptureWriter:
     def write(
         self,
         transport_header: bytes,
-        payload: bytes,
+        payload: bytes | memoryview,
         pc_monotonic_ns: int,
         pc_wall_ns: int,
     ) -> None:
@@ -75,9 +82,21 @@ class CaptureWriter:
     def close(self, completed: bool = True) -> None:
         if self._file.closed:
             return
-        self._write_file_header(completed=completed)
-        self._file.flush()
-        self._file.close()
+        failure = None
+        try:
+            # Flush frame data before advertising a completed capture header.
+            self._file.flush()
+            self._write_file_header(completed=completed)
+            self._file.flush()
+        except BaseException as error:
+            failure = error
+        try:
+            self._file.close()
+        except BaseException:
+            if failure is None:
+                raise
+        if failure is not None:
+            raise failure
 
 
 def scan_stereo_mouth_stills(path: str | Path) -> tuple[list[tuple[int, int]], int]:

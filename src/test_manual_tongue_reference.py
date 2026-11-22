@@ -7,6 +7,7 @@ from label_capture import LabelSidecarRecorder
 class ManualTongueReferenceTests(unittest.TestCase):
     def recorder(self) -> LabelSidecarRecorder:
         recorder = LabelSidecarRecorder.__new__(LabelSidecarRecorder)
+        recorder._receive_error = None
         recorder.sample_count = 10
         recorder.schema_names = ["JawOpen", "TongueOut"]
         recorder.source_change_sequence = 0

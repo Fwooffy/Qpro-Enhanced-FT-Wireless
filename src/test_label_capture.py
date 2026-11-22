@@ -1,14 +1,165 @@
+import collections
 import json
+import random
 import socket
 import tempfile
+import threading
 import time
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
+from unittest import mock
 
 from label_capture import (
     LabelSidecarRecorder, NATIVE_TONGUE_MAPPING, inspect_sidecar,
     native_tongue_out, require_current_tongue_cache,
 )
+
+
+class LabelFailureTests(unittest.TestCase):
+    def recorder(self):
+        recorder = LabelSidecarRecorder.__new__(LabelSidecarRecorder)
+        recorder._lifecycle_lock = threading.Lock()
+        recorder._receiver_finished = True
+        recorder._deferred_file_close = False
+        return recorder
+
+    def test_healthy_close_flushes_samples_before_end_and_is_idempotent(self):
+        recorder = self.recorder()
+        recorder._running, recorder._receive_error = True, None
+        recorder.sample_count, recorder.invalid_count = 4, 1
+        recorder._socket, recorder._thread, recorder._file = mock.Mock(), mock.Mock(), mock.Mock()
+        events = []
+        recorder._file.flush.side_effect = lambda: events.append("flush")
+        recorder._write = mock.Mock(side_effect=lambda value: events.append(value["type"]))
+        recorder.close()
+        recorder.close()
+        self.assertEqual(events, ["flush", "end", "flush"])
+        recorder._file.close.assert_called_once()
+        recorder._socket.close.assert_called_once()
+
+    def test_bind_failure_closes_exclusive_sidecar_and_socket(self):
+        handle, sock = mock.Mock(), mock.Mock()
+        sock.bind.side_effect = OSError("address occupied")
+        with (tempfile.TemporaryDirectory() as directory,
+              mock.patch.object(Path, "open", return_value=handle),
+              mock.patch("label_capture.socket.socket", return_value=sock),
+              self.assertRaisesRegex(OSError, "address occupied")):
+            LabelSidecarRecorder(Path(directory) / "fixture.jsonl")
+        sock.close.assert_called_once()
+        handle.close.assert_called_once()
+
+    def test_ingest_disk_failure_is_reported_without_successful_end(self):
+        recorder = self.recorder()
+        recorder._running = True
+        recorder._receive_error = None
+        recorder._socket, recorder._thread, recorder._file = mock.Mock(), mock.Mock(), mock.Mock()
+        recorder._write = mock.Mock()
+        error = OSError("disk full")
+        recorder._receive_loop = mock.Mock(side_effect=error)
+        recorder._run_receive_loop()
+        self.assertIsNone(recorder.label_age_seconds())
+        with self.assertRaises(OSError) as failed:
+            recorder.close()
+        self.assertIs(failed.exception, error)
+        recorder._write.assert_not_called()
+        recorder._file.close.assert_called_once()
+        recorder._socket.close.assert_called_once()
+
+    def test_unexpected_socket_error_invalidates_freshness_and_preflight(self):
+        recorder = self.recorder()
+        recorder._running, recorder._receive_error = True, None
+        recorder._receiver_finished = False
+        recorder._socket, recorder._thread, recorder._file = mock.Mock(), mock.Mock(), mock.Mock()
+        error = OSError("receiver socket failed")
+        recorder._socket.recvfrom.side_effect = error
+        recorder._write = mock.Mock()
+        recorder.last_sample_monotonic_ns = time.monotonic_ns()
+        recorder.sample_count = 20
+        recorder.schema_names = ["TongueOut"]
+        recorder.source_change_sequence, recorder.source_unchanged_ms = 10, 0.0
+        self.assertTrue(recorder.manual_tongue_reference_ready())
+        self.assertTrue(recorder.source_is_live())
+        recorder._run_receive_loop()
+        self.assertIsNone(recorder.label_age_seconds())
+        self.assertFalse(recorder.manual_tongue_reference_ready())
+        self.assertFalse(recorder.source_is_live())
+        with self.assertRaises(OSError) as failed:
+            recorder.close()
+        self.assertIs(failed.exception, error)
+        recorder._write.assert_not_called()
+        recorder._file.close.assert_called_once()
+
+    def test_socket_error_from_deliberate_stop_is_normal_cleanup(self):
+        recorder = self.recorder()
+        recorder._running, recorder._receive_error = True, None
+        recorder._receiver_finished = False
+        recorder._socket, recorder._file = mock.Mock(), mock.Mock()
+        recorder.sample_count, recorder.invalid_count = 2, 0
+        recorder._write = mock.Mock()
+
+        receiving, closed = threading.Event(), threading.Event()
+
+        def stopped_socket(_size):
+            receiving.set()
+            if not closed.wait(5):
+                raise AssertionError("test socket was not closed")
+            raise OSError("socket closed by Stop")
+
+        recorder._socket.recvfrom.side_effect = stopped_socket
+        recorder._socket.close.side_effect = closed.set
+        recorder._thread = threading.Thread(target=recorder._run_receive_loop)
+        recorder._thread.start()
+        try:
+            self.assertTrue(receiving.wait(2))
+            recorder.close()
+        finally:
+            closed.set()
+            recorder._thread.join(5)
+        self.assertIsNone(recorder._receive_error)
+        self.assertEqual(recorder._write.call_args.args[0]["type"], "end")
+        recorder._file.close.assert_called_once()
+
+    def test_final_flush_failure_closes_file_without_completion_marker(self):
+        recorder = self.recorder()
+        recorder._running, recorder._receive_error = True, None
+        recorder._socket, recorder._thread, recorder._file = mock.Mock(), mock.Mock(), mock.Mock()
+        recorder._file.flush.side_effect = OSError("disk full")
+        recorder._write = mock.Mock()
+        with self.assertRaisesRegex(OSError, "disk full"):
+            recorder.close()
+        recorder._write.assert_not_called()
+        recorder._file.close.assert_called_once()
+
+    def test_join_timeout_does_not_race_file_write_and_defers_close_to_receiver(self):
+        recorder = self.recorder()
+        recorder._running, recorder._receive_error = True, None
+        recorder._receiver_finished = False
+        recorder._socket, recorder._file = mock.Mock(), mock.Mock()
+        recorder._write = mock.Mock()
+        writing, resume = threading.Event(), threading.Event()
+
+        def blocked_write():
+            writing.set()
+            if not resume.wait(5):
+                raise AssertionError("test write never released")
+
+        recorder._receive_loop = blocked_write
+        recorder._thread = threading.Thread(target=recorder._run_receive_loop)
+        recorder._thread.start()
+        try:
+            self.assertTrue(writing.wait(2))
+            with mock.patch.object(recorder._thread, "join"), self.assertRaisesRegex(TimeoutError, "unconfirmed"):
+                recorder.close()
+            recorder._write.assert_not_called()
+            recorder._file.flush.assert_not_called()
+            recorder._file.close.assert_not_called()
+        finally:
+            resume.set()
+            recorder._thread.join(5)
+        self.assertFalse(recorder._thread.is_alive())
+        recorder._file.close.assert_called_once()
+        recorder._write.assert_not_called()
 
 
 class LabelCaptureTests(unittest.TestCase):
@@ -18,10 +169,11 @@ class LabelCaptureTests(unittest.TestCase):
         port = probe.getsockname()[1]
         probe.close()
 
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as resources:
             path = Path(directory) / "labels.qplabel.jsonl"
             recorder = LabelSidecarRecorder(path, port=port)
-            sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            resources.callback(recorder.close)
+            sender = resources.enter_context(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
             sender.sendto(
                 json.dumps(
                     {"v": 1, "type": "schema", "names": ["JawOpen", "BrowInnerUpLeft"],
@@ -54,8 +206,7 @@ class LabelCaptureTests(unittest.TestCase):
             self.assertIsNotNone(nearest)
             self.assertEqual(nearest["values"], [0.25, 0.75])
             self.assertEqual(nearest["trackingSource"], "VirtualDesktop")
-            recorder.close()
-            sender.close()
+            resources.close()
 
             summary = inspect_sidecar(path)
             self.assertTrue(summary["completed"])
@@ -106,6 +257,65 @@ class LabelCaptureTests(unittest.TestCase):
             finally:
                 recorder.close()
                 sender.close()
+
+
+class NearestLabelSampleTests(unittest.TestCase):
+    @staticmethod
+    def recorder(times):
+        # Exercise lookup without starting its UDP receiver, writing a file,
+        # or depending on an installed tracking process.
+        recorder = LabelSidecarRecorder.__new__(LabelSidecarRecorder)
+        recorder._recent_lock = threading.Lock()
+        recorder._recent_samples = collections.deque(
+            ({"arrivalMonotonicNs": timestamp, "sequence": index, "values": [index]}
+             for index, timestamp in enumerate(times)), maxlen=512,
+        )
+        return recorder
+
+    def test_endpoints_duplicates_and_equal_distance_keep_earliest_copy(self):
+        empty = self.recorder([])
+        self.assertIsNone(empty.nearest_sample(0))
+        for times, target, expected_sequence in (
+            ([10], 0, 0), ([10], 20, 0),
+            ([10, 10, 20, 20], 0, 0),
+            ([10, 10, 20, 20], 10, 0),
+            ([10, 10, 20, 20], 15, 0),
+            ([10, 10, 20, 20], 16, 2),
+            ([10, 10, 20, 20], 20, 2),
+            ([10, 10, 20, 20], 30, 2),
+            ([10, 10, 10], 30, 0),
+            ([2**70, 2**70 + 2], 2**70 + 1, 0),
+        ):
+            with self.subTest(times=times, target=target):
+                recorder = self.recorder(times)
+                result = recorder.nearest_sample(target)
+                original = recorder._recent_samples[expected_sequence]
+                self.assertEqual(result, original)
+                self.assertIsNot(result, original)
+                self.assertIs(result["values"], original["values"])
+                result["sequence"] = "changed copy"
+                self.assertEqual(original["sequence"], expected_sequence)
+
+    def test_seeded_monotonic_deques_match_min_including_eviction(self):
+        rng = random.Random(20261120)
+        for case in range(200):
+            timestamp = 10**15
+            times = []
+            for _ in range(rng.randrange(1, 700)):
+                timestamp += rng.randrange(0, 8)
+                times.append(timestamp)
+            recorder = self.recorder(times)
+            retained = recorder._recent_samples
+            queries = [times[0] - 100, times[-1] + 100]
+            queries.extend(rng.randrange(times[0] - 5, times[-1] + 6) for _ in range(20))
+            queries.extend(times[index] for index in (0, len(times) // 2, len(times) - 1))
+            for target in queries:
+                with self.subTest(case=case, target=target):
+                    expected = min(retained, key=lambda value: abs(int(value["arrivalMonotonicNs"]) - target))
+                    result = recorder.nearest_sample(target)
+                    self.assertEqual(result, expected)
+                    self.assertIsNot(result, expected)
+                    self.assertIs(result["values"], expected["values"])
 
 
 class NativeTongueLayoutTests(unittest.TestCase):
