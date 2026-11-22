@@ -25,6 +25,7 @@ internal sealed partial class HubForm : Form
     private readonly CheckBox _tongue = FeatureToggle("Experimental tongue tracking", false);
     private readonly CheckBox _pupil = FeatureToggle("Experimental relative pupil dilation (eye cameras)", false);
     private readonly CheckBox _cameraPreview = FeatureToggle("Preview tracking cameras", false);
+    private readonly CheckBox _trackingStopSound = FeatureToggle("Sound once if a tracking feature stops unexpectedly", false);
     private readonly CheckBox _individualCheekPuff = FeatureToggle("Individual cheek puff (1/0)", true);
     private readonly CheckBox _individualCheekSuck = FeatureToggle("Individual cheek suck (1/0)", true);
     private readonly CheckBox _eyebrowBoost = FeatureToggle("Adjust eyebrow movement", false);
@@ -84,6 +85,7 @@ internal sealed partial class HubForm : Form
     private readonly Button _stop = SecondaryButton("Stop tracking");
     private readonly List<Process> _trackingProcesses = [];
     private SoundPlayer? _soundPlayer;
+    private readonly HubTrackingStopAlert _trackingStopAlert = new();
     private bool _stopping;
     private bool _starting;
     private bool _closingInProgress;
@@ -306,6 +308,14 @@ internal sealed partial class HubForm : Form
         _pupilSensitivity.SelectedIndex = 2;
         _visibilityMode.Items.AddRange(["Weighted camera + native", "Camera only", "Native only", "Conservative agreement"]);
         _visibilityMode.SelectedIndex = 0;
+        _trackingStopSound.Checked = !_previewOnly && HubTrackingSoundPreference.Load();
+        _trackingStopSound.CheckedChanged += (_, _) =>
+        {
+            if (_previewOnly) return;
+            try { HubTrackingSoundPreference.Save(_trackingStopSound.Checked); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            { AppendLog("Tracking sound preference could not be saved: " + error.Message); }
+        };
         _individualCheekPuff.Checked = HubCheekPuffPreference.LoadMode() != HubCheekPuffMode.Off;
         void SaveCheekPuffChoice()
         {

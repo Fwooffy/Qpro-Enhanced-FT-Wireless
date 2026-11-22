@@ -371,6 +371,7 @@ internal sealed partial class HubForm
         Span(sessionCameraSettings, _cameraPreview, 3);
         Span(sessionCameraSettings, Info("Shared by tongue and pupils. Higher FPS uses more resources. Processing profiles limit pupil work without changing the tongue model. Preview is off by default; hiding it keeps tracking active. Apply changes by restarting tracking."), 4);
         connectionDetails.Controls.Add(sessionCameraSettings);
+        connectionDetails.Controls.Add(_trackingStopSound);
         _trackingSourceLiveNote.Margin = new Padding(0, 2, 0, 8);
         connectionDetails.Controls.Add(_trackingSourceLiveNote);
         var connectionActions = new BufferedFlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true,

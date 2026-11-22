@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../qpro-hub/HubTrackingStopAlert.cs" Link="HubTrackingStopAlert.cs" />
     <Compile Include="../../qpro-hub/HubActionFailure.cs" Link="HubActionFailure.cs" />
     <Compile Include="../../qpro-hub/HubProcessResult.cs" Link="HubProcessResult.cs" />
     <Compile Include="../../qpro-hub/HubTrainingProgress.cs" Link="HubTrainingProgress.cs" />

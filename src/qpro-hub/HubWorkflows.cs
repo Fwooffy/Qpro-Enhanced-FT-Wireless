@@ -614,8 +614,9 @@ internal sealed partial class HubForm
         ApplyMagiskGazeControlGate(sessionEditable: !LiveTrackingRunning && !_trackingCleanupPending);
         _trackingProcesses.RemoveAll(p => p.HasExited);
         if (LiveTrackingRunning) { MessageBox.Show(this, "Tracking is already running."); return; }
-        if (!_gaze.Checked && !_tongue.Checked && !_pupil.Checked && !_hybridHands.Checked && !_controllerTouchpad.Checked && !NativeCheekAdjustmentsSelected) { PlaySfx("warning.wav"); MessageBox.Show(this, "Select at least one tracking feature."); return; }
+        if (!_gaze.Checked && !_tongue.Checked && !_pupil.Checked && !_hybridHands.Checked && !_controllerTouchpad.Checked && !NativeCheekAdjustmentsSelected) { MessageBox.Show(this, "Select at least one tracking feature."); return; }
         bool workerTrackingRequested = WorkerTrackingSelected;
+        _trackingStopAlert.BeginSession();
         _starting = true;
         StopTrackingHealth();
         var startCancellation = new CancellationTokenSource();
@@ -629,7 +630,6 @@ internal sealed partial class HubForm
             if (missing.Count > 0)
             {
                 SetActionFeedback("Tracking needs a few prerequisites", string.Join("; ", missing), "Complete the listed requirements, then retry Start tracking.", true);
-                PlaySfx("warning.wav");
                 MessageBox.Show(this, "Before starting tracking, start or provide:\n\n• " +
                     string.Join("\n• ", missing), "Not ready");
                 return;
@@ -754,7 +754,6 @@ internal sealed partial class HubForm
                 startupFeedback?.NextStep ?? failure.NextStep, startupFeedback?.IsError ?? true,
                 startupFeedback is { IsError: false } ? ActivitySeverity.Warning : ActivitySeverity.Error);
             await StopTrackingAsync();
-            PlaySfx("warning.wav");
             MessageBox.Show(this, startupFeedback is null ? error.Message : startupFeedback.Detail + "\n\nNext: " + startupFeedback.NextStep,
                 "Tracking did not start");
         }
@@ -866,6 +865,7 @@ internal sealed partial class HubForm
         var completedResult = new TaskCompletionSource<HubTrackingExitFeedback?>(TaskCreationOptions.RunContinuationsAsynchronously);
         exitResult = completedResult.Task;
         var recentOutput = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        int userQuitObserved = 0;
         var outputClosed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var errorClosed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var controllerResult = label == "Hand/controller input" ? new HubControllerUtilityResult() : null;
@@ -877,6 +877,7 @@ internal sealed partial class HubForm
         }
         void ReportLine(string line)
         {
+            if (line == HubTrackingExitFeedback.UserQuitMarker) Interlocked.Exchange(ref userQuitObserved, 1);
             try
             {
                 // A queued UI callback must retain the actual pipe arrival
@@ -909,6 +910,7 @@ internal sealed partial class HubForm
         process.ErrorDataReceived += (_, e) => { if (e.Data is not null) ReportLine(e.Data); else errorClosed.TrySetResult(); };
         process.Exited += async (_, _) =>
         {
+            var exitedDuringStartup = _starting;
             if (label == "Independent gaze") _gazeStartupSignal?.TrySetResult(false);
             var stopWasRequested = _stopping || _trackingCleanupPending || _closingInProgress ||
                 _startCancellation?.IsCancellationRequested == true;
@@ -937,8 +939,11 @@ internal sealed partial class HubForm
             }
             // Publish before posting UI feedback: a startup failure must retain
             // its own drained result even when Stop subsequently removes it.
+            var finalOutput = string.Join("\n", recentOutput);
+            if (Volatile.Read(ref userQuitObserved) != 0) finalOutput += "\n" + HubTrackingExitFeedback.UserQuitMarker;
+            var userQuit = HubTrackingExitFeedback.IsUserQuit(label, exitCode, outputDrained, finalOutput);
             completedResult.TrySetResult(HubTrackingExitFeedback.Complete(label, exitCode, false,
-                outputDrained, string.Join("\n", recentOutput)));
+                outputDrained, finalOutput));
             var controllerRestoration = controllerResult?.CompleteRestoration(outputDrained);
             if (controllerRestoration is not null) controllerCompletion!.TrySetResult(controllerRestoration);
             PostProcessUpdate(label, () =>
@@ -948,6 +953,11 @@ internal sealed partial class HubForm
                     // after Stop has removed it. Keep the log without replacing
                     // a new session's status or result.
                     if (!_trackingProcesses.Contains(process)) return;
+                    if (_trackingStopAlert.TryNotify(true,
+                        userQuit || stopWasRequested || _stopping || _trackingCleanupPending || _closingInProgress ||
+                        _startCancellation?.IsCancellationRequested == true,
+                        exitedDuringStartup || _starting) && _trackingStopSound.Checked)
+                        PlaySfx("warning.wav");
                     if ((label is "Camera tracking" or "Pupil tracking") && _trackingHealth.Running)
                     {
                         _trackingHealth.CameraExited(exitCode != 0 && !stopWasRequested);
@@ -970,18 +980,18 @@ internal sealed partial class HubForm
                     }
                     if (!stopWasRequested && !_stopping)
                     {
-                        _runStatus.Text = $"● {label} stopped — check Activity";
-                        _runStatus.ForeColor = Warning;
+                        _runStatus.Text = userQuit ? $"● {label} stopped by you" : $"● {label} stopped — check Activity";
+                        _runStatus.ForeColor = userQuit ? Muted : Warning;
                         if (label == "Camera tracking") SetStatus(_inferenceStatus, StatusKind.Warning, "Stopped");
                         if (_pupil.Checked && label is ("Camera tracking" or "Pupil tracking")) SetStatus(_pupilStatus, StatusKind.Warning, "Stopped");
                         if (label is "Camera tracking" or "Pupil tracking")
                         {
                             var feedback = HubTrackingExitFeedback.Complete(label, exitCode,
                                 _closingInProgress || _trackingCleanupPending || _startCancellation?.IsCancellationRequested == true,
-                                outputDrained, string.Join("\n", recentOutput));
+                                outputDrained, finalOutput);
                             if (feedback is not null)
                                 SetActionFeedback(feedback.Title, feedback.Detail, feedback.NextStep, feedback.IsError,
-                                    feedback.IsError ? ActivitySeverity.Error : ActivitySeverity.Warning);
+                                    feedback.IsError ? ActivitySeverity.Error : userQuit ? ActivitySeverity.Normal : ActivitySeverity.Warning);
                         }
                     }
                     UpdateControlState();

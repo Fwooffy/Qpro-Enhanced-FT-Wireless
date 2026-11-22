@@ -171,6 +171,23 @@ var stoppedIncomplete = HubTrackingExitFeedback.Complete("Pupil tracking", 1, tr
 if (expectedStop is not null || cancelledStart is not null || stoppedIncomplete is not null)
     throw new Exception("A requested Stop or cancelled startup must not create an unexpected-worker failure.");
 var selfExit = HubTrackingExitFeedback.Complete("Pupil tracking", 0, false, true, "PUPIL_OUTPUT_OFF");
+var quitMarker = HubTrackingExitFeedback.UserQuitMarker;
+var quitSoundGate = new HubTrackingStopAlert();
+quitSoundGate.BeginSession();
+if (quitSoundGate.TryNotify(true, HubTrackingExitFeedback.IsUserQuit("Camera tracking", 0, true, quitMarker), false))
+    throw new Exception("Explicit healthy keyboard Quit must not trigger audio.");
+if (!quitSoundGate.TryNotify(true, HubTrackingExitFeedback.IsUserQuit("Camera tracking", 1, true, quitMarker), false))
+    throw new Exception("A later real failure must retain the session's alert.");
+var userQuit = HubTrackingExitFeedback.Complete("Camera tracking", 0, false, true, quitMarker);
+if (userQuit?.IsError != false || !userQuit.Title.Contains("stopped by you")
+    || !HubTrackingExitFeedback.IsUserQuit("Pupil tracking", 0, true, "stock restored\n" + quitMarker)
+    || HubTrackingExitFeedback.IsUserQuit("Camera tracking", 1, true, quitMarker)
+    || HubTrackingExitFeedback.IsUserQuit("Camera tracking", 0, false, quitMarker)
+    || HubTrackingExitFeedback.IsUserQuit("Hand/controller input", 0, true, quitMarker)
+    || HubTrackingExitFeedback.IsUserQuit("Camera tracking", 0, true, "prefix " + quitMarker))
+    throw new Exception("User Quit classification must require an exact keyboard marker, healthy camera exit and drained output.");
+if (HubTrackingExitFeedback.Complete("Camera tracking", 1, false, true, quitMarker)?.IsError != true)
+    throw new Exception("A real failure after user Quit must remain an error.");
 if (selfExit is null || selfExit.IsError || !selfExit.Title.Contains("stopped", StringComparison.Ordinal))
     throw new Exception("An unexpected successful exit must explain that tracking stopped without claiming setup failed.");
 var failedIncomplete = HubTrackingExitFeedback.Complete("Camera tracking", -1, false, false, "output still draining");

@@ -145,6 +145,10 @@ internal static class TrackingHealthTests
         var fixtureRoot = Path.Combine(Path.GetTempPath(), "qpro-health-fixture-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(fixtureRoot);
         using var form = new HubForm(fixtureRoot, rememberLaunch: false, previewOnly: true);
+        var stopSound = Field<CheckBox>(form, "_trackingStopSound");
+        Check(!stopSound.Checked, "Preview should use a silent sample preference.");
+        stopSound.Checked = true;
+        stopSound.Checked = false;
         var offscreen = args.Contains("--offscreen");
         if (offscreen) { form.Opacity = 0; form.ShowInTaskbar = false; }
         form.Show();

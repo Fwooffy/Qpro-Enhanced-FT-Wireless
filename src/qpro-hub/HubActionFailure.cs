@@ -119,6 +119,10 @@ internal sealed record HubActionFailure(string Title, string Detail, string Next
 // Stop. Keep it distinct from an installation failure or normal cleanup.
 internal sealed record HubTrackingExitFeedback(string Title, string Detail, string NextStep, bool IsError)
 {
+    internal const string UserQuitMarker = "QPRO_TRACKING_USER_QUIT source=keyboard";
+    internal static bool IsUserQuit(string label, int exitCode, bool outputDrained, string output)
+        => label is ("Camera tracking" or "Pupil tracking") && exitCode == 0 && outputDrained
+            && output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Any(line => line == UserQuitMarker);
     internal static async Task<HubTrackingExitFeedback?> WaitForStartupAsync(
         Task<HubTrackingExitFeedback?> exitResult, CancellationToken cancellation)
     {
@@ -135,6 +139,9 @@ internal sealed record HubTrackingExitFeedback(string Title, string Detail, stri
         bool outputDrained, string output)
     {
         if (stopRequested) return null;
+        if (IsUserQuit(label, exitCode, outputDrained, output))
+            return new(label + " stopped by you", "Quit was requested with Q or Escape in the tracking preview or console.",
+                "Any other tracking features continue. Press Stop tracking before starting a new session.", false);
         if (exitCode == 0)
             return new(label + " stopped", "The tracking worker exited before Stop tracking was requested.",
                 "Review the last Activity lines for the stop reason. Stop any other Qpro features before restarting tracking.", false);

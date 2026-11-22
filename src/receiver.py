@@ -394,6 +394,8 @@ def handle_key(shared: SharedPreview, key: str) -> None:
     elif key == "s":
         shared.select("strip")
     elif key in ("q", "\x1b"):
+        if shared.running:
+            print("QPRO_TRACKING_USER_QUIT source=keyboard", flush=True)
         shared.running = False
     elif key == "t":
         shared.queue_runtime_key(key)
