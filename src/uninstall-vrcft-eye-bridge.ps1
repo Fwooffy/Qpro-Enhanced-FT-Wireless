@@ -9,6 +9,7 @@ $recoveryRoot = Get-QproModuleRecoveryRoot
 Assert-QproPathWithoutLinks $customLibs
 Assert-QproVrcftClosed
 $inventory = @(Get-QproModuleInventory $customLibs)
+if ($inventory.Count -gt 0) { Assert-QproModuleTransactionVolume $customLibs $recoveryRoot }
 $transactionId = [guid]::NewGuid().ToString("N")
 $recoveryDirectory = Join-Path $recoveryRoot ("vrcft-qpro-module-uninstall-backup-" + $transactionId)
 Assert-QproDirectChild $recoveryDirectory $recoveryRoot
@@ -101,11 +102,31 @@ function Restore-SavedOfficialModule([string]$BackupPath, [string]$ModuleId) {
 
 $restored = 0
 $recoveryIssues = @()
-if (Test-Path -LiteralPath $research -PathType Container) {
+try { $savedSources = Restore-QproSourceModuleBackups $customLibs $recoveryRoot }
+catch {
+    $reason = $_.Exception.Message
+    $expected = $false
+    for ($cause = $_.Exception; $null -ne $cause; $cause = $cause.InnerException) {
+        if ($cause -is [IO.IOException] -or $cause -is [UnauthorizedAccessException] -or
+            $cause -is [Security.SecurityException] -or $cause -is [FormatException] -or
+            $cause -is [System.Management.Automation.ItemNotFoundException]) { $expected = $true; break }
+    }
+    if (-not $expected) { throw }
+    # Qpro has already been retired. Preserve that accurate result and refuse
+    # older fallback when the newer recovery inventory cannot be inspected.
+    $savedSources = @{ Restored = 0; Issues = @("Saved source-module recovery could not be inspected: $reason");
+        HandledModuleIds = @(); HistoricalBlocked = $true }
+}
+$restored += $savedSources.Restored
+$recoveryIssues += @($savedSources.Issues)
+if ((Test-Path -LiteralPath $research -PathType Container) -and -not $savedSources.HistoricalBlocked) {
     $officialBackups = @(Get-ChildItem -LiteralPath $research -Directory -Force |
         Where-Object { $_.Name -match '^vrcft-official-virtual-desktop-backup(?:-\d{8}-\d{6}|-[0-9a-f]{32})?$' } |
         Sort-Object LastWriteTimeUtc -Descending)
-    if ($officialBackups.Count -gt 0) {
+    if ($officialBackups.Count -gt 0 -and ($savedSources.HistoricalBlocked -or
+        '91a90618-b020-4064-8832-809b2ca2b3bc' -in @($savedSources.HandledModuleIds))) {
+        Write-Host 'Historical Virtual Desktop backups were kept for review because a newer source-module transaction already owns its recovery result.'
+    } elseif ($officialBackups.Count -gt 0) {
         $result = "unverified"
         foreach ($backup in $officialBackups) {
             try { $result = Restore-SavedOfficialModule $backup.FullName "91a90618-b020-4064-8832-809b2ca2b3bc" }
@@ -125,6 +146,7 @@ if (Test-Path -LiteralPath $research -PathType Container) {
         $recoveryIssues += "The saved legacy module was not restored ($result). Its recovery files remain in $research for review."
     }
 }
+elseif ($savedSources.HistoricalBlocked) { Write-Host 'Historical module backups remain unchanged because the newer recovery state could not be verified.' }
 $remaining = @(Get-QproModuleInventory $customLibs).Count
 Write-Host ("QPRO_MODULE_UNINSTALL " + (@{ removed = $inventory.Count; restored = $restored; remainingQpro = $remaining; recoveryIssues = @($recoveryIssues) } | ConvertTo-Json -Compress))
 if ($remaining -ne 0) { throw "Qpro modules appeared during recovery. Keep VRCFaceTracking closed, then retry uninstallation." }

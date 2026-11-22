@@ -286,7 +286,7 @@ try {
     Copy-Item -LiteralPath $FixtureDll -Destination $loose
     function Move-Item {
         [CmdletBinding()]
-        param([string]$LiteralPath, [string]$Destination)
+        param([string]$LiteralPath, [string]$Destination, [switch]$Force)
         if ($LiteralPath -eq $loose) { throw "Fixture uninstall retirement failed." }
         Microsoft.PowerShell.Management\Move-Item @PSBoundParameters
     }
@@ -359,7 +359,7 @@ try {
     $savedResearch = Join-Path $fixtureRoot "saved-historical-research"
     function Move-Item {
         [CmdletBinding()]
-        param([string]$LiteralPath, [string]$Destination)
+        param([string]$LiteralPath, [string]$Destination, [switch]$Force)
         Microsoft.PowerShell.Management\Move-Item @PSBoundParameters
         if ($LiteralPath -eq $legacyBackup -and $Destination -eq $legacyTarget) {
             [IO.File]::WriteAllText((Join-Path $legacyTarget "changed-after-move.txt"), "fixture validation failure")

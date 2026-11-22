@@ -11,9 +11,10 @@ if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) { throw "Module instal
 . $helper
 $QproModuleVersion = Get-QproModuleVersion $root
 $customLibs = Join-Path $env:APPDATA "VRCFaceTracking\CustomLibs"
+$stageRoot = Get-QproModuleStagingRoot $customLibs
 $research = Get-QproModuleRecoveryRoot
 $sourcePath = Join-Path $env:LOCALAPPDATA "QproFaceTracking\config\tracking-source.txt"
-foreach ($path in @($customLibs, $research, $sourcePath)) { Assert-QproPathWithoutLinks $path }
+foreach ($path in @($customLibs, $research, $sourcePath, $stageRoot)) { Assert-QproPathWithoutLinks $path }
 if (-not $TrackingSource) {
     $TrackingSource = if ((Test-Path -LiteralPath $sourcePath -PathType Leaf) -and
         ([System.IO.File]::ReadAllText($sourcePath)).Trim() -eq "steam-link") { "SteamLink" } else { "VirtualDesktop" }
@@ -36,21 +37,19 @@ if ($Rebuild) {
 if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "The prebuilt Qpro module is missing. Re-extract the complete release ZIP." }
 Assert-QproReadableSourcePath $source
 if ((Get-QproAssemblyIdentity $source -ReadableSource) -ne "Qpro.GazeBridge") { throw "The packaged DLL is not a readable Qpro module. Re-extract the complete release ZIP. If the folder is synced by OneDrive, choose 'Always keep on this device' for the extracted Qpro folder, then retry." }
-$inventory = @(Get-QproModuleInventory $customLibs)
-$competing = @(Find-QproCompetingSourceModules $customLibs $inventory | Sort-Object -Unique)
-if ($competing.Count -gt 0) {
-    throw "Another Virtual Desktop or Steam Link module is installed at $($competing -join '; '). Remove it through VRCFaceTracking, close VRCFaceTracking, then retry. Qpro left those files unchanged."
-}
+$inventory = @(Get-QproModuleInstallInventory $customLibs)
+$sourceModules = @($inventory | Where-Object { $_.SourceModuleId })
+Assert-QproModuleTransactionVolume $customLibs $research
 if ((Test-Path -LiteralPath $sourcePath) -and -not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
     throw "The face-tracking source path is not a regular file and was left untouched: $sourcePath"
 }
-New-Item -ItemType Directory -Path $customLibs, $research, (Split-Path -Parent $sourcePath) -Force | Out-Null
-foreach ($path in @($customLibs, $research, $sourcePath)) { Assert-QproPathWithoutLinks $path }
+New-Item -ItemType Directory -Path $customLibs, $research, $stageRoot, (Split-Path -Parent $sourcePath) -Force | Out-Null
+foreach ($path in @($customLibs, $research, $sourcePath, $stageRoot)) { Assert-QproPathWithoutLinks $path }
 $transactionId = [guid]::NewGuid().ToString("N")
-$stageDirectory = Join-Path $customLibs (".qpro-module-" + $transactionId + ".tmp")
+$stageDirectory = Join-Path $stageRoot ("install-" + $transactionId)
 $stageToken = Join-Path (Split-Path -Parent $sourcePath) (".qpro-source-" + $transactionId + ".tmp")
 $recoveryDirectory = Join-Path $research ("vrcft-qpro-module-switch-backup-" + $transactionId)
-Assert-QproDirectChild $stageDirectory $customLibs
+Assert-QproDirectChild $stageDirectory $stageRoot
 Assert-QproDirectChild $recoveryDirectory $research
 $configExisted = Test-Path -LiteralPath $sourcePath -PathType Leaf
 $configOriginal = if ($configExisted) { [System.IO.File]::ReadAllBytes($sourcePath) } else { $null }
@@ -58,6 +57,7 @@ $moved = @()
 $installed = $false
 $configWritten = $false
 $stageHashes = $null
+$sourceReceiptPrepared = $false
 
 try {
     New-Item -ItemType Directory -Path $stageDirectory | Out-Null
@@ -86,14 +86,15 @@ try {
     $stageHashes = Get-QproTreeHashes $stageDirectory $true
     Backup-QproEntries $inventory $customLibs $recoveryDirectory
     if ($configExisted) { [System.IO.File]::WriteAllBytes((Join-Path $recoveryDirectory "tracking-source.txt"), $configOriginal) }
+    Write-QproSourceModuleReceipt $recoveryDirectory $transactionId 'prepared' $inventory
+    $sourceReceiptPrepared = $sourceModules.Count -gt 0
     Assert-QproVrcftClosed
-    $latestInventory = @(Get-QproModuleInventory $customLibs)
+    $latestInventory = @(Get-QproModuleInstallInventory $customLibs)
     $originalPaths = @($inventory | ForEach-Object Path | Sort-Object) -join [Environment]::NewLine
     $currentPaths = @($latestInventory | ForEach-Object Path | Sort-Object) -join [Environment]::NewLine
     if ($currentPaths -ne $originalPaths) {
         throw "Installed Qpro files changed during preparation. Check the module list and retry."
     }
-    if (@(Find-QproCompetingSourceModules $customLibs $latestInventory).Count -gt 0) { throw "A competing source module appeared during installation. Retry with VRCFaceTracking closed." }
     Assert-QproPathWithoutLinks $sourcePath
     if ($configExisted) {
         if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf) -or
@@ -102,7 +103,9 @@ try {
         }
     } elseif (Test-Path -LiteralPath $sourcePath) { throw "A face-tracking source file appeared during installation." }
     Assert-QproSameTree $stageDirectory $true $stageHashes
+    Assert-QproVrcftClosed
     Move-QproEntriesToRecovery $inventory $customLibs $recoveryDirectory ([ref]$moved)
+    Assert-QproVrcftClosed
     if (Test-Path -LiteralPath $destination) { throw "The Qpro module destination is occupied and was left untouched." }
     Move-Item -LiteralPath $stageDirectory -Destination $destination
     $installed = $true
@@ -110,6 +113,11 @@ try {
     Copy-Item -LiteralPath $stageToken -Destination $sourcePath -Force
     Assert-QproSameTree $destination $true $stageHashes
     if (([System.IO.File]::ReadAllText($sourcePath)).Trim() -ne $identity.Token) { throw "The installed face-tracking source failed verification." }
+    $installedInventory = @(Get-QproModuleInventory $customLibs)
+    if ($installedInventory.Count -ne 1 -or @(Find-QproCompetingSourceModules $customLibs $installedInventory).Count -gt 0) {
+        throw 'Installed source modules changed during installation. No competing module can be left active with Qpro.'
+    }
+    Write-QproSourceModuleReceipt $recoveryDirectory $transactionId 'committed' $inventory
 } catch {
     $failure = $_.Exception.Message
     $rollbackErrors = @()
@@ -130,6 +138,10 @@ try {
             elseif (Test-Path -LiteralPath $sourcePath -PathType Leaf) { Remove-Item -LiteralPath $sourcePath }
         } catch { $rollbackErrors += $_.Exception.Message }
     }
+    if ($sourceReceiptPrepared -and $rollbackErrors.Count -eq 0) {
+        try { Write-QproSourceModuleReceipt $recoveryDirectory $transactionId 'rolled-back' $inventory }
+        catch { $rollbackErrors += "Could not finalize the source-module rollback receipt: $($_.Exception.Message)" }
+    }
     $rollback = if ($rollbackErrors.Count -gt 0) { " Rollback needs attention: $($rollbackErrors -join '; ')." } else { "" }
     throw "Installing the Qpro $($identity.Name) module failed: $failure Recovery copies: $recoveryDirectory.$rollback"
 } finally {
@@ -138,7 +150,7 @@ try {
         Remove-Item -LiteralPath $stageToken
     }
     if ((Test-Path -LiteralPath $stageDirectory -PathType Container) -and $null -ne $stageHashes) {
-        Assert-QproDirectChild $stageDirectory $customLibs
+        Assert-QproDirectChild $stageDirectory $stageRoot
         Assert-QproSameTree $stageDirectory $true $stageHashes
         foreach ($file in Get-ChildItem -LiteralPath $stageDirectory -File) { Remove-Item -LiteralPath $file.FullName }
         # The stage has only its two recorded files. Remove its empty directory
@@ -149,6 +161,9 @@ try {
 
 Write-Host "Installed the Qpro $($identity.Name) VRCFaceTracking module: $destination"
 Write-Host "Recovery copies of previous Qpro modules and the selected source are in $recoveryDirectory"
+foreach ($entry in $sourceModules) {
+    Write-Host "Backed up and replaced the recognized $($entry.Provider) module at $($entry.Path). Uninstall Qpro module or Restore stock VRCFT can restore its verified recovery copy."
+}
 foreach ($entry in $inventory | Where-Object Copied) {
     Write-Host "Migrated a copied Qpro DLL from $($entry.Path). Its surrounding metadata and other module files were left unchanged. Repair that old module card through VRCFaceTracking if needed."
 }

@@ -178,6 +178,14 @@ function Get-QproModuleRecoveryRoot {
     return $path
 }
 
+function Get-QproModuleStagingRoot([string]$CustomLibs) {
+    $parent = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($CustomLibs).TrimEnd('\', '/'))
+    $path = Join-Path $parent 'QproModuleStaging'
+    Assert-QproDirectChild $path $parent
+    Assert-QproPathWithoutLinks $path
+    return $path
+}
+
 function Assert-QproPathWithoutLinks([string]$Path) {
     $current = [System.IO.Path]::GetFullPath($Path)
     if ($current.StartsWith('\\', [System.StringComparison]::Ordinal)) { throw "Network module paths are unsupported: $current" }
@@ -429,7 +437,7 @@ function Backup-QproEntries([object[]]$Entries, [string]$CustomLibs, [string]$Re
         if (-not $saved.StartsWith($allowed, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Invalid module recovery path." }
         New-Item -ItemType Directory -Path (Split-Path -Parent $saved) -Force | Out-Null
         $entry | Add-Member -NotePropertyName Hashes -NotePropertyValue (Get-QproTreeHashes $entry.Path $entry.Directory)
-        Copy-Item -LiteralPath $entry.Path -Destination $saved -Recurse
+        Copy-Item -LiteralPath $entry.Path -Destination $saved -Recurse -Force
         Assert-QproSameTree $saved $entry.Directory $entry.Hashes
         $entry | Add-Member -NotePropertyName Backup -NotePropertyValue $saved
     }
@@ -449,9 +457,11 @@ function Move-QproEntriesToRecovery([object[]]$Entries, [string]$CustomLibs, [st
         $sourceFull = [System.IO.Path]::GetFullPath($entry.Path)
         $sourceScope = [System.IO.Path]::GetFullPath($CustomLibs).TrimEnd('\') + '\'
         if (-not $sourceFull.StartsWith($sourceScope, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Invalid installed module source path." }
+        Assert-QproVrcftClosed
         Move-Item -LiteralPath $entry.Path -Destination $retired
         $entry | Add-Member -NotePropertyName Retired -NotePropertyValue $retired
         $Moved.Value += $entry
+        Assert-QproSameTree $retired $entry.Directory $entry.Hashes
     }
 }
 
@@ -487,7 +497,7 @@ function Find-QproCompetingSourceModules([string]$CustomLibs, [object[]]$Invento
         $moduleGuid = [guid]::Empty
         if (-not [guid]::TryParseExact($item.Name, "D", [ref]$moduleGuid)) { continue }
         if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-            if ($item.Name -in @("2a8c8080-2a76-46af-bf76-1da7c0127ef8", "91a90618-b020-4064-8832-809b2ca2b3bc")) { $item.FullName }
+            if ($item.Name -in @("2a8c8080-2a76-46af-bf76-1da7c0127ef8", "91a90618-b020-4064-8832-809b2ca2b3bc", "b146eda9-be48-4016-ab63-680a694064bd")) { $item.FullName }
             continue
         }
         $dlls = @(Get-ChildItem -LiteralPath $item.FullName -File -Filter "*.dll" -Force | Where-Object { $_.FullName -notin $ownedFiles })
@@ -496,7 +506,245 @@ function Find-QproCompetingSourceModules([string]$CustomLibs, [object[]]$Invento
         $manifest = $null
         try { $manifest = Read-QproModuleManifest $manifestPath } catch { }
         $identity = @($item.Name, $manifest.ModuleName, $manifest.DllFileName, $manifest.ModuleId, $manifest.ModulePageUrl) -join " "
-        if ($identity -match '(?i)steam[ ._-]*link|linkft|virtual[ ._-]*desktop|2a8c8080-2a76-46af-bf76-1da7c0127ef8|91a90618-b020-4064-8832-809b2ca2b3bc|7f9be083-a4f1-4e30-b28a-8e6ec878d583' -or
+        if ($identity -match '(?i)steam[ ._-]*link|linkft|virtual[ ._-]*desktop|2a8c8080-2a76-46af-bf76-1da7c0127ef8|91a90618-b020-4064-8832-809b2ca2b3bc|b146eda9-be48-4016-ab63-680a694064bd|7f9be083-a4f1-4e30-b28a-8e6ec878d583' -or
             @($dlls | Where-Object Name -Match '(?i)steam[ ._-]*link|linkft|virtual[ ._-]*desktop').Count -gt 0) { $item.FullName }
     }
+}
+
+function Get-QproSourceModuleProfile([string]$ModuleId) {
+    switch ($ModuleId.ToLowerInvariant()) {
+        '91a90618-b020-4064-8832-809b2ca2b3bc' {
+            return @{ Id = $ModuleId.ToLowerInvariant(); Provider = 'Virtual Desktop'; Name = 'Virtual Desktop'; Author = 'Virtual Desktop, Inc.'; Dll = 'VirtualDesktop.FaceTracking.dll'; Assembly = 'VirtualDesktop.FaceTracking' }
+        }
+        '2a8c8080-2a76-46af-bf76-1da7c0127ef8' {
+            return @{ Id = $ModuleId.ToLowerInvariant(); Provider = 'Steam Link'; Name = 'SteamLink VRCFT Module'; Author = 'Ykeara'; Dll = 'SteamLinkVRCFTModule.dll'; Assembly = 'SteamLinkVRCFTModule' }
+        }
+        'b146eda9-be48-4016-ab63-680a694064bd' {
+            return @{ Id = $ModuleId.ToLowerInvariant(); Provider = 'Steam Link'; Name = 'SteamLink VRCFT'; Author = 'danwillm'; Dll = 'SLExtTrackingModule.dll'; Assembly = 'SLExtTrackingModule' }
+        }
+    }
+    return $null
+}
+
+function Get-QproRecognizedSourceModuleEntry([string]$Path, [string]$CustomLibs) {
+    Assert-QproDirectChild $Path $CustomLibs
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item -or -not $item.PSIsContainer) { return $null }
+    $profile = Get-QproSourceModuleProfile $item.Name
+    if ($null -eq $profile) { return $null }
+    Assert-QproRegularTree $item.FullName
+    $manifestPath = Join-Path $item.FullName 'module.json'
+    $manifest = Read-QproModuleManifest $manifestPath
+    if ($null -eq $manifest) { return $null }
+    $json = [IO.File]::ReadAllText($manifestPath).Trim()
+    if (-not $json.StartsWith('{', [StringComparison]::Ordinal) -or
+        -not $json.EndsWith('}', [StringComparison]::Ordinal)) { return $null }
+    $names = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $tokens = [regex]::Matches($json, '"(?:[^"\\]|\\.)*"|[{}\[\]:]')
+    $depth = 0
+    for ($index = 0; $index -lt $tokens.Count; $index++) {
+        $token = $tokens[$index].Value
+        if ($token -in @('{', '[')) { $depth++; if ($depth -gt 8) { return $null } }
+        elseif ($token -in @('}', ']')) { $depth-- }
+        elseif ($depth -eq 1 -and $token.StartsWith('"') -and $index + 1 -lt $tokens.Count -and $tokens[$index + 1].Value -eq ':') {
+            $key = $token | ConvertFrom-Json -ErrorAction Stop
+            if (-not $names.Add($key) -or $names.Count -gt 32) { return $null }
+        }
+    }
+    if ($manifest -isnot [pscustomobject] -or $manifest.ModuleId -isnot [string] -or
+        $manifest.ModuleId -ne $profile.Id -or $manifest.ModuleName -isnot [string] -or
+        $manifest.ModuleName -ne $profile.Name -or $manifest.AuthorName -isnot [string] -or
+        $manifest.AuthorName -ne $profile.Author -or $manifest.DllFileName -isnot [string] -or
+        $manifest.DllFileName -ne $profile.Dll) { return $null }
+    $main = Join-Path $item.FullName $profile.Dll
+    if (-not (Test-Path -LiteralPath $main -PathType Leaf) -or
+        (Get-QproAssemblyIdentity $main) -ne $profile.Assembly) { return $null }
+    # A copied Qpro DLL belongs to the narrower migration inventory. Never
+    # retire its surrounding foreign folder as a second overlapping entry.
+    foreach ($dll in Get-ChildItem -LiteralPath $item.FullName -Recurse -File -Filter '*.dll' -Force) {
+        if ((Get-QproAssemblyIdentity $dll.FullName) -eq 'Qpro.GazeBridge') { return $null }
+    }
+    return [pscustomobject]@{ Path = $item.FullName; Relative = $item.Name; Directory = $true;
+        Copied = $false; SourceModuleId = $profile.Id; Provider = $profile.Provider }
+}
+
+function Get-QproModuleInstallInventory([string]$CustomLibs) {
+    $own = @(Get-QproModuleInventory $CustomLibs)
+    $sources = @()
+    $unknown = @()
+    foreach ($path in @(Find-QproCompetingSourceModules $CustomLibs $own | Sort-Object -Unique)) {
+        $entry = Get-QproRecognizedSourceModuleEntry $path $CustomLibs
+        if ($null -eq $entry) { $unknown += $path } else { $sources += $entry }
+    }
+    if ($unknown.Count -gt 0) {
+        throw "Another Virtual Desktop or Steam Link module is installed at $($unknown -join '; '). Its identity could not be verified for automatic backup. Remove it through VRCFaceTracking, close VRCFaceTracking, then retry. Qpro left those files unchanged."
+    }
+    return @($own) + @($sources)
+}
+
+function Assert-QproModuleTransactionVolume([string]$CustomLibs, [string]$RecoveryDirectory) {
+    Assert-QproPathWithoutLinks $CustomLibs
+    Assert-QproPathWithoutLinks $RecoveryDirectory
+    $sourceRoot = [IO.Path]::GetPathRoot([IO.Path]::GetFullPath($CustomLibs))
+    $recoveryRoot = [IO.Path]::GetPathRoot([IO.Path]::GetFullPath($RecoveryDirectory))
+    if (-not $sourceRoot.Equals($recoveryRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Automatic module backup and recovery require CustomLibs and Qpro's recovery folder on the same drive. No installed module files were changed. Remove the other source module through VRCFaceTracking or restore its saved module manually, then retry. CustomLibs: $CustomLibs Recovery: $RecoveryDirectory"
+    }
+}
+
+function Write-QproSourceModuleReceipt([string]$RecoveryDirectory, [string]$TransactionId,
+    [ValidateSet('prepared', 'committed', 'rolled-back')][string]$State, [object[]]$Entries) {
+    $sources = @($Entries | Where-Object { $_.SourceModuleId })
+    if ($sources.Count -eq 0) { return }
+    Assert-QproPathWithoutLinks $RecoveryDirectory
+    $modules = @($sources | ForEach-Object {
+        [ordered]@{ moduleId = $_.SourceModuleId; provider = $_.Provider; backup = $_.Relative; hashes = $_.Hashes }
+    })
+    $record = [ordered]@{ format = 'qpro-source-module-backup-v1'; state = $State;
+        transactionId = $TransactionId; createdUtc = [DateTime]::UtcNow.ToString('o'); modules = $modules }
+    $json = $record | ConvertTo-Json -Depth 8
+    if ([Text.Encoding]::UTF8.GetByteCount($json) -gt 1048576) { throw 'The saved source-module receipt exceeds its size limit.' }
+    $receipt = Join-Path $RecoveryDirectory 'source-modules.json'
+    $temporary = Join-Path $RecoveryDirectory ('source-modules-' + [guid]::NewGuid().ToString('N') + '.tmp')
+    Assert-QproPathWithoutLinks $receipt
+    [IO.File]::WriteAllText($temporary, $json, [Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $temporary -Destination $receipt -Force
+}
+
+function Read-QproSourceModuleReceipt([string]$Directory, [string]$RecoveryRoot) {
+    Assert-QproDirectChild $Directory $RecoveryRoot
+    Assert-QproPathWithoutLinks $Directory
+    $name = [IO.Path]::GetFileName($Directory)
+    if ($name -notmatch '^vrcft-qpro-module-switch-backup-([0-9a-f]{32})$') { throw 'The source-module recovery directory has an invalid identity.' }
+    $transactionId = $Matches[1]
+    $path = Join-Path $Directory 'source-modules.json'
+    Assert-QproPathWithoutLinks $path
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or
+        (Get-Item -LiteralPath $path -Force).Length -gt 1048576) { throw 'The source-module recovery receipt is missing or too large.' }
+    $receiptHash = Get-QproFileHash $path
+    try {
+        $json = [IO.File]::ReadAllText($path).Trim()
+        if (-not $json.StartsWith('{', [StringComparison]::Ordinal) -or
+            -not $json.EndsWith('}', [StringComparison]::Ordinal)) { throw 'Receipt root must be an object.' }
+        $record = $json | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch { throw 'The source-module recovery receipt could not be read.' }
+    if ((Get-QproFileHash $path) -ne $receiptHash) { throw 'The source-module recovery receipt changed while being read.' }
+    if ($record -isnot [pscustomobject] -or $record.format -cne 'qpro-source-module-backup-v1' -or
+        $record.transactionId -cne $transactionId -or $record.state -notin @('prepared', 'committed', 'rolled-back', 'restored')) {
+        throw 'The source-module recovery receipt has an unsupported identity or state.'
+    }
+    if ($record.state -eq 'rolled-back') { return @() }
+    $modules = @($record.modules)
+    if ($modules.Count -lt 1 -or $modules.Count -gt 3) { throw 'The source-module recovery receipt has an invalid module count.' }
+    $seen = @{}
+    $entries = @()
+    foreach ($module in $modules) {
+        $profile = if ($module.moduleId -is [string]) { Get-QproSourceModuleProfile $module.moduleId } else { $null }
+        if ($null -eq $profile -or $seen.ContainsKey($profile.Id) -or
+            $module.backup -isnot [string] -or $module.backup -ne $profile.Id -or
+            $module.provider -isnot [string] -or $module.provider -ne $profile.Provider -or
+            $module.hashes -isnot [pscustomobject]) { throw 'The source-module recovery receipt contains an unrecognized module.' }
+        $seen[$profile.Id] = $true
+        $hashes = @{}
+        foreach ($property in $module.hashes.PSObject.Properties) {
+            if ([string]::IsNullOrEmpty($property.Name) -or
+                $property.Name -match '(^[\\/]|[<>:"|?*\x00-\x1f]|(^|[\\/])\.{1,2}([\\/]|$)|[\\/]{2})' -or
+                $property.Value -isnot [string] -or $property.Value -notmatch '^[0-9a-fA-F]{64}$' -or
+                $hashes.ContainsKey($property.Name)) { throw 'The source-module recovery receipt contains invalid file hashes.' }
+            $hashes[$property.Name] = $property.Value
+        }
+        if ($hashes.Count -lt 2 -or $hashes.Count -gt 4096) { throw 'The source-module recovery receipt has an invalid file inventory.' }
+        $backup = Join-Path $Directory $module.backup
+        Assert-QproDirectChild $backup $Directory
+        $entries += [pscustomobject]@{ ModuleId = $profile.Id; Provider = $profile.Provider; Backup = $backup;
+            Hashes = $hashes; Consumed = $record.state -eq 'restored'; ReceiptHash = $receiptHash }
+    }
+    return $entries
+}
+
+function Complete-QproSourceModuleReceipt([string]$Directory, [string]$ExpectedHash) {
+    $path = Join-Path $Directory 'source-modules.json'
+    Assert-QproPathWithoutLinks $path
+    if ((Get-QproFileHash $path) -ne $ExpectedHash) { throw 'The source-module recovery receipt changed during restoration.' }
+    $record = [IO.File]::ReadAllText($path) | ConvertFrom-Json -ErrorAction Stop
+    $record.state = 'restored'
+    $temporary = Join-Path $Directory ('source-modules-' + [guid]::NewGuid().ToString('N') + '.tmp')
+    [IO.File]::WriteAllText($temporary, ($record | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+    Assert-QproPathWithoutLinks $path
+    if ((Get-QproFileHash $path) -ne $ExpectedHash) { throw 'The source-module recovery receipt changed during restoration.' }
+    Move-Item -LiteralPath $temporary -Destination $path -Force
+}
+
+function Restore-QproSourceModuleBackups([string]$CustomLibs, [string]$RecoveryRoot) {
+    $restored = 0; $issues = @(); $handled = @{}; $historicalBlocked = $false
+    Assert-QproPathWithoutLinks $RecoveryRoot
+    if (-not (Test-Path -LiteralPath $RecoveryRoot -PathType Container)) { return @{ Restored = 0; Issues = @(); HandledModuleIds = @(); HistoricalBlocked = $false } }
+    if (@(Get-QproModuleInventory $CustomLibs).Count -ne 0) { throw 'Remove the Qpro modules before restoring saved source modules.' }
+    $directories = @(Get-ChildItem -LiteralPath $RecoveryRoot -Directory -Force |
+        Where-Object { $_.Name -match '^vrcft-qpro-module-switch-backup-[0-9a-f]{32}$' -and
+            (Test-Path -LiteralPath (Join-Path $_.FullName 'source-modules.json')) } |
+        Sort-Object { (Get-Item -LiteralPath (Join-Path $_.FullName 'source-modules.json') -Force).LastWriteTimeUtc } -Descending)
+    foreach ($directory in $directories) {
+        try { $entries = @(Read-QproSourceModuleReceipt $directory.FullName $RecoveryRoot) }
+        catch {
+            $issues += "Saved source-module receipt needs attention at $($directory.FullName): $($_.Exception.Message)"
+            # Its provider identity is unknown, so older snapshots cannot be
+            # selected safely as a substitute for this newer transaction.
+            $historicalBlocked = $true
+            break
+        }
+        $complete = $entries.Count -gt 0
+        foreach ($entry in $entries) {
+            if ($handled.ContainsKey($entry.ModuleId)) { $complete = $false; continue }
+            # A damaged newer snapshot must not silently select an older
+            # provider configuration. Keep it for review instead.
+            $handled[$entry.ModuleId] = $true
+            if ($entry.Consumed) { $complete = $false; continue }
+            $target = Join-Path $CustomLibs $entry.ModuleId
+            try {
+                Assert-QproDirectChild $target $CustomLibs
+                Assert-QproPathWithoutLinks $target
+                Assert-QproSameTree $entry.Backup $true $entry.Hashes
+                if ($null -eq (Get-QproRecognizedSourceModuleEntry $entry.Backup $directory.FullName)) { throw 'The saved provider no longer has its recognized module identity.' }
+                if (Test-Path -LiteralPath $target) {
+                    $handled[$entry.ModuleId] = $true
+                    try {
+                        Assert-QproSameTree $target $true $entry.Hashes
+                        if ($null -eq (Get-QproRecognizedSourceModuleEntry $target $CustomLibs)) { throw 'The original path contains another module.' }
+                        Write-Host "The saved $($entry.Provider) module is already restored at $target."
+                    } catch { $complete = $false; $issues += "The saved $($entry.Provider) module remains at $($entry.Backup) because its original path is occupied. No installed files were overwritten." }
+                    continue
+                }
+                Assert-QproVrcftClosed
+                Assert-QproModuleTransactionVolume $CustomLibs $RecoveryRoot
+                New-Item -ItemType Directory -Path $CustomLibs -Force | Out-Null
+                # Restore beside CustomLibs on the same drive, never within
+                # VRCFT's discovery tree while a module card is being copied.
+                $stageRoot = Get-QproModuleStagingRoot $CustomLibs
+                New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
+                Assert-QproPathWithoutLinks $stageRoot
+                $stage = Join-Path $stageRoot ('restore-' + [guid]::NewGuid().ToString('N'))
+                Assert-QproDirectChild $stage $stageRoot
+                Assert-QproSameTree $entry.Backup $true $entry.Hashes
+                Copy-Item -LiteralPath $entry.Backup -Destination $stage -Recurse -Force
+                Assert-QproSameTree $stage $true $entry.Hashes
+                Assert-QproVrcftClosed
+                Assert-QproSameTree $entry.Backup $true $entry.Hashes
+                Assert-QproSameTree $stage $true $entry.Hashes
+                Assert-QproPathWithoutLinks $target
+                if (Test-Path -LiteralPath $target) { throw 'The original provider path appeared during recovery and was left untouched.' }
+                Move-Item -LiteralPath $stage -Destination $target
+                Assert-QproSameTree $target $true $entry.Hashes
+                $handled[$entry.ModuleId] = $true
+                $restored++
+                Write-Host "Restored the saved $($entry.Provider) VRCFaceTracking module: $target. Its verified recovery copy remains at $($entry.Backup)."
+            } catch { $complete = $false; $issues += "The saved $($entry.Provider) module could not be restored from $($entry.Backup): $($_.Exception.Message)" }
+        }
+        if ($complete) {
+            try { Complete-QproSourceModuleReceipt $directory.FullName $entries[0].ReceiptHash }
+            catch { $issues += "The provider was restored, but its recovery receipt needs attention: $($_.Exception.Message)" }
+        }
+    }
+    return @{ Restored = $restored; Issues = @($issues); HandledModuleIds = @($handled.Keys); HistoricalBlocked = $historicalBlocked }
 }
