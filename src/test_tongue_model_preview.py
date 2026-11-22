@@ -66,6 +66,24 @@ class TongueModelPreviewInputTests(unittest.TestCase):
         processed = preprocess_stereo_images(resized, mode)
         return processed.astype(np.float32)[None] / 255.0
 
+    def test_auto_preview_uses_cpu_for_incompatible_nvidia_wheel(self):
+        model = _RecordingModel()
+        with (
+            mock.patch("tongue_model_preview.torch.load", return_value=self.checkpoint()),
+            mock.patch("tongue_model_preview.create_model", return_value=model),
+            mock.patch.object(torch.version, "cuda", "12.8"),
+            mock.patch.object(torch.cuda, "is_available", return_value=True),
+            mock.patch.object(torch.cuda, "get_device_capability", return_value=(6, 1)),
+            mock.patch.object(torch.cuda, "get_arch_list", return_value=["sm_75", "compute_90"]),
+            mock.patch.object(torch.cuda, "get_device_name", return_value="NVIDIA GeForce GTX 1080"),
+            mock.patch("qpro_gpu._NVIDIA_COMPATIBILITY_WARNINGS", set()),
+            mock.patch("sys.stderr"),
+        ):
+            preview = LiveTongueModelPreview("gate.pt")
+            self.assertEqual(preview.device.type, "cpu")
+            preview.predict(self.strip, None, [])
+        self.assertEqual(model.inputs[0].device.type, "cpu")
+
     def test_legacy_checkpoint_matches_original_raw_pipeline_exactly(self):
         preview, models = self.load_preview(self.checkpoint())
         preview.predict(self.strip, None, [])

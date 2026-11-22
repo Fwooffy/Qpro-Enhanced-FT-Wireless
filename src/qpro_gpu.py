@@ -16,6 +16,8 @@ import os
 import sys
 from pathlib import Path
 
+_NVIDIA_COMPATIBILITY_WARNINGS: set[str] = set()
+
 # Keep previous verified environments usable after a release update. A new
 # upstream version is deliberately not admitted just because its major matches.
 _ROCM_10_TORCH_BUILDS = {
@@ -260,6 +262,51 @@ def supported_rocm_device_name(torch_module: object) -> str | None:
     return None
 
 
+def _nvidia_architecture_error(torch_module: object, index: int) -> str | None:
+    """Reject known incompatible wheels without executing a GPU workload.
+
+    CUDA cubins are compatible within a major version toward higher minors;
+    PTX can be JIT compiled for a device at or above its virtual capability.
+    Missing/custom metadata does not prove incompatibility, so leave those
+    builds to setup's real arithmetic and convolution checks.
+    """
+    try:
+        capability = tuple(torch_module.cuda.get_device_capability(index))
+        if len(capability) != 2 or any(type(value) is not int or value < 0 for value in capability):
+            return None
+        images = list(torch_module.cuda.get_arch_list())
+        if not images:
+            return None
+        unknown_image = False
+        for image in images:
+            target = re.fullmatch(r"(sm|compute)_([0-9]{2,})([af]?)", str(image))
+            if target is None:
+                unknown_image = True
+                continue
+            number = int(target[2])
+            compiled = (number // 10, number % 10)
+            if target[3]:
+                # A specialised image can never run on an older capability.
+                # Its family-specific features aren't in the device tuple.
+                unknown_image |= compiled <= capability
+                continue
+            if target[1] == "compute" and compiled <= capability:
+                return None
+            if target[1] == "sm" and compiled[0] == capability[0] and compiled[1] <= capability[1]:
+                return None
+        if unknown_image:
+            return None
+        name = str(torch_module.cuda.get_device_name(index))
+    except Exception:
+        return None
+    return (
+        f"The installed PyTorch wheel has no compatible NVIDIA kernels for cuda:{index} "
+        f"({name}, sm_{capability[0]}{capability[1]}). "
+        "Open First-time setup and select Install runtime, or use Repair runtime "
+        "under optional tools and recovery."
+    )
+
+
 def preferred_torch_device_name(torch_module: object) -> str:
     """Prefer supported discrete acceleration, otherwise use CPU."""
     if getattr(torch_module.version, "hip", None):
@@ -267,6 +314,12 @@ def preferred_torch_device_name(torch_module: object) -> str:
     try:
         if getattr(torch_module.version, "cuda", None) and torch_module.cuda.is_available():
             # NVIDIA CUDA does not expose AMD or Intel integrated graphics.
+            error = _nvidia_architecture_error(torch_module, 0)
+            if error is not None:
+                if error not in _NVIDIA_COMPATIBILITY_WARNINGS:
+                    _NVIDIA_COMPATIBILITY_WARNINGS.add(error)
+                    print(f"WARNING: {error} Using CPU for this process.", file=sys.stderr)
+                return "cpu"
             return "cuda:0"
     except Exception:
         pass
@@ -309,6 +362,11 @@ def validated_torch_device_name(torch_module: object, requested: str) -> str:
         return requested
     if not torch_module.cuda.is_available():
         raise RuntimeError("GPU acceleration was requested, but PyTorch cannot access a GPU")
+    if getattr(torch_module.version, "cuda", None) and not getattr(torch_module.version, "hip", None):
+        index = int(requested.split(":", 1)[1]) if ":" in requested else 0
+        error = _nvidia_architecture_error(torch_module, index)
+        if error is not None:
+            raise RuntimeError(error)
     if getattr(torch_module.version, "hip", None):
         index = int(requested.split(":", 1)[1]) if ":" in requested else 0
         if index < 0:

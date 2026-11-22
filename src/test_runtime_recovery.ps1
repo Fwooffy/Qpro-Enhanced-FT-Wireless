@@ -19,6 +19,7 @@ public static class RecoveryFixturePython {
         }
         if (File.Exists(Path.Combine(venv,"fail-health"))) { Console.Error.WriteLine("Synthetic import failure"); return 23; }
         if (File.Exists(Path.Combine(venv,"fail-gpu")) && joined.Contains("device='cuda'")) return 24;
+        if (File.Exists(Path.Combine(venv,"fail-convolution")) && joined.Contains("conv2d")) return 25;
         return 0;
     }
 }
@@ -96,9 +97,9 @@ try {
     Assert-Equal 0 (Inventory (Run-Case $case 'List')).interrupted 'Completed restore does not warn as interrupted'
     Assert-Equal 'model and options sentinel' ([IO.File]::ReadAllText($case.Sentinel)) 'Models/options preserved after restore'
 
-    foreach ($failure in @('fail-health','fail-gpu','count-mismatch','no-receipt','foreign-record')) {
-        $case=New-Case $failure $(if ($failure -eq 'fail-gpu') {'cuda'} else {'cpu'})
-        if ($failure -in @('fail-health','fail-gpu')) { [IO.File]::WriteAllText((Join-Path $case.Backup ('.venv\'+$failure)),'fail'); Complete-Backup $case }
+    foreach ($failure in @('fail-health','fail-gpu','fail-convolution','count-mismatch','no-receipt','foreign-record')) {
+        $case=New-Case $failure $(if ($failure -in @('fail-gpu','fail-convolution')) {'cuda'} else {'cpu'})
+        if ($failure -in @('fail-health','fail-gpu','fail-convolution')) { [IO.File]::WriteAllText((Join-Path $case.Backup ('.venv\'+$failure)),'fail'); Complete-Backup $case }
         elseif ($failure -eq 'count-mismatch') { [IO.File]::WriteAllText((Join-Path $case.Backup '.venv\extra.txt'),'unexpected') }
         elseif ($failure -eq 'no-receipt') { Remove-Item -LiteralPath (Join-Path $case.Backup 'runtime-ready.json') }
         else { $record=[IO.File]::ReadAllText((Join-Path $case.Backup 'backup-complete.json')) | ConvertFrom-Json; $record.environment=Join-Path $case.Root 'foreign'; [IO.File]::WriteAllText((Join-Path $case.Backup 'backup-complete.json'),($record | ConvertTo-Json)) }

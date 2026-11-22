@@ -109,13 +109,19 @@ function Get-QproRuntimeRecoveryCopies([string]$SharedRoot) {
     return [pscustomobject]@{ format = 'qpro-runtime-recovery-list-v1'; copies = @($copies | Sort-Object completedUtc -Descending); unavailable = $unavailable; interrupted = $interrupted }
 }
 
+function Get-QproCudaCheck {
+    # Availability can be true even when the wheel has no kernels for this
+    # card. Setup and restore must both exercise ATen and convolution/cuDNN.
+    return "import torch; assert torch.version.cuda is not None and torch.version.hip is None; assert torch.cuda.is_available(); assert torch.arange(4,device='cuda').sum().item() == 6; x=torch.ones((1,1,8,8),device='cuda'); w=torch.ones((1,1,3,3),device='cuda'); y=torch.nn.functional.conv2d(x,w); assert y.shape == (1,1,6,6) and torch.all(y == 9).item(); torch.cuda.synchronize()"
+}
+
 function Test-QproRecoveredRuntime([string]$Python, [string]$Backend) {
     $process = New-Object Diagnostics.Process
     $process.StartInfo.FileName = $Python
     # -I and an explicit prefix check prevent a relocated recovery copy from
     # certifying imports supplied by the installed or another Python environment.
     $code = "import sys,pathlib,platform,cv2,numpy,torch; assert sys.version_info[:2] == (3,12) and sys.maxsize > 2**32 and platform.machine().lower() in ('amd64','x86_64'); p=pathlib.Path(sys.prefix).resolve(); assert sys.prefix != sys.base_prefix and pathlib.Path(sys.executable).resolve().parent.parent == p; assert all(pathlib.Path(m.__file__).resolve().is_relative_to(p) for m in (cv2,numpy,torch)); assert hasattr(cv2,'namedWindow'); assert torch.arange(4).sum().item() == 6"
-    if ($Backend -eq 'cuda') { $code += "; assert torch.version.cuda is not None and torch.version.hip is None and torch.cuda.is_available(); assert torch.arange(4,device='cuda').sum().item() == 6; torch.cuda.synchronize()" }
+    if ($Backend -eq 'cuda') { $code += '; ' + (Get-QproCudaCheck) }
     $process.StartInfo.Arguments = '-I -c "' + $code + '"'
     $process.StartInfo.UseShellExecute = $false
     $process.StartInfo.CreateNoWindow = $true

@@ -26,7 +26,7 @@ public static class RuntimeFixturePython {
             if (Environment.GetEnvironmentVariable(name) != null) return 93;
         }
         if (Path.GetFileName(executable).Equals("nvidia-smi.exe", StringComparison.OrdinalIgnoreCase)) {
-            if (File.Exists(Path.Combine(fixture, "nvidia"))) { Console.WriteLine("Fixture NVIDIA GPU"); return 0; }
+            if (File.Exists(Path.Combine(fixture, "nvidia"))) { string name = File.ReadAllText(Path.Combine(fixture, "nvidia")).Trim(); Console.WriteLine(name == "yes" ? "Fixture NVIDIA GPU" : name); return 0; }
             return 1;
         }
         File.AppendAllText(Path.Combine(fixture, "calls.txt"), executable + "\t" + joined + Environment.NewLine);
@@ -43,13 +43,24 @@ public static class RuntimeFixturePython {
                 Environment.GetEnvironmentVariable("PYTHONHOME") != null) return 92;
             File.WriteAllText(Path.Combine(venv, "pip-mutated.txt"), joined);
             if (args.Contains("-r") && File.Exists(Path.Combine(fixture, "fail-requirements"))) { Console.Error.WriteLine("Synthetic requirements failure"); return 23; }
-            if (joined.Contains("/cu128")) {
+            if (joined.Contains("/cu128") || joined.Contains("/cu126")) {
                 if (File.Exists(Path.Combine(fixture, "fail-cuda-download"))) return 24;
                 File.WriteAllText(backendFile, "cuda");
             }
             if (joined.Contains("/cpu")) File.WriteAllText(backendFile, "cpu");
             Console.WriteLine("Synthetic pip completed"); return 0;
         }
+        if (joined.Contains("get_device_name(0)")) {
+            if (File.Exists(Path.Combine(fixture, "torch-gpu-name"))) {
+                if (File.Exists(Path.Combine(fixture, "torch-gpu-warning"))) Console.Error.WriteLine("UserWarning: NVIDIA GeForce GTX 1080 sm_61 is not compatible with this PyTorch installation.");
+                string capPath = Path.Combine(fixture, "torch-gpu-capability");
+                string cap = File.Exists(capPath) ? File.ReadAllText(capPath).Trim() : "6.1";
+                Console.WriteLine("QPRO_CUDA_DEVICE_V1|" + cap + "|" + File.ReadAllText(Path.Combine(fixture, "torch-gpu-name")).Trim()); return 0;
+            }
+            if (File.Exists(Path.Combine(fixture, "torch-gpu-warning"))) { Console.Error.WriteLine("UserWarning: CUDA compatibility warning without a device record"); return 0; }
+            return 1;
+        }
+        if (joined.Contains("device='cuda'") && !mutated && File.Exists(Path.Combine(fixture, "old-gpu-incompatible"))) return 27;
         if (joined.Contains("sys.prefix != sys.base_prefix")) return File.Exists(Path.Combine(fixture, "wrong-prefix")) ? 9 : 0;
         if (joined.Contains("import cv2,numpy,torch") && joined.Contains("torch.arange") && mutated && File.Exists(Path.Combine(fixture, "fail-final"))) return 25;
         if (joined.Contains("torch.version.cuda") && backend != "cuda") return 1;
@@ -190,11 +201,84 @@ try {
     Assert-Equal $false ($result.Calls.Contains('/whl/cpu')) 'Existing CUDA not downgraded'
     Assert-Equal 'cuda' (Read-Receipt $case).backend 'GPU tensor validation recorded'
 
+    $case = New-Scenario 'incompatible-cuda-without-driver-detection' 'cuda' $recipe
+    [IO.File]::WriteAllText((Join-Path $case.Root 'old-gpu-incompatible'), 'yes')
+    [IO.File]::WriteAllText((Join-Path $case.Root 'torch-gpu-name'), 'NVIDIA GeForce GTX 1080')
+    $result = Run-Scenario $case
+    Assert-Equal 0 $result.ExitCode 'Manual setup repairs incompatible CUDA when driver query misses it'
+    Assert-True ($result.Calls.Contains('-m pip')) 'Failed existing CUDA check cannot take the healthy fast path'
+    Assert-True ($result.Calls.Contains('/cu126')) 'Torch device metadata selects the compatible wheel without nvidia-smi'
+    Assert-Equal 'cuda' (Read-Receipt $case).backend 'Repaired CUDA passes tensor and convolution checks'
+
     $case = New-Scenario 'cpu-replaced-on-nvidia'
     [IO.File]::WriteAllText((Join-Path $case.Root 'nvidia'), 'yes')
     $result = Run-Scenario $case -Update
     Assert-Equal 0 $result.ExitCode 'NVIDIA upgrade succeeds'
     Assert-True ($result.Calls -match '--force-reinstall torch>=2.7,<3 --index-url https://download.pytorch.org/whl/cu128') 'CPU wheel forced to CUDA'
+
+    $pascalIndex = 0
+    foreach ($gpuName in @('NVIDIA GeForce GTX 750 Ti', 'NVIDIA GeForce GTX 980 Ti', 'NVIDIA GeForce GTX 1050Ti', 'NVIDIA GeForce GTX 1050 Ti', 'NVIDIA GeForce GTX 1060', 'NVIDIA GeForce GTX 1070', 'NVIDIA GeForce GTX 1080 Ti', 'NVIDIA GeForce GTX 1080 (Notebook)')) {
+        $pascalIndex++
+        $case = New-Scenario ('pascal-' + $pascalIndex + '-' + ($gpuName -replace '[^0-9A-Za-z]', '')) 'cuda' $recipe
+        [IO.File]::WriteAllText((Join-Path $case.Root 'nvidia'), $gpuName)
+        [IO.File]::WriteAllText((Join-Path $case.Root 'old-gpu-incompatible'), 'fail')
+        $result = Run-Scenario $case
+        Assert-Equal 0 $result.ExitCode "$gpuName incompatible existing CUDA repaired"
+        Assert-True ($result.Calls.Contains('torch==2.14.1+cu126 --index-url https://download.pytorch.org/whl/cu126')) "$gpuName pinned Pascal wheel chosen"
+        Assert-Equal $false ($result.Calls.Contains('/cu128')) "$gpuName modern wheel not installed"
+        Assert-True ($result.Calls.Contains('torch.nn.functional.conv2d')) "$gpuName convolution kernel checked"
+        Assert-Equal 'cuda' (Read-Receipt $case).backend "$gpuName verified GPU recorded"
+    }
+
+    foreach ($gpuName in @('NVIDIA GeForce GTX 1660 Ti', 'NVIDIA GeForce RTX 3060', 'NVIDIA GeForce RTX 5090')) {
+        $case = New-Scenario ('modern-' + ($gpuName -replace '[^0-9A-Za-z]', ''))
+        [IO.File]::WriteAllText((Join-Path $case.Root 'nvidia'), $gpuName)
+        $result = Run-Scenario $case -Update
+        Assert-Equal 0 $result.ExitCode "$gpuName setup succeeds"
+        Assert-True ($result.Calls.Contains('/cu128')) "$gpuName keeps modern wheel route"
+        Assert-Equal $false ($result.Calls.Contains('/cu126')) "$gpuName does not use Pascal wheel"
+    }
+
+    $case = New-Scenario 'mixed-adapters-runtime-device-zero' 'cuda'
+    [IO.File]::WriteAllText((Join-Path $case.Root 'nvidia'), "NVIDIA GeForce RTX 5090`nNVIDIA GeForce GTX 1080")
+    [IO.File]::WriteAllText((Join-Path $case.Root 'torch-gpu-name'), 'NVIDIA GeForce GTX 1080')
+    $result = Run-Scenario $case -Update
+    Assert-Equal 0 $result.ExitCode 'Mixed adapters follow actual Torch device zero'
+    Assert-True ($result.Calls.Contains('/cu126')) 'Actual Pascal device zero gets compatible wheel'
+
+    $case = New-Scenario 'pascal-warning-before-tagged-name' 'cuda' $recipe
+    [IO.File]::WriteAllText((Join-Path $case.Root 'nvidia'), 'NVIDIA GeForce GTX 1080')
+    [IO.File]::WriteAllText((Join-Path $case.Root 'torch-gpu-name'), 'NVIDIA GeForce GTX 1080')
+    [IO.File]::WriteAllText((Join-Path $case.Root 'torch-gpu-warning'), 'warn')
+    [IO.File]::WriteAllText((Join-Path $case.Root 'old-gpu-incompatible'), 'fail')
+    $result = Run-Scenario $case
+    Assert-Equal 0 $result.ExitCode 'Compatibility warning does not hide tagged Pascal device'
+    Assert-True ($result.Calls.Contains('/cu126')) 'Warning before Pascal name keeps compatible wheel'
+    Assert-Equal $false ($result.Calls.Contains('/cu128')) 'Warning is not treated as a modern GPU name'
+
+    $case = New-Scenario 'warning-without-device-record' 'cuda'
+    [IO.File]::WriteAllText((Join-Path $case.Root 'nvidia'), 'NVIDIA GeForce GTX 1080')
+    [IO.File]::WriteAllText((Join-Path $case.Root 'torch-gpu-warning'), 'warn')
+    $result = Run-Scenario $case -Update
+    Assert-Equal 0 $result.ExitCode 'Missing tagged device does not erase nvidia-smi result'
+    Assert-True ($result.Calls.Contains('/cu126')) 'Untagged diagnostic preserves Pascal selection'
+
+    $case = New-Scenario 'legacy-device-capability' 'cuda'
+    [IO.File]::WriteAllText((Join-Path $case.Root 'nvidia'), 'NVIDIA Quadro M5000')
+    [IO.File]::WriteAllText((Join-Path $case.Root 'torch-gpu-name'), 'NVIDIA Quadro M5000')
+    [IO.File]::WriteAllText((Join-Path $case.Root 'torch-gpu-capability'), '5.2')
+    $result = Run-Scenario $case -Update
+    Assert-Equal 0 $result.ExitCode 'Maxwell capability detected through Torch'
+    Assert-True ($result.Calls.Contains('/cu126')) 'Legacy capability gets compatible wheel independent of model name'
+
+    $case = New-Scenario 'new-cuda-kernel-failure-cpu-fallback'
+    [IO.File]::WriteAllText((Join-Path $case.Root 'nvidia'), 'NVIDIA GeForce GTX 1080')
+    [IO.File]::WriteAllText((Join-Path $case.Root 'fail-gpu'), 'fail')
+    $result = Run-Scenario $case -Update
+    Assert-Equal 0 $result.ExitCode 'Unusable new CUDA runtime receives verified CPU fallback'
+    Assert-True ($result.Calls.Contains('/cu126')) 'Compatible CUDA attempted first'
+    Assert-True ($result.Calls.Contains('/whl/cpu')) 'CPU build installed after CUDA kernel failure'
+    Assert-Equal 'cpu' (Read-Receipt $case).backend 'CPU fallback accurately recorded'
 
     foreach ($failure in @('fail-requirements', 'fail-final', 'fail-cuda-download', 'fail-gpu')) {
         $backend = if ($failure -in @('fail-cuda-download', 'fail-gpu')) { 'cuda' } else { 'cpu' }

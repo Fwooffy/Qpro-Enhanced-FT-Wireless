@@ -313,6 +313,22 @@ function Get-QproNvidiaNames {
     finally { $process.Dispose() }
 }
 
+# PyTorch's CUDA 12.8 wheels dropped Pascal starting with 2.8. The
+# official 2.14.1 CUDA 12.6 Windows/Python 3.12 wheel retains Pascal support.
+# https://download.pytorch.org/whl/cu126/torch/
+# https://dev-discuss.pytorch.org/t/3432 (2.14 is the last Pascal binary release)
+function Get-QproCudaWheel([string]$NvidiaNames, [string]$Capability = '') {
+    # Tracking uses CUDA device zero. Match its name rather than another
+    # adapter's name on mixed-GPU systems.
+    $primaryName = ($NvidiaNames -split "`r?`n")[0].Trim()
+    $legacyCapability = $Capability -match '^(?:[56]\.[0-9]+|7\.0)$'
+    $legacyName = $primaryName -match '(?i)\b(?:GTX\s*(?:10\d{2}|9\d{2}|750)|GT\s*1030)(?:\s*Ti)?(?:\b|$)'
+    if ($legacyCapability -or $legacyName) {
+        return [pscustomobject]@{ Requirement = 'torch==2.14.1+cu126'; Index = 'https://download.pytorch.org/whl/cu126'; Label = 'CUDA 12.6 (legacy NVIDIA compatible)' }
+    }
+    return [pscustomobject]@{ Requirement = $torchRequirement; Index = $cudaIndex; Label = 'CUDA 12.8' }
+}
+
 function Invoke-QproRuntimeSetup {
     $recipe = Get-QproRuntimeRecipe
     if ($Update -and [string]::IsNullOrWhiteSpace($recipe)) { throw 'This release does not contain a PC runtime update recipe. Install the current complete release ZIP.' }
@@ -323,6 +339,8 @@ function Invoke-QproRuntimeSetup {
     $nvidiaName = Get-QproNvidiaNames
     $nvidiaDetected = -not [string]::IsNullOrWhiteSpace($nvidiaName)
     if ($nvidiaDetected) { Write-Host "NVIDIA GPU detected: $nvidiaName" }
+    $cudaWheel = Get-QproCudaWheel $nvidiaName
+    $cudaCheck = Get-QproCudaCheck
 
     if (-not [string]::IsNullOrWhiteSpace($env:QPRO_PYTHON)) {
         if ($Update -or $Repair) { Write-Host 'This action applies only to the shared Qpro runtime. The custom QPRO_PYTHON environment will not be modified.' }
@@ -351,8 +369,19 @@ function Invoke-QproRuntimeSetup {
             Write-Host 'Checking OpenCV, NumPy, and PyTorch in the shared Qpro environment. The first import can take a while...'
             $existingRuntimeReady = Test-PythonCommand $venvPython $runtimeCheck
             $existingCudaBuild = $existingRuntimeReady -and (Test-PythonCommand $venvPython "import torch; assert torch.version.cuda is not None and torch.version.hip is None")
-            $existingCudaReady = $existingCudaBuild -and (Test-PythonCommand $venvPython "import torch; assert torch.cuda.is_available(); assert torch.arange(4,device='cuda').sum().item() == 6; torch.cuda.synchronize()")
-            if (-not $Update -and -not $Repair -and $existingRuntimeReady -and (-not $nvidiaDetected -or $existingCudaReady) -and (Test-QproRuntimeReceipt $recipe)) {
+            $existingCudaReady = $existingCudaBuild -and (Test-PythonCommand $venvPython $cudaCheck)
+            if ($existingCudaBuild) {
+                $gpuNameCheck = Get-QproRuntimeImportDiagnostic $venvPython "import torch; cc=torch.cuda.get_device_capability(0); print('QPRO_CUDA_DEVICE_V1|%d.%d|%s' % (cc[0],cc[1],torch.cuda.get_device_name(0)))"
+                # Torch can emit architecture warnings on stderr before its
+                # device name. Only the tagged record identifies device zero;
+                # absent/failed records leave the nvidia-smi choice intact.
+                if ($gpuNameCheck.ExitCode -eq 0 -and
+                    $gpuNameCheck.Text -match '(?m)^QPRO_CUDA_DEVICE_V1\|(?<Capability>[0-9]+\.[0-9]+)\|(?<Name>[^\r\n]+)\r?$' -and
+                    -not [string]::IsNullOrWhiteSpace($Matches.Name)) {
+                    $cudaWheel = Get-QproCudaWheel $Matches.Name.Trim() $Matches.Capability
+                }
+            }
+            if (-not $Update -and -not $Repair -and $existingRuntimeReady -and (-not ($nvidiaDetected -or $existingCudaBuild) -or $existingCudaReady) -and (Test-QproRuntimeReceipt $recipe)) {
                 & $venvPython -I -c "import cv2,numpy,torch; print('Existing shared runtime ready:', torch.__version__, 'CUDA:', torch.cuda.is_available())"
                 # An import alone does not certify that a new release recipe ran.
                 if ([string]::IsNullOrWhiteSpace($recipe) -and -not (Test-Path -LiteralPath $readyMarker)) {
@@ -391,22 +420,24 @@ function Invoke-QproRuntimeSetup {
 
         # Driver detection can fail transiently. Retain an existing CUDA build
         # during updates rather than silently replacing it with CPU PyTorch.
+        $cpuFallbackInstalled = $false
         $useCuda = $nvidiaDetected -or $existingCudaBuild
         if ($useCuda) {
-            Write-Host 'Installing the official CUDA 12.8 PyTorch wheel.'
+            Write-Host "Installing the official $($cudaWheel.Label) PyTorch wheel ($($cudaWheel.Requirement))."
             $cudaOptions = @('--upgrade')
             if ($Repair -or ($existingRuntimeReady -and -not $existingCudaBuild)) {
                 $cudaOptions += '--force-reinstall'
                 if ($Repair) { Write-Host 'Reinstalling CUDA PyTorch for the runtime repair.' }
                 else { Write-Host 'Replacing the CPU-only PyTorch wheel with the CUDA build.' }
             }
-            $code = Invoke-QproRuntimePip ($cudaOptions + @($torchRequirement, '--index-url', $cudaIndex))
+            $code = Invoke-QproRuntimePip ($cudaOptions + @($cudaWheel.Requirement, '--index-url', $cudaWheel.Index))
             if ($code -ne 0) {
                 if ($existingCudaReady) { throw 'Updating CUDA PyTorch failed. The previous working GPU runtime will be restored.' }
                 Write-Warning 'The CUDA PyTorch download failed. Installing the CPU build so tracking and training remain usable.'
                 if ((Invoke-QproRuntimePip @('--upgrade', '--force-reinstall', $torchRequirement, '--index-url', $cpuIndex)) -ne 0) {
                     throw 'Installing both CUDA and CPU PyTorch builds failed. Check the internet connection and run setup again.'
                 }
+                $cpuFallbackInstalled = $true
             }
         } else {
             Write-Host 'No NVIDIA driver/GPU was detected. Installing the official CPU PyTorch wheel.'
@@ -425,13 +456,19 @@ function Invoke-QproRuntimeSetup {
             }
             throw "The installed runtime failed its final tensor/import check (exit $($diagnostic.ExitCode)). Send the complete Activity log."
         }
-        $cudaReady = Test-PythonCommand $venvPython "import torch; assert torch.version.cuda is not None and torch.cuda.is_available(); assert torch.arange(4,device='cuda').sum().item() == 6; torch.cuda.synchronize()"
+        $cudaReady = Test-PythonCommand $venvPython $cudaCheck
         if ($useCuda -and -not $cudaReady) {
-            $gpuDiagnostic = Get-QproRuntimeImportDiagnostic $venvPython "import torch; print('PyTorch:', torch.__version__, 'CUDA build:', torch.version.cuda); assert torch.version.cuda is not None, 'Installed PyTorch has no CUDA build'; assert torch.cuda.is_available(), 'CUDA driver/device could not be initialized'; assert torch.arange(4,device='cuda').sum().item() == 6; torch.cuda.synchronize()"
+            $gpuDiagnostic = Get-QproRuntimeImportDiagnostic $venvPython $cudaCheck
             if (-not [string]::IsNullOrWhiteSpace($gpuDiagnostic.Text)) { Write-Host $gpuDiagnostic.Text }
         }
         if ($existingCudaReady -and -not $cudaReady) { throw 'The updated CUDA runtime did not pass its GPU tensor check. The previous working GPU runtime will be restored.' }
-        if ($useCuda -and -not $cudaReady) { Write-Warning 'PyTorch could not initialize CUDA. CPU tracking/training is available; update the NVIDIA display driver and rerun PC runtime setup for GPU acceleration.' }
+        if ($useCuda -and -not $cudaReady -and -not $cpuFallbackInstalled) {
+            Write-Warning 'The CUDA arithmetic/convolution check failed. Installing CPU PyTorch so tracking and training remain usable. Update the NVIDIA display driver and rerun setup to retry GPU acceleration.'
+            if ((Invoke-QproRuntimePip @('--upgrade', '--force-reinstall', $torchRequirement, '--index-url', $cpuIndex)) -ne 0 -or
+                -not (Test-PythonCommand $venvPython $runtimeCheck)) {
+                throw 'CUDA verification failed and CPU fallback could not be verified. Read the preceding Activity error and rerun setup.'
+            }
+        }
         & $venvPython -I -c "import cv2,numpy,torch; print('Runtime ready:', torch.__version__, 'CUDA:', torch.cuda.is_available())"
         Write-ReadyMarker $venvPython $recipe $(if ($cudaReady) { 'cuda' } else { 'cpu' })
         $finished = $true

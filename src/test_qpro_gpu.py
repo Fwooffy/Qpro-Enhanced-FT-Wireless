@@ -82,6 +82,68 @@ def write_experimental_marker(root, target, **overrides):
 
 
 class QproGpuTests(unittest.TestCase):
+    def test_incompatible_nvidia_images_use_cpu_and_warn_once(self):
+        torch = fake_torch(["NVIDIA GeForce GTX 1080"], cuda="12.8")
+        torch.cuda.get_device_capability = lambda index: (6, 1)
+        torch.cuda.get_arch_list = lambda: ["sm_75", "sm_80", "sm_90", "compute_90"]
+        with patch("qpro_gpu._NVIDIA_COMPATIBILITY_WARNINGS", set()), patch("sys.stderr") as stderr:
+            self.assertEqual(preferred_torch_device_name(torch), "cpu")
+            self.assertEqual(validated_torch_device_name(torch, "auto"), "cpu")
+            message = "".join(call.args[0] for call in stderr.write.call_args_list)
+            self.assertEqual(message.count("WARNING:"), 1)
+            self.assertIn("GTX 1080", message)
+            self.assertIn("sm_61", message)
+            self.assertIn("Install runtime", message)
+            self.assertIn("CPU", message)
+        with self.assertRaisesRegex(RuntimeError, "sm_61.*Install runtime"):
+            validated_torch_device_name(torch, "cuda:0")
+
+    def test_nvidia_binary_and_ptx_compatibility_follow_compute_capabilities(self):
+        cases = (
+            ((6, 1), ["sm_61"], True),
+            ((6, 1), ["sm_60"], True),
+            ((6, 0), ["sm_61"], False),
+            ((7, 5), ["sm_61"], False),
+            ((6, 1), ["compute_60"], True),
+            ((6, 0), ["compute_61"], False),
+            ((7, 5), ["sm_61", "compute_61"], True),
+            ((10, 0), ["sm_90", "compute_90"], True),
+            ((9, 0), ["sm_100", "compute_100"], False),
+            ((6, 1), ["sm_75", "sm_90a", "compute_100f"], False),
+            ((9, 0), ["sm_90a"], True),  # Defer specialised images to the runtime.
+        )
+        for capability, images, supported in cases:
+            with self.subTest(capability=capability, images=images):
+                torch = fake_torch(["Fixture NVIDIA GPU"], cuda="12.8")
+                torch.cuda.get_device_capability = lambda index: capability
+                torch.cuda.get_arch_list = lambda: images
+                with patch("sys.stderr"):
+                    self.assertEqual(preferred_torch_device_name(torch), "cuda:0" if supported else "cpu")
+                if supported:
+                    self.assertEqual(validated_torch_device_name(torch, "cuda"), "cuda")
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "compatible NVIDIA kernels"):
+                        validated_torch_device_name(torch, "cuda")
+
+    def test_nvidia_explicit_selection_checks_requested_device(self):
+        torch = fake_torch(["NVIDIA GeForce RTX 3060", "NVIDIA GeForce GTX 1080"], cuda="12.8")
+        torch.cuda.get_device_capability = lambda index: ((8, 6), (6, 1))[index]
+        torch.cuda.get_arch_list = lambda: ["sm_75", "sm_80", "sm_86"]
+        self.assertEqual(validated_torch_device_name(torch, "auto"), "cuda:0")
+        with self.assertRaisesRegex(RuntimeError, "GTX 1080"):
+            validated_torch_device_name(torch, "cuda:1")
+
+    def test_unknown_custom_nvidia_architecture_metadata_is_preserved(self):
+        for images in ([], ["custom_target"], ["sm_75", "custom_target"]):
+            with self.subTest(images=images):
+                torch = fake_torch(["Custom NVIDIA GPU"], cuda="12.8")
+                torch.cuda.get_device_capability = lambda index: (6, 1)
+                torch.cuda.get_arch_list = lambda: images
+                self.assertEqual(preferred_torch_device_name(torch), "cuda:0")
+                self.assertEqual(validated_torch_device_name(torch, "cuda:0"), "cuda:0")
+        torch.cuda.get_arch_list = lambda: (_ for _ in ()).throw(RuntimeError("Custom build metadata unavailable"))
+        self.assertEqual(preferred_torch_device_name(torch), "cuda:0")
+
     def test_rocm_101_selects_each_mapped_discrete_target_after_integrated(self):
         for gfx, names in ROCM_10_CARD_TARGETS.items():
             for name in names:
