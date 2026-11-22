@@ -91,33 +91,8 @@ internal sealed partial class HubForm
         if (suspendRedraw) ActivityMessage(_log.Handle, 0xB, 0, 0); // WM_SETREDRAW
         try
         {
-            void AppendRun(string text, ActivitySeverity severity)
-            {
-                _log.Select(_log.TextLength, 0);
-                _log.SelectionColor = ActivityColor(severity);
-                _log.AppendText(text);
-            }
-            if (rebuild)
-            {
-                _log.Clear();
-                var text = new StringBuilder();
-                ActivitySeverity? severity = null;
-                foreach (var run in runs)
-                {
-                    if (severity != run.Severity && text.Length > 0)
-                    {
-                        AppendRun(text.ToString(), severity!.Value);
-                        text.Clear();
-                    }
-                    severity = run.Severity;
-                    text.Append(run.Text);
-                }
-                // A paused view can accumulate many individual arrivals. Send
-                // adjacent equal-color runs to RichEdit as one edit on resume.
-                if (text.Length > 0) AppendRun(text.ToString(), severity!.Value);
-            }
-            else
-                foreach (var run in runs) AppendRun(run.Text, run.Severity);
+            if (rebuild) _log.Clear();
+            AppendActivityRenderRuns(runs);
 
             // Remove whole old lines without replacing Text, which would discard
             // the remaining colors. A very long single line still stays bounded.
@@ -164,6 +139,47 @@ internal sealed partial class HubForm
                 // RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME
             }
         }
+    }
+
+    private void AppendActivityRenderRuns(IReadOnlyList<ActivityRenderRun> runs)
+    {
+        if (runs.Count == 0) return;
+        var start = _log.TextLength;
+        var firstSeverity = runs[0].Severity;
+        _log.Select(start, 0);
+        _log.SelectionColor = ActivityColor(firstSeverity);
+        // RichEdit reflows text on each insertion even with redraw suspended.
+        // Insert a mixed-color batch once, then apply its severity spans. Keep
+        // plain text insertion so Unicode and existing font settings survive.
+        if (runs.Count == 1) _log.AppendText(runs[0].Text);
+        else
+        {
+            var text = new StringBuilder();
+            foreach (var run in runs) text.Append(run.Text);
+            _log.AppendText(text.ToString());
+        }
+
+        var offset = start;
+        var length = 0;
+        var severity = firstSeverity;
+        void FinishSpan()
+        {
+            // The insertion already assigned the first severity everywhere.
+            if (severity != firstSeverity && length > 0)
+            {
+                _log.Select(offset, length);
+                _log.SelectionColor = ActivityColor(severity);
+            }
+            offset += length;
+            length = 0;
+        }
+        foreach (var run in runs)
+        {
+            if (severity != run.Severity) FinishSpan();
+            severity = run.Severity;
+            length += run.Text.Length;
+        }
+        FinishSpan();
     }
 
     private void ResetActivityLog()

@@ -6,7 +6,7 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        try { Run(args.Contains("--offscreen")); }
+        try { Run(args.Contains("--offscreen"), args.Contains("--benchmark"), args.Contains("--benchmark-only")); }
         catch (Exception error)
         {
             Console.Error.WriteLine("FAIL: " + error);
@@ -14,7 +14,7 @@ internal static class Program
         }
     }
 
-    private static void Run(bool offscreen)
+    private static void Run(bool offscreen, bool benchmark, bool benchmarkOnly)
     {
         ApplicationConfiguration.Initialize();
         var type = Assembly.Load("QproFaceTracking.Hub").GetType("QproFaceTracking.Hub.HubForm")!;
@@ -51,6 +51,13 @@ internal static class Program
         Controls(form).OfType<Button>().Single(button => button.AccessibleName == "Activity").PerformClick();
         Application.DoEvents();
         Check(log.Visible && log.ClientSize.Height > 0, "Activity scrolling requires a visible log control.");
+        if (benchmarkOnly)
+        {
+            ActivityBatchFixtures.Benchmark(form, log, Add, () => reset.Invoke(form, null));
+            form.Close();
+            Check(!Directory.Exists(root), "Preview wrote to its isolated source folder.");
+            return;
+        }
         reset.Invoke(form, null);
         Add("[Worker] Completed successfully. No errors.");
         Add("[Worker] WARNING: GPU fallback is active.");
@@ -326,6 +333,8 @@ internal static class Program
         finally { log.TextChanged -= CountResumeEdit; }
         Console.WriteLine("PASS: pause/resume, current diagnostics during pause, frozen reading position, bounded paused history, retained selection, jump to latest and reset.");
         Console.WriteLine($"PASS: 2500 paused short arrivals resume in {resumeEdits} native text edits.");
+        ActivityBatchFixtures.Run(log, Add, () => reset.Invoke(form, null), Theme);
+        if (benchmark) ActivityBatchFixtures.Benchmark(form, log, Add, () => reset.Invoke(form, null));
         form.Close();
         Check(!Directory.Exists(root), "Preview wrote to its isolated source folder.");
         Console.WriteLine("PASS: RichTextBox severity colors, original diagnostics, bounded history and surviving selection.");
