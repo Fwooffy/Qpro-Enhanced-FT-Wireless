@@ -228,7 +228,7 @@ internal static class Program
             : [];
         var requiredFiles = new[]
         {
-            "build-and-run.ps1", "native-eye-local-branch-test.ps1", "prepare-eye-model.ps1", "prepare_eye_model.py", "research\\patch_seacliff_independent_axes.py", "native_raw_eye_probe.py", "install-vrcft-eye-bridge.ps1", "uninstall-vrcft-eye-bridge.ps1", "vrcft-module-installation.ps1", "runtime-python.ps1", "runtime-recovery.ps1", "tracking_budget.py",
+            "build-and-run.ps1", "camera-transport-recovery.ps1", "native-eye-local-branch-test.ps1", "prepare-eye-model.ps1", "prepare_eye_model.py", "research\\patch_seacliff_independent_axes.py", "native_raw_eye_probe.py", "install-vrcft-eye-bridge.ps1", "uninstall-vrcft-eye-bridge.ps1", "vrcft-module-installation.ps1", "runtime-python.ps1", "runtime-recovery.ps1", "tracking_budget.py",
             "virtual-desktop-updater.ps1",
             "hybrid\\controller.py", "hybrid\\driver_layout.py",
             "platform-tools\\adb.exe", "platform-tools\\AdbWinApi.dll", "platform-tools\\AdbWinUsbApi.dll",

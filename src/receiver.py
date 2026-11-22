@@ -36,6 +36,7 @@ HEADER = struct.Struct("<8sIIQQIIIIIIQ")
 MAGIC = b"QPLIVE3\0"
 CAMERA_WIDTH = 400
 CAMERA_HEIGHT = 400
+LIVE_WIRELESS_IDLE_SECONDS = 20.0
 CAMERA_NAMES = {
     0: "left eye",
     1: "right eye",
@@ -49,33 +50,57 @@ class StopRequested(Exception):
     """The session was stopped, or its owning Companion process exited."""
 
 
-def check_stop_requested(stop_file: Path | None, companion: CompanionLifetime | None = None) -> None:
+class CameraTransportDisconnected(ConnectionError):
+    """Camera-socket EOF, reset, or supervised live Wi-Fi read timeout."""
+
+
+def check_stop_requested(
+    stop_file: Path | None, companion: CompanionLifetime | None = None,
+    preview: SharedPreview | None = None,
+) -> None:
     if companion is not None and not companion.alive():
         raise StopRequested("Companion closed; camera preview closing")
-    if stop_file is not None and stop_file.exists():
+    if (stop_file is not None and stop_file.exists()) or (preview is not None and not preview.running):
         raise StopRequested("camera preview closing")
 
 
 def receive_exact(
     connection: socket.socket, size: int, stop_file: Path | None = None,
-    companion: CompanionLifetime | None = None,
-) -> bytes:
+    companion: CompanionLifetime | None = None, *, preview: SharedPreview | None = None,
+    recover_idle: bool = False,
+) -> memoryview:
     output = bytearray(size)
     view = memoryview(output)
     received = 0
+    # A new read starts its own clock so inference and UI work never count as idle.
+    last_progress_at = time.monotonic() if recover_idle else None
     while received < size:
-        check_stop_requested(stop_file, companion)
+        check_stop_requested(stop_file, companion, preview)
         try:
             amount = connection.recv_into(view[received:])
-        except socket.timeout:
-            if stop_file is None and (companion is None or not companion.enabled):
+        except socket.timeout as error:
+            check_stop_requested(stop_file, companion, preview)
+            if last_progress_at is not None:
+                if time.monotonic() - last_progress_at >= LIVE_WIRELESS_IDLE_SECONDS:
+                    raise CameraTransportDisconnected(
+                        f"The live Wi-Fi camera sent no data for {LIVE_WIRELESS_IDLE_SECONDS:g} seconds"
+                    ) from error
+            elif preview is None and stop_file is None and (companion is None or not companion.enabled):
                 raise
             continue
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError) as error:
+            check_stop_requested(stop_file, companion, preview)
+            raise CameraTransportDisconnected("The headset camera transport was interrupted") from error
         if amount == 0:
-            raise ConnectionError("The headset streamer disconnected")
+            check_stop_requested(stop_file, companion, preview)
+            raise CameraTransportDisconnected("The headset streamer disconnected")
         received += amount
-    check_stop_requested(stop_file, companion)
-    return bytes(output)
+        if last_progress_at is not None and received < size:
+            last_progress_at = time.monotonic()
+    check_stop_requested(stop_file, companion, preview)
+    # Each frame owns its allocation. Inference can keep this read-only view
+    # while the receiver fills the next frame, without copying the full strip.
+    return view.toreadonly()
 
 
 def camera_ids_from_mask(mask: int) -> list[int]:
@@ -372,7 +397,7 @@ def handle_key(shared: SharedPreview, key: str) -> None:
 
 
 def console_keyboard_worker(shared: SharedPreview) -> None:
-    if sys.platform != "win32":
+    if sys.platform != "win32" or sys.stdin is None or not sys.stdin.isatty():
         return
     import msvcrt
 
@@ -488,6 +513,8 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=27273)
     parser.add_argument("--mjpeg-port", type=int, default=8081)
     parser.add_argument("--no-window", action="store_true")
+    parser.add_argument("--recovered-camera-connection", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--recover-idle-camera", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--tracking-profile", choices=tuple(PROFILE_RATES), default="responsive",
         help="responsive keeps current cadence; balanced/low-cpu sample pupils less often",
@@ -590,6 +617,8 @@ def main() -> int:
         parser.error("--tongue-smoothing must be between 0 and 100")
     if arguments.record_seconds and arguments.record is None:
         parser.error("--record-seconds requires --record")
+    if arguments.recover_idle_camera and (arguments.record is not None or arguments.eye_calibration):
+        parser.error("Wireless camera idle recovery requires a live tracking session")
     if arguments.calibration and arguments.record is None:
         parser.error("--calibration requires --record")
     if arguments.tongue_calibration and arguments.record is None:
@@ -754,7 +783,7 @@ def main() -> int:
 
     try:
         companion = CompanionLifetime(arguments.companion_pid, arguments.companion_start_filetime)
-        check_stop_requested(stop_file, companion)
+        check_stop_requested(stop_file, companion, shared)
         if arguments.record is not None:
             if arguments.record == "auto":
                 stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -979,25 +1008,33 @@ def main() -> int:
         print("Connecting to headset streamer (up to 20 seconds)...")
         deadline = time.monotonic() + 20.0
         while connection is None:
-            check_stop_requested(stop_file, companion)
+            check_stop_requested(stop_file, companion, shared)
             try:
                 connection = socket.create_connection(
                     (arguments.host, arguments.port), timeout=0.25 if companion.enabled else 2
                 )
             except OSError:
+                check_stop_requested(stop_file, companion, shared)
                 if time.monotonic() >= deadline:
                     raise ConnectionError(
-                        "The injected streamer did not begin listening. "
-                        "Send the three logs."
+                        "No headset camera stream opened within 20 seconds. Check the Quest "
+                        "connection in First-time setup, then retry. If it happens again, "
+                        "use Activity > Copy diagnostics."
                     )
                 time.sleep(0.25)
-        # A stalled camera relay must not keep the preview open after Stop.
-        connection.settimeout(0.25 if stop_file is not None or companion.enabled else None)
+        # A console quit must also interrupt a stalled USB read. Only live
+        # Wi-Fi sessions treat prolonged inactivity as a transport failure.
+        connection.settimeout(0.25)
         connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         print("Connected. Keys 0-4 select cameras; S selects strip; Q quits.")
+        discard_first_packet = arguments.recovered_camera_connection
         while shared.running:
-            check_stop_requested(stop_file, companion)
-            raw_header = receive_exact(connection, HEADER.size, stop_file, companion)
+            check_stop_requested(stop_file, companion, shared)
+            # CaptureWriter packs the fixed-width header as a bytes field.
+            raw_header = bytes(receive_exact(
+                connection, HEADER.size, stop_file, companion,
+                preview=shared, recover_idle=arguments.recover_idle_camera,
+            ))
             (magic, version, header_size, sequence, timestamp_ns, width, height,
              stride, pixel_format, payload_size, camera_mask,
              rejected_torn) = HEADER.unpack(raw_header)
@@ -1017,7 +1054,14 @@ def main() -> int:
                 )
             if payload_size != width * height:
                 raise ValueError("Invalid payload size")
-            payload = receive_exact(connection, payload_size, stop_file, companion)
+            payload = receive_exact(
+                connection, payload_size, stop_file, companion,
+                preview=shared, recover_idle=arguments.recover_idle_camera,
+            )
+            if discard_first_packet:
+                # A new relay client can receive one generation retained in shared memory.
+                discard_first_packet = False
+                continue
             payload_received_at = time.perf_counter()
             pc_monotonic_ns = time.monotonic_ns()
             stream_gap_stats.add(timestamp_ns, pc_monotonic_ns)
@@ -1345,6 +1389,9 @@ def main() -> int:
     except StopRequested as stop:
         capture_completed = True
         print(f"STOP_REQUESTED {stop or 'camera preview closing'}", flush=True)
+    except CameraTransportDisconnected as error:
+        print(f"CAMERA_TRANSPORT_DISCONNECTED {error}", flush=True)
+        return 75  # finally closes outputs/workers before the launcher can retry.
     finally:
         if companion is not None:
             companion.close()

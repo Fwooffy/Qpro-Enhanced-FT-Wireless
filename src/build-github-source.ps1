@@ -53,6 +53,11 @@ function Get-QproPublicTestSources([string]$SourceRoot) {
 
 $sourceFiles = @(
     "build-and-run.ps1",
+    "camera-transport-recovery.ps1",
+    "test_camera_transport_recovery.ps1",
+    "test_relay_listener_startup.ps1",
+    "test_wireless_camera_identity.ps1",
+    "test_camera_transport_status.py",
     "build-release.ps1",
     "release-package.ps1",
     "build-guide.py",

@@ -364,7 +364,7 @@ class TongueStillCaptureSession:
         self,
         writer: CaptureWriter,
         transport_header: bytes,
-        payload: bytes,
+        payload: bytes | memoryview,
         pc_monotonic_ns: int,
         pc_wall_ns: int,
     ) -> bool:

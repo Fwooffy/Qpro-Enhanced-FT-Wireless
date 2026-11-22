@@ -135,6 +135,7 @@ function Copy-ReleaseFile([string]$RelativePath) {
 
 $runtimeFiles = @(
     "build-and-run.ps1",
+    "camera-transport-recovery.ps1",
     "Connect-QproWireless.ps1",
     "Pair-QproWireless.ps1",
     "Launch-QproWireless.ps1",

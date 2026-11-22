@@ -70,8 +70,13 @@ if (($CompanionPid -gt 0) -ne ($CompanionStartFileTime -gt 0)) {
     throw 'CompanionPid and CompanionStartFileTime must be supplied together.'
 }
 . (Join-Path $PSScriptRoot 'runtime-python.ps1')
+. (Join-Path $PSScriptRoot 'camera-transport-recovery.ps1')
 $relayStarted = $false
+$cameraForwardCreated = $false
 $relayProcess = $null
+$relayClientOwnedLogs = @()
+$wirelessCameraIdentity = $null
+$cameraIdentityCleanupProbe = $false
 $relayClientOutputPath = Join-Path $PSScriptRoot "questpro-relay-client-output.txt"
 $relayClientErrorPath = Join-Path $PSScriptRoot "questpro-relay-client-error.txt"
 $labelBridgeProcess = $null
@@ -156,6 +161,7 @@ function Get-ShortLabelBridgePath([string]$SourcePath) {
 if (-not [string]::IsNullOrWhiteSpace($AdbTarget)) {
     $env:ANDROID_SERIAL = $AdbTarget.Trim()
 }
+$wirelessCameraTransport = Test-QproWirelessCameraTarget $AdbTarget
 if (Get-Variable PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
     $PSNativeCommandUseErrorActionPreference = $false
 }
@@ -207,6 +213,7 @@ try {
         }
     }
 
+    if ($wirelessCameraTransport) { Initialize-QproWirelessCameraIdentity }
     $rootProbe = & $adbExecutable shell su -c id 2>&1
     $rootProbeText = ($rootProbe -join "`n").Trim()
     if ($LASTEXITCODE -ne 0 -or $rootProbeText -notmatch 'uid=0\(root\)') {
@@ -440,7 +447,7 @@ try {
     # this out of a nested adb/su shell avoids Windows quoting failures.
     $null = & $adbExecutable forward --remove "tcp:$StreamPort" 2>&1
     $injectCommand = "/data/local/tmp/questpro-camera-injector /data/local/tmp/libquestpro-camera-streamer-v8.so"
-    if (-not [string]::IsNullOrWhiteSpace($AdbTarget)) {
+    if ($wirelessCameraTransport) {
         # This Magisk build exposes incomplete provider mappings to a second su
         # session while the long-lived wireless relay session is open. Inject
         # first; the streamer intentionally waits for the relay's shared file.
@@ -449,31 +456,21 @@ try {
         @($injectOutput | ForEach-Object { $_.ToString() }) | Tee-Object -FilePath .\questpro-live-inject.txt
         if ($injectExit -ne 0) { throw "Injection failed with exit code $injectExit. Send questpro-live-inject.txt." }
     }
-    if (-not [string]::IsNullOrWhiteSpace($AdbTarget)) {
+    if ($wirelessCameraTransport) {
         # A relay orphaned by `nohup ... &` loses the live Magisk su execution
         # context on this headset and then cannot fchmod/mmap the shared file.
         # Keep the adb/su session alive for the relay's lifetime over Wi-Fi.
         $relayExec = "/data/local/tmp/questpro-camera-relay-v8 --mode $CameraMode --max-fps $MaxFps"
-        Remove-Item -LiteralPath $relayClientOutputPath, $relayClientErrorPath -Force -ErrorAction SilentlyContinue
+        New-QproRelayClientLogs
         $relayArguments = "shell su -c `"$relayExec`""
         $relayProcess = Start-Process -FilePath $adbExecutable `
             -ArgumentList $relayArguments `
             -PassThru -WindowStyle Hidden `
             -RedirectStandardOutput $relayClientOutputPath `
-            -RedirectStandardError $relayClientErrorPath
-        Start-Sleep -Milliseconds 800
-        if ($relayProcess.HasExited) {
-            $relayOutput = if (Test-Path -LiteralPath $relayClientOutputPath) { Get-Content -LiteralPath $relayClientOutputPath -Raw } else { "" }
-            $relayError = if (Test-Path -LiteralPath $relayClientErrorPath) { Get-Content -LiteralPath $relayClientErrorPath -Raw } else { "" }
-            $relayLogText = (($relayOutput, $relayError) -join "`n").Trim()
-            Set-Content -LiteralPath .\questpro-live-relay.txt -Value $relayLogText
-            if (-not [string]::IsNullOrWhiteSpace($relayLogText)) { Write-Host $relayLogText }
-            $relayProcess.Dispose()
-            $relayProcess = $null
-            throw "The wireless root relay exited during startup. Send questpro-live-relay.txt."
-        }
+            -RedirectStandardError $relayClientErrorPath -ErrorAction Stop
         $relayStarted = $true
-        Write-Host "RELAY_LISTENING address=127.0.0.1 port=$StreamPort mode=$CameraMode max_fps=$MaxFps transport=live-adb-su"
+        Wait-QproRelayListening $relayProcess $relayClientOutputPath $relayClientErrorPath $StreamPort $CameraMode
+        Write-Host 'Wireless relay transport=live-adb-su listener=verified'
     }
     else {
         $relayCommand = 'chmod 755 /data/local/tmp/questpro-camera-relay-v8; : > /data/local/tmp/questpro-relay-v8.log; nohup /data/local/tmp/questpro-camera-relay-v8 --mode {0} --max-fps {1} > /data/local/tmp/questpro-relay-v8.log 2>&1 < /dev/null &' -f $CameraMode, $MaxFps
@@ -486,7 +483,7 @@ try {
         if (-not (($relayLog -join "`n") -match "RELAY_LISTENING")) { throw "The root relay did not begin listening. Send questpro-live-relay.txt." }
     }
 
-    if ([string]::IsNullOrWhiteSpace($AdbTarget)) {
+    if (-not $wirelessCameraTransport) {
         $injectOutput = & $adbExecutable shell su -c $injectCommand 2>&1
         $injectExit = $LASTEXITCODE
         @($injectOutput | ForEach-Object { $_.ToString() }) | Tee-Object -FilePath .\questpro-live-inject.txt
@@ -499,6 +496,7 @@ try {
 
     & $adbExecutable forward "tcp:$StreamPort" "tcp:$StreamPort"
     if ($LASTEXITCODE -ne 0) { throw "ADB port forwarding failed with exit code $LASTEXITCODE" }
+    $cameraForwardCreated = $true
 
     $capText = if ($MaxFps -eq 0) { "unlimited" } else { "$MaxFps FPS" }
     Write-Host "Transport mode: $CameraMode; cap: $capText"
@@ -591,34 +589,53 @@ try {
             "--convergence-calibration-seconds", "$ConvergenceCalibrationSeconds"
         )
     }
-    & $python @receiverArguments
-    if ($LASTEXITCODE -ne 0) { throw "The PC tracking runtime exited with code $LASTEXITCODE." }
+    $captureSession = [bool]($recordEnabled -or $EyeCalibration)
+    $allowCameraRecovery = (Test-QproCameraRecoveryAllowed $AdbTarget $captureSession) -and
+        -not [string]::IsNullOrWhiteSpace($wirelessCameraIdentity)
+    Invoke-QproCameraReceiverSession $allowCameraRecovery {
+        param([bool]$RecoveredConnection)
+        $sessionArguments = $receiverArguments
+        if ($allowCameraRecovery) { $sessionArguments += '--recover-idle-camera' }
+        if ($RecoveredConnection) { $sessionArguments += '--recovered-camera-connection' }
+        & $python @sessionArguments | Out-Host
+        return $LASTEXITCODE
+    } { Repair-QproWirelessCameraTransport }
 } catch {
-    $launcherFailure = $_
+    if ($_.Exception -is [OperationCanceledException]) { Write-Host 'STOP_REQUESTED camera recovery cancelled' }
+    else { $launcherFailure = $_ }
 } finally {
     if ($null -ne $labelBridgeProcess -and -not $labelBridgeProcess.HasExited) {
         Stop-Process -Id $labelBridgeProcess.Id -Force -ErrorAction SilentlyContinue
         Wait-Process -Id $labelBridgeProcess.Id -Timeout 2 -ErrorAction SilentlyContinue
     }
     if ($relayStarted) {
-        $stopOutput = & $adbExecutable shell su -c "/data/local/tmp/questpro-camera-relay-v8 --stop" 2>&1
-        if ($LASTEXITCODE -eq 0) { $stopOutput | ForEach-Object { Write-Host $_ } }
+        $allowRelayRemoteCleanup = -not $wirelessCameraTransport -or (Test-QproWirelessCameraCleanupIdentity)
+        try {
+            if ($allowRelayRemoteCleanup) {
+            $stopResult = Invoke-QproRecoveryAdb 'shell su -c "/data/local/tmp/questpro-camera-relay-v8 --stop"' -IgnoreCancellation
+            if ($stopResult.ExitCode -eq 0) { Write-Host $stopResult.Output }
+            }
+        } catch { Write-Host "Camera relay cleanup could not reach the headset: $($_.Exception.Message)" }
         if ($null -ne $relayProcess) {
             if (-not $relayProcess.WaitForExit(2000)) {
                 $relayProcess.Kill()
                 $relayProcess.WaitForExit(2000) | Out-Null
             }
-            $relayOutput = if (Test-Path -LiteralPath $relayClientOutputPath) { Get-Content -LiteralPath $relayClientOutputPath -Raw } else { "" }
-            $relayError = if (Test-Path -LiteralPath $relayClientErrorPath) { Get-Content -LiteralPath $relayClientErrorPath -Raw } else { "" }
-            (($relayOutput, $relayError) -join "`n").Trim() | Set-Content -LiteralPath .\questpro-live-relay.txt
+            Complete-QproRelayClientLogs $relayProcess
             $relayProcess.Dispose()
         }
-        else {
-            $finalRelayLog = & $adbExecutable shell su -c "cat /data/local/tmp/questpro-relay-v8.log" 2>&1
-            @($finalRelayLog | ForEach-Object { $_.ToString() }) | Set-Content -LiteralPath .\questpro-live-relay.txt
+        elseif ($allowRelayRemoteCleanup) {
+            try {
+                $finalRelayLog = Invoke-QproRecoveryAdb 'shell su -c "cat /data/local/tmp/questpro-relay-v8.log"' -IgnoreCancellation
+                ($finalRelayLog.Output + $finalRelayLog.Error) | Set-Content -LiteralPath .\questpro-live-relay.txt
+            } catch { Write-Host "Camera relay final log unavailable: $($_.Exception.Message)" }
         }
     }
-    $null = & $adbExecutable forward --remove "tcp:$StreamPort" 2>&1
+    if ($null -eq $relayProcess) { Complete-QproRelayClientLogs $null }
+    if ($cameraForwardCreated) {
+        try { $null = Invoke-QproRecoveryAdb "forward --remove tcp:$StreamPort" -IgnoreCancellation }
+        catch { Write-Host "Camera forward cleanup did not complete: $($_.Exception.Message)" }
+    }
     Restore-QproGpuVisibility
     Pop-Location
     if ($hadAndroidSerial) {
