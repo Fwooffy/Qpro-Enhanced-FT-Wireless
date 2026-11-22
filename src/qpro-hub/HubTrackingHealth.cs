@@ -14,6 +14,7 @@ internal sealed class HubTrackingHealth
     private double _cameraTimeout = 6.5;
     private string _tongue = "warming", _pupil = "warming";
     private TrackingSignalState? _cameraEnded;
+    private bool _tongueOutputOff, _pupilOutputOff;
     internal bool Running { get; private set; }
     internal bool TongueSelected { get; private set; }
     internal bool CheekSelected => false;
@@ -69,6 +70,7 @@ internal sealed class HubTrackingHealth
 
     private void Clear()
     {
+        _tongueOutputOff = _pupilOutputOff = false;
         _cameraEnded = null;
         _cameraAt = _healthAt = _pupilAt = null;
         _cameraTimeout = 6.5;
@@ -82,6 +84,7 @@ internal sealed class HubTrackingHealth
     {
         var selected = feature switch { "tongue" => TongueSelected, "pupil" => PupilSelected, _ => false };
         if (!selected) return TrackingSignalState.Off;
+        if (feature == "tongue" ? _tongueOutputOff : _pupilOutputOff) return TrackingSignalState.Off;
         if (_cameraEnded.HasValue) return _cameraEnded.Value;
         if (!Running) return TrackingSignalState.Stopped;
         if (CameraState == TrackingSignalState.Stale) return TrackingSignalState.Stale;
@@ -149,6 +152,7 @@ internal sealed class HubTrackingHealth
     }
 
     internal static bool IsTelemetry(string line) => line.StartsWith("TRACKING_HEALTH ", StringComparison.Ordinal)
+        || line is "EXPERIMENTAL_TONGUE_OUTPUT_OFF stock=restored" or "EXPERIMENTAL_PUPIL_OUTPUT_OFF stock=restored" or "EXPERIMENTAL_TONGUE_OUTPUT_ON"
         || line.StartsWith("TRANSPORT_QUALITY ", StringComparison.Ordinal)
         || line.StartsWith("INFERENCE_BACKEND ", StringComparison.Ordinal)
         || line.StartsWith("PUPIL_STATUS ", StringComparison.Ordinal);
@@ -158,6 +162,19 @@ internal sealed class HubTrackingHealth
         if (!Running || _cameraEnded.HasValue || !IsTelemetry(line) || line.Length > 4096) return false;
         var observedAt = receivedAt ?? _now();
         if (!double.IsFinite(observedAt) || observedAt > _now()) return false;
+        if (line.StartsWith("EXPERIMENTAL_", StringComparison.Ordinal))
+        {
+            if (_healthAt.HasValue && observedAt < _healthAt.Value) return false;
+            // The receiver can end while its supervising launcher stays alive.
+            // Stock restoration is not a launcher exit or a sound trigger.
+            var tongueOff = _tongueOutputOff;
+            var pupilOff = _pupilOutputOff;
+            Clear();
+            _tongueOutputOff = line.StartsWith("EXPERIMENTAL_TONGUE_", StringComparison.Ordinal)
+                ? line.Contains("OUTPUT_OFF", StringComparison.Ordinal) : tongueOff;
+            _pupilOutputOff = line.StartsWith("EXPERIMENTAL_PUPIL_", StringComparison.Ordinal) || pupilOff;
+            return true;
+        }
         var fields = Fields(line);
         if (line.StartsWith("INFERENCE_BACKEND ", StringComparison.Ordinal))
         {
@@ -167,8 +184,8 @@ internal sealed class HubTrackingHealth
             var name = nameAt < 0 ? device : line[(nameAt + 6)..].Trim();
             var description = backend switch { "amd-rocm" => "AMD ROCm", "nvidia-cuda" => "NVIDIA CUDA", "cpu" => "CPU", _ => backend };
             var value = description + " · " + (string.IsNullOrEmpty(name) ? device : name);
-            if (feature == "tongue") LowerFaceBackend = value;
-            else if (feature == "pupil") PupilBackend = value;
+            if (feature == "tongue") { LowerFaceBackend = value; _tongueOutputOff = false; }
+            else if (feature == "pupil") { PupilBackend = value; _pupilOutputOff = false; }
             else return false;
             return true;
         }

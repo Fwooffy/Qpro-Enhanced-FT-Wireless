@@ -73,6 +73,25 @@ internal static class TrackingHealthTests
         health.Observe(Healthy.Replace("camera_fps=23.8", "camera_fps=0"));
         Check(!health.CameraFresh, "Zero camera FPS remained green.");
         health.Observe(Healthy);
+        Check(health.Observe("EXPERIMENTAL_TONGUE_OUTPUT_OFF stock=restored") && health.Running
+            && health.CameraState == TrackingSignalState.Waiting && !health.HasSnapshot
+            && health.PipelineMs is null && health.PupilMs is null && health.DroppedFrames is null
+            && health.FeatureState("tongue") == TrackingSignalState.Off,
+            "Receiver restoration retained live/old observations or ended its supervising session.");
+        health.Observe(Healthy);
+        Check(health.FeatureState("tongue") == TrackingSignalState.Off,
+            "A disabled tongue output was reactivated by camera health alone.");
+        health.Observe("EXPERIMENTAL_TONGUE_OUTPUT_ON");
+        Check(health.CameraState == TrackingSignalState.Waiting && !health.HasSnapshot,
+            "Reenabled output reused the prior worker's timings.");
+        health.Observe(Healthy);
+        Check(health.FeatureState("tongue") == TrackingSignalState.Live, "Reenabled output did not recover.");
+        health.Observe("EXPERIMENTAL_PUPIL_OUTPUT_OFF stock=restored");
+        Check(health.FeatureState("pupil") == TrackingSignalState.Off && health.PupilMs is null,
+            "Pupil restoration retained old worker state.");
+        health.Observe("INFERENCE_BACKEND feature=pupil backend=cpu device=cpu");
+        health.Observe(Healthy);
+        Check(health.FeatureState("pupil") == TrackingSignalState.Live, "New worker backend did not reset restored-output state.");
         health.CameraExited(true);
         Check(health.CameraState == TrackingSignalState.Error && !health.Observe(Healthy), "Late data reactivated a failed worker.");
         health.Stop();

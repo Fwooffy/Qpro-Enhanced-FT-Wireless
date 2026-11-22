@@ -1402,55 +1402,74 @@ def main() -> int:
         print(f"CAMERA_TRANSPORT_DISCONNECTED {error}", flush=True)
         return 75  # finally closes outputs/workers before the launcher can retry.
     finally:
-        if companion is not None:
-            companion.close()
+        original_error = sys.exc_info()[1]
+        cleanup_errors = []
+
+        def cleanup(name, action):
+            try:
+                action()
+                return True
+            except Exception as error:
+                cleanup_errors.append(error)
+                print(f"CLEANUP_FAILED {name}: {error}", file=sys.stderr, flush=True)
+                return False
+
         shared.running = False
         with shared.lock:
             shared.lock.notify_all()
+        # Revoke both live overrides before any worker join, HTTP shutdown,
+        # socket cleanup or capture finalization can delay stock restoration.
+        # Broadcaster close serializes with late sends and is idempotent.
+        if tongue_broadcaster is not None:
+            if cleanup("tongue output", tongue_broadcaster.close):
+                print("EXPERIMENTAL_TONGUE_OUTPUT_OFF stock=restored", flush=True)
+        if pupil_worker is not None:
+            # Its close revokes output before waiting for inference to finish.
+            if cleanup("pupil worker", pupil_worker.close):
+                print("EXPERIMENTAL_PUPIL_OUTPUT_OFF stock=restored", flush=True)
+        elif pupil_broadcaster is not None:
+            if cleanup("pupil output", pupil_broadcaster.close):
+                print("EXPERIMENTAL_PUPIL_OUTPUT_OFF stock=restored", flush=True)
+        if tongue_inference_worker is not None:
+            cleanup("tongue worker", tongue_inference_worker.close)
+        if companion is not None:
+            cleanup("Companion handle", companion.close)
         if connection is not None:
-            connection.close()
-        server.shutdown()
-        server.server_close()
+            cleanup("camera connection", connection.close)
+        cleanup("HTTP shutdown", server.shutdown)
+        cleanup("HTTP server", server.server_close)
         if window_created:
-            cv2.destroyAllWindows()
+            cleanup("preview windows", cv2.destroyAllWindows)
         if stereo_eye_calibration is not None:
-            stereo_eye_calibration.close()
-            if stereo_eye_calibration.result is not None:
+            finalized = cleanup("stereo calibration", stereo_eye_calibration.close)
+            if finalized and stereo_eye_calibration.result is not None:
                 print(
                     "Stereo eye calibration complete: "
                     f"{stereo_eye_calibration.output_path}"
                 )
-        if tongue_inference_worker is not None:
-            tongue_inference_worker.close()
-        if tongue_broadcaster is not None:
-            tongue_broadcaster.close()
-            print("EXPERIMENTAL_TONGUE_OUTPUT_OFF stock=restored")
-        if pupil_worker is not None:
-            pupil_worker.close()
-            print("EXPERIMENTAL_PUPIL_OUTPUT_OFF stock=restored")
-        elif pupil_broadcaster is not None:
-            pupil_broadcaster.close()
-            print("EXPERIMENTAL_PUPIL_OUTPUT_OFF stock=restored")
         if calibration_session is not None:
-            calibration_session.finish(
+            finalized = cleanup("calibration finalization", lambda: calibration_session.finish(
                 time.monotonic_ns(), completed=calibration_completed
-            )
+            ))
             state = "complete" if calibration_completed else "stopped early"
-            print(f"Calibration session {state}: {calibration_session.path}")
+            if finalized:
+                print(f"Calibration session {state}: {calibration_session.path}")
         if tongue_still_session is not None:
-            tongue_still_session.finish(completed=calibration_completed)
+            finalized = cleanup("manual tongue finalization", lambda: tongue_still_session.finish(completed=calibration_completed))
             state = "complete" if calibration_completed else "stopped early but recoverable"
-            print(f"Manual tongue session {state}: {tongue_still_session.path}")
+            if finalized:
+                print(f"Manual tongue session {state}: {tongue_still_session.path}")
         if capture_writer is not None:
-            capture_writer.close(completed=capture_completed)
+            finalized = cleanup("capture finalization", lambda: capture_writer.close(completed=capture_completed))
             state = "complete" if capture_completed else "recoverable but incomplete"
-            print(
-                f"Capture {state}: {capture_writer.frame_count} frames, "
-                f"{capture_writer.path}"
-            )
+            if finalized:
+                print(
+                    f"Capture {state}: {capture_writer.frame_count} frames, "
+                    f"{capture_writer.path}"
+                )
         if label_recorder is not None:
-            label_recorder.close()
-            if label_recorder.sample_count:
+            finalized = cleanup("factory labels", label_recorder.close)
+            if finalized and label_recorder.sample_count:
                 if label_recorder.path is not None:
                     print(
                         f"Factory labels complete: {label_recorder.sample_count} samples, "
@@ -1462,11 +1481,13 @@ def main() -> int:
                         f"Live factory labels received: {label_recorder.sample_count} "
                         f"samples, {len(label_recorder.schema_names)} expressions"
                     )
-            else:
+            elif finalized:
                 print(
                     "WARNING: no factory reference labels were received from the selected tracking source. The camera capture "
                     "is valid but is not yet a supervised training dataset."
                 )
+        if cleanup_errors and original_error is None:
+            raise cleanup_errors[0]
     return 0
 
 

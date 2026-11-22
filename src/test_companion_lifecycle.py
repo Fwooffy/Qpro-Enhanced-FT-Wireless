@@ -1,10 +1,12 @@
 """Receiver ownership tests without camera, headset or installed-runtime changes."""
 
+import ast
 import io
 import os
 import socket
 import subprocess
 import sys
+import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -169,7 +171,7 @@ class ReceiverOwnerTests(unittest.TestCase):
         self.assertEqual(error.exception.code, 2)
         server.assert_not_called()
 
-    def run_main(self, owner, connection_factory, *, camera_outputs=False):
+    def run_main(self, owner, connection_factory, *, camera_outputs=False, configure_cleanup=None):
         import pupil_dilation
         import pupil_inference
         import tongue_model_preview
@@ -201,6 +203,9 @@ class ReceiverOwnerTests(unittest.TestCase):
               mock.patch.object(pupil_dilation, "RelativePupilTracker", return_value=pupil),
               mock.patch.object(pupil_dilation, "PupilBroadcaster"),
               mock.patch.object(pupil_inference, "PupilInferenceWorker") as pupil_worker):
+            if configure_cleanup is not None:
+                configure_cleanup(server, tongue.return_value, inference.return_value,
+                                  pupil_worker.return_value, labels)
             self.assertEqual(receiver.main(), 0)
         owner.close.assert_called_once()
         server.shutdown.assert_called_once()
@@ -241,6 +246,103 @@ class ReceiverOwnerTests(unittest.TestCase):
         self.run_main(owner, lambda *_args, **_kwargs: connection, camera_outputs=True)
         connection.settimeout.assert_called_once_with(0.25)
         connection.close.assert_called_once()
+
+    def test_final_overrides_precede_paused_tongue_join_and_http_shutdown(self):
+        owner = self.owner()
+        events = []
+        paused = threading.Event()
+        release = threading.Event()
+        http_paused = threading.Event()
+        http_release = threading.Event()
+        errors = []
+
+        def configure(server, tongue, inference, pupil, labels):
+            tongue.close.side_effect = lambda: events.append("tongue final invalid")
+            pupil.close.side_effect = lambda: events.append("pupil final invalid")
+
+            def slow_join():
+                events.append("tongue join")
+                paused.set()
+                if not release.wait(5):
+                    raise AssertionError("test cleanup was not released")
+
+            inference.close.side_effect = slow_join
+            def slow_http_shutdown():
+                events.append("HTTP shutdown")
+                http_paused.set()
+                if not http_release.wait(5):
+                    raise AssertionError("test HTTP cleanup was not released")
+
+            server.shutdown.side_effect = slow_http_shutdown
+            labels.close.side_effect = lambda: events.append("labels finalized")
+
+        def run():
+            try:
+                def refused(*_args, **_kwargs):
+                    owner.alive.return_value = False
+                    raise ConnectionRefusedError()
+                self.run_main(owner, refused,
+                              camera_outputs=True, configure_cleanup=configure)
+            except BaseException as error:
+                errors.append(error)
+
+        runner = threading.Thread(target=run)
+        runner.start()
+        try:
+            self.assertTrue(paused.wait(5), "cleanup never reached paused join")
+            self.assertEqual(events, ["tongue final invalid", "pupil final invalid", "tongue join"])
+        finally:
+            release.set()
+        try:
+            self.assertTrue(http_paused.wait(5), "cleanup never reached paused HTTP shutdown")
+            self.assertEqual(events, ["tongue final invalid", "pupil final invalid", "tongue join", "HTTP shutdown"])
+        finally:
+            http_release.set()
+            runner.join(10)
+        self.assertFalse(runner.is_alive())
+        if errors:
+            raise errors[0]
+        self.assertEqual(events[-2:], ["HTTP shutdown", "labels finalized"])
+
+    def test_http_cleanup_failure_preserves_primary_error_and_finalizes_labels(self):
+        events = []
+
+        def configure(server, tongue, inference, pupil, labels):
+            tongue.close.side_effect = lambda: events.append("tongue restored")
+            pupil.close.side_effect = lambda: events.append("pupil restored")
+            server.shutdown.side_effect = RuntimeError("HTTP cleanup failed")
+            labels.close.side_effect = lambda: events.append("labels finalized")
+
+        with redirect_stderr(io.StringIO()), self.assertRaisesRegex(ValueError, "original failure"):
+            self.run_main(self.owner(), ValueError("original failure"),
+                          camera_outputs=True, configure_cleanup=configure)
+        self.assertEqual(events, ["tongue restored", "pupil restored", "labels finalized"])
+
+    def test_failed_finalizers_never_report_capture_or_labels_complete(self):
+        tree = ast.parse(Path(receiver.__file__).read_text(encoding="utf-8"))
+        main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
+        teardown = next(node for node in main.body if isinstance(node, ast.Try) and node.finalbody)
+        failures = [RuntimeError(name) for name in ("stereo", "calibration", "tongue", "capture", "labels")]
+        stereo, calibration, tongue, capture, labels = [mock.Mock() for _ in range(5)]
+        for item, method, error in zip((stereo, calibration, tongue, capture, labels),
+                                       ("close", "finish", "finish", "close", "close"), failures):
+            getattr(item, method).side_effect = error
+        labels.sample_count = 1
+        labels.schema_names = ["test"]
+        state = dict(sys=sys, time=receiver.time, shared=SimpleNamespace(running=True, lock=threading.Condition()),
+                     tongue_broadcaster=None, pupil_worker=None, pupil_broadcaster=None,
+                     tongue_inference_worker=None, companion=None, connection=None, server=mock.Mock(),
+                     window_created=False, stereo_eye_calibration=stereo, calibration_session=calibration,
+                     tongue_still_session=tongue, capture_writer=capture, label_recorder=labels,
+                     capture_completed=True, calibration_completed=True)
+        output, errors = io.StringIO(), io.StringIO()
+        with redirect_stdout(output), redirect_stderr(errors), self.assertRaises(RuntimeError) as failure:
+            exec(compile(ast.Module(body=teardown.finalbody, type_ignores=[]), receiver.__file__, "exec"), state)
+        self.assertIs(failure.exception, failures[0])
+        self.assertEqual(output.getvalue(), "")
+        self.assertEqual(errors.getvalue().count("CLEANUP_FAILED"), 5)
+        capture.close.assert_called_once_with(completed=True)
+        labels.close.assert_called_once()
 
 
 if __name__ == "__main__":
