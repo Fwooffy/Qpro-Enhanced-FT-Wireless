@@ -1,11 +1,15 @@
 """HTTP previews should not consume camera-processing time when unused."""
 
+import io
+import sys
 import unittest
+from contextlib import redirect_stdout
 from unittest import mock
 from types import SimpleNamespace
 
 import numpy as np
 
+import receiver
 from receiver import MjpegHandler, SharedPreview, format_tracking_health
 
 
@@ -27,6 +31,61 @@ class ReceiverPreviewTests(unittest.TestCase):
         encode.assert_not_called()
         self.assertEqual(shared.available, [0, 1, 2, 3, 4])
         self.assertEqual(shared.jpegs, {})
+        self.assertEqual(shared.generation, 0)
+
+    def test_quit_while_connecting_ends_without_a_retry_or_timeout_error(self) -> None:
+        shared = SharedPreview()
+
+        def connect(address, timeout):
+            shared.running = False
+            raise ConnectionRefusedError()
+
+        log = io.StringIO()
+        with (mock.patch.object(sys, "argv", ["receiver.py", "--no-window", "--no-labels"]),
+              mock.patch.object(receiver, "SharedPreview", return_value=shared),
+              mock.patch.object(receiver, "start_mjpeg_server"),
+              mock.patch.object(receiver, "console_keyboard_worker"),
+              mock.patch.object(receiver.socket, "create_connection", side_effect=connect) as attempt,
+              mock.patch.object(receiver.time, "sleep") as sleep,
+              redirect_stdout(log)):
+            self.assertEqual(receiver.main(), 0)
+        attempt.assert_called_once()
+        sleep.assert_not_called()
+        self.assertIn("STOP_REQUESTED", log.getvalue())
+
+    def test_first_camera_rate_excludes_setup_and_connection_wait(self) -> None:
+        # Eight seconds to start, then 25 arrivals spanning exactly one second.
+        # The first sample anchors the clock; the remaining 24 are intervals.
+        clock = [0.0]
+        payload = bytes(400 * 400)
+
+        def packets():
+            for index in range(25):
+                clock[0] = 8 + index / 24
+                yield receiver.HEADER.pack(receiver.MAGIC, 3, receiver.HEADER.size, index,
+                                           int(clock[0] * 1e9), 400, 400, 400, 1, len(payload), 1, 0)
+                yield payload
+            raise receiver.StopRequested("fixture complete")
+
+        stream = packets()
+        def receive(target):
+            data = next(stream)
+            target[:] = data
+            return len(data)
+
+        sock = mock.Mock()
+        sock.recv_into.side_effect = receive
+        log = io.StringIO()
+        with (mock.patch.object(sys, "argv", ["receiver.py", "--no-window", "--no-labels"]),
+              mock.patch.object(receiver, "start_mjpeg_server"),
+              mock.patch.object(receiver, "console_keyboard_worker"),
+              mock.patch.object(receiver.socket, "create_connection", return_value=sock),
+              mock.patch.object(receiver.time, "perf_counter", side_effect=lambda: clock[0]),
+              redirect_stdout(log)):
+            self.assertEqual(receiver.main(), 0)
+        health = [line for line in log.getvalue().splitlines() if line.startswith("TRACKING_HEALTH ")]
+        self.assertEqual(len(health), 1)
+        self.assertIn("camera_fps=24.0 ", health[0])
 
     def test_selected_client_follows_camera_changes(self) -> None:
         shared = SharedPreview()
@@ -67,6 +126,25 @@ class ReceiverPreviewTests(unittest.TestCase):
         with mock.patch("receiver.cv2.imencode") as encode:
             shared.update(self.strip, [0, 1, 2, 3, 4])
         encode.assert_not_called()
+
+    def test_idle_stream_does_not_repeat_last_frame(self) -> None:
+        shared = SharedPreview(available=[3], jpegs={"camera3": b"jpeg"})
+        handler = MjpegHandler.__new__(MjpegHandler)
+        handler.shared, handler.path = shared, "/selected.mjpg"
+        handler.send_response = handler.send_header = handler.end_headers = mock.Mock()
+        handler.wfile = mock.Mock()
+
+        events = iter(("frame", "timeout", "stop"))
+
+        def wait_for_event(predicate, timeout):
+            if next(events) == "stop":
+                shared.running = False
+            return predicate()
+
+        with mock.patch.object(shared.lock, "wait_for", side_effect=wait_for_event):
+            handler.do_GET()
+        self.assertEqual(handler.wfile.write.call_args_list.count(mock.call(b"jpeg")), 1)
+        self.assertEqual(shared.subscribers, {})
 
     def test_selected_strip_and_missing_camera_need_no_extra_encodes(self) -> None:
         shared = SharedPreview(selected="strip")

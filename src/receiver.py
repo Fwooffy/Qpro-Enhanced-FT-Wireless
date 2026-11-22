@@ -216,12 +216,12 @@ class FrameReplayStats:
     recent: deque[int] = field(default_factory=lambda: deque(maxlen=12))
     suspected_replays: int = 0
 
-    def add(self, payload: bytes) -> bool:
+    def add(self, payload: bytes | memoryview) -> bool:
         fingerprint = zlib.crc32(payload)
         replayed = bool(
             len(self.recent) >= 2
             and fingerprint != self.recent[-1]
-            and fingerprint in list(self.recent)[:-1]
+            and fingerprint in self.recent
         )
         if replayed:
             self.suspected_replays += 1
@@ -268,6 +268,9 @@ class SharedPreview:
             self.available = list(camera_ids)
             if self.selected != "strip" and self.selected not in camera_ids:
                 self.selected = camera_ids[0]
+            if not self.subscribers:
+                self.jpegs.clear()
+                return
             requested = {
                 self.selected_key() if key == "selected" else key
                 for key in self.subscribers
@@ -342,7 +345,7 @@ class MjpegHandler(http.server.BaseHTTPRequestHandler):
         try:
             while self.shared.running:
                 with self.shared.lock:
-                    self.shared.lock.wait_for(
+                    changed = self.shared.lock.wait_for(
                         lambda: not self.shared.running
                         or (self.shared.generation != generation
                             and bool(self.shared.jpegs)),
@@ -350,6 +353,8 @@ class MjpegHandler(http.server.BaseHTTPRequestHandler):
                     )
                     if not self.shared.running:
                         break
+                    if not changed:
+                        continue
                     key = (self.shared.selected_key()
                            if requested == "selected" else requested)
                     jpeg = self.shared.jpegs.get(key)
@@ -726,8 +731,8 @@ def main() -> int:
     fps = 0.0
     interval_bytes = 0
     throughput_mbps = 0.0
-    fps_started = time.perf_counter()
-    transport_report_at = fps_started
+    fps_started = None
+    transport_report_at = 0.0
     last_sequence: int | None = None
     sequence_gap = 0
     stream_gap_stats = StreamGapStats()
@@ -765,7 +770,7 @@ def main() -> int:
     last_pupil_status = 0.0
     last_tongue_status = None
     last_tongue_completed = 0
-    last_health_status = fps_started
+    last_health_status = 0.0
     last_health_completed = 0
     pupil_seen = False
     open_source_window_name = "Quest Pro open-source model preview"
@@ -1134,16 +1139,20 @@ def main() -> int:
             if last_sequence is not None and sequence > last_sequence + 1:
                 sequence_gap += sequence - last_sequence - 1
             last_sequence = sequence
-            frames += 1
-            interval_bytes += HEADER.size + payload_size
             now = time.perf_counter()
-            elapsed = now - fps_started
+            if fps_started is None:
+                # Model loading and the first packet have no frame interval.
+                fps_started = transport_report_at = last_health_status = payload_received_at
+            else:
+                frames += 1
+                interval_bytes += HEADER.size + payload_size
+            elapsed = payload_received_at - fps_started
             if elapsed >= 1.0:
                 fps = frames / elapsed
                 throughput_mbps = interval_bytes / elapsed / 1_000_000
                 frames = 0
                 interval_bytes = 0
-                fps_started = now
+                fps_started = payload_received_at
 
             if (tongue_still_session is not None or tongue_model_preview is not None or pupil_worker is not None) and now - transport_report_at >= 5.0:
                 source_gaps, arrival_gaps = stream_gap_stats.summaries()
