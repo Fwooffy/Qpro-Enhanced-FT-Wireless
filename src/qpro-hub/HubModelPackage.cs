@@ -8,6 +8,55 @@ namespace QproFaceTracking.Hub;
 
 internal static class HubModelPackage
 {
+    private const string Format = "qpro-tongue-model-package-v1";
+    private const long MaxCheckpointBytes = 268_435_456;
+
+    internal static void Export(string package, string gatePath, string directionPath, int version,
+        string displayName, JsonObject? metadata)
+    {
+        string destination = Path.GetFullPath(package);
+        if (destination.Equals(Path.GetFullPath(gatePath), StringComparison.OrdinalIgnoreCase) ||
+            destination.Equals(Path.GetFullPath(directionPath), StringComparison.OrdinalIgnoreCase))
+            throw new IOException("Choose an export file other than the model's gate or direction checkpoint.");
+
+        using var gate = File.OpenRead(gatePath);
+        using var direction = File.OpenRead(directionPath);
+        if (!ValidCheckpointSize(gate.Length) || !ValidCheckpointSize(direction.Length))
+            throw new InvalidDataException("The paired model is empty or too large to export.");
+
+        var manifest = new JsonObject
+        {
+            ["format"] = Format,
+            ["displayName"] = displayName,
+            ["sourceVersion"] = version,
+            ["createdUtc"] = DateTimeOffset.UtcNow.ToString("O"),
+        };
+        HubModelMetadata.CopyPortableDetails(metadata, manifest);
+
+        string staging = Path.Combine(Path.GetDirectoryName(destination)!, ".qpro-export-" + Guid.NewGuid().ToString("N") + ".tmp");
+        bool ownsStaging = false;
+        try
+        {
+            using (var output = new FileStream(staging, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                ownsStaging = true;
+                using var archive = new ZipArchive(output, ZipArchiveMode.Create);
+                using (var writer = new StreamWriter(archive.CreateEntry("manifest.json").Open(), Encoding.UTF8))
+                    writer.Write(manifest.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+                using (var entry = archive.CreateEntry("gate.pt", CompressionLevel.Optimal).Open())
+                    gate.CopyTo(entry);
+                using (var entry = archive.CreateEntry("direction.pt", CompressionLevel.Optimal).Open())
+                    direction.CopyTo(entry);
+            }
+            File.Move(staging, destination, overwrite: true);
+            ownsStaging = false;
+        }
+        finally
+        {
+            if (ownsStaging) File.Delete(staging);
+        }
+    }
+
     internal static int NextVersion(string models)
     {
         int maximum = 0;
@@ -38,8 +87,8 @@ internal static class HubModelPackage
         {
             using var archive = ZipFile.OpenRead(package);
             ZipArchiveEntry? gate = archive.GetEntry("gate.pt"), direction = archive.GetEntry("direction.pt");
-            if (gate is null || direction is null || gate.Length <= 0 || direction.Length <= 0 ||
-                gate.Length > 268_435_456 || direction.Length > 268_435_456)
+            if (gate is null || direction is null || !ValidCheckpointSize(gate.Length) ||
+                !ValidCheckpointSize(direction.Length))
                 throw new InvalidDataException("This package does not contain a valid, reasonably sized paired model.");
             ZipArchiveEntry? entry = archive.GetEntry("manifest.json");
             if (entry is null || entry.Length > 262_144)
@@ -47,7 +96,7 @@ internal static class HubModelPackage
             using var reader = new StreamReader(entry.Open(), Encoding.UTF8);
             JsonObject manifest = JsonNode.Parse(reader.ReadToEnd())?.AsObject()
                 ?? throw new InvalidDataException("The model package manifest is invalid.");
-            if (manifest["format"]?.GetValue<string>() != "qpro-tongue-model-package-v1")
+            if (manifest["format"]?.GetValue<string>() != Format)
                 throw new InvalidDataException("This model package format is not supported.");
             gate.ExtractToFile(Path.Combine(staging, "gate.pt"), false);
             direction.ExtractToFile(Path.Combine(staging, "direction.pt"), false);
@@ -78,4 +127,6 @@ internal static class HubModelPackage
             Directory.Delete(fullStaging, true);
         }
     }
+
+    private static bool ValidCheckpointSize(long bytes) => bytes is > 0 and <= MaxCheckpointBytes;
 }

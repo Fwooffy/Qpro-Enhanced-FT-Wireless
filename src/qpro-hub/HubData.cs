@@ -2,11 +2,9 @@ using System.Diagnostics;
 using System.ComponentModel;
 using System.Drawing.Imaging;
 using System.Drawing.Drawing2D;
-using System.IO.Compression;
 using System.Media;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -262,11 +260,6 @@ internal sealed partial class HubForm
 
     private bool IsExperimentalTongueModel(int version) => IsExperimentalModelMetadata(ReadModelMetadata(version));
 
-    private static void CopyModelClassification(JsonObject? source, JsonObject destination)
-    {
-        HubModelMetadata.CopyPortableDetails(source, destination);
-    }
-
     private void WriteModelMetadata(int version, string displayName, string? datasetPath, string origin, JsonObject? classification = null)
     {
         var existing = ReadModelMetadata(version);
@@ -321,29 +314,26 @@ internal sealed partial class HubForm
     {
         if (_modelList.SelectedItem is not FileChoice model) { MessageBox.Show(this, "Select a tongue model first."); return; }
         var version = VersionFromPath(model.Primary);
+        var metadata = ReadModelMetadata(version);
+        var displayName = ModelFriendlyName(version, metadata);
         using var dialog = new SaveFileDialog
         {
             Title = "Export tongue model",
             Filter = "Qpro tongue model (*.qptonguemodel)|*.qptonguemodel",
-            FileName = SafeFileName(ModelFriendlyName(version, ReadModelMetadata(version))) + ".qptonguemodel",
+            FileName = SafeFileName(displayName) + ".qptonguemodel",
             AddExtension = true,
             DefaultExt = "qptonguemodel"
         };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        if (File.Exists(dialog.FileName)) File.Delete(dialog.FileName);
-        using var archive = ZipFile.Open(dialog.FileName, ZipArchiveMode.Create);
-        var manifest = new JsonObject
+        try
         {
-            ["format"] = "qpro-tongue-model-package-v1",
-            ["displayName"] = ModelFriendlyName(version, ReadModelMetadata(version)),
-            ["sourceVersion"] = version,
-            ["createdUtc"] = DateTimeOffset.UtcNow.ToString("O")
-        };
-        CopyModelClassification(ReadModelMetadata(version), manifest);
-        using (var writer = new StreamWriter(archive.CreateEntry("manifest.json").Open(), Encoding.UTF8)) writer.Write(manifest.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-        archive.CreateEntryFromFile(model.Primary, "gate.pt", CompressionLevel.Optimal);
-        archive.CreateEntryFromFile(model.Secondary!, "direction.pt", CompressionLevel.Optimal);
-        AppendLog($"Exported “{model.Label}” to {dialog.FileName}.");
+            HubModelPackage.Export(dialog.FileName, model.Primary, model.Secondary!, version, displayName, metadata);
+            AppendLog($"Exported “{model.Label}” to {dialog.FileName}.");
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            MessageBox.Show(this, error.Message, "Model export failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private void ImportModel()
@@ -352,7 +342,6 @@ internal sealed partial class HubForm
         using var dialog = new OpenFileDialog { Title = "Import tongue model", Filter = "Qpro tongue model (*.qptonguemodel)|*.qptonguemodel", CheckFileExists = true };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var models = Path.Combine(_root, "models");
-        Directory.CreateDirectory(models);
         try
         {
             var version = HubModelPackage.NextVersion(models);

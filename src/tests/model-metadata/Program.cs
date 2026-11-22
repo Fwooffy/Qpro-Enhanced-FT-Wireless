@@ -10,6 +10,12 @@ try
         if (!value) throw new InvalidOperationException(message);
         checks++;
     }
+    void ExpectFailure<T>(Action action, string message) where T : Exception
+    {
+        try { action(); }
+        catch (T) { checks++; return; }
+        throw new InvalidOperationException(message);
+    }
     var trained = new JsonObject
     {
         ["modelKind"] = "camera-cheeks-experimental", ["hasCameraCheeks"] = true,
@@ -134,6 +140,63 @@ try
         Check(!File.Exists(Path.Combine(models, "qpro-stereo-tongue-v42-gate.pt")), "rollback left its own partial gate");
         Check(!File.Exists(Path.Combine(models, "qpro-stereo-tongue-v42.metadata.json")), "rollback left misleading metadata");
         Check(!Directory.EnumerateDirectories(models, ".qpro-import-*").Any(), "private import staging was not cleaned");
+
+        string exportedPackage = Path.Combine(fixture, "exported.qptonguemodel");
+        string gate = Path.Combine(models, "qpro-stereo-tongue-v41-gate.pt");
+        string direction = Path.Combine(models, "qpro-stereo-tongue-v41-direction.pt");
+        File.WriteAllText(exportedPackage, "previous incomplete export");
+        HubModelPackage.Export(exportedPackage, gate, direction, 41, "Combined export", trained);
+        byte[] completeArchive = File.ReadAllBytes(exportedPackage);
+        string missing = Path.Combine(fixture, "missing-direction.pt");
+        ExpectFailure<FileNotFoundException>(
+            () => HubModelPackage.Export(exportedPackage, gate, missing, 41, "Combined export", trained),
+            "an export with a missing checkpoint unexpectedly succeeded");
+        string empty = Path.Combine(fixture, "empty-direction.pt");
+        File.WriteAllBytes(empty, []);
+        ExpectFailure<InvalidDataException>(
+            () => HubModelPackage.Export(exportedPackage, gate, empty, 41, "Combined export", trained),
+            "an export with an empty checkpoint unexpectedly succeeded");
+        Check(completeArchive.SequenceEqual(File.ReadAllBytes(exportedPackage)), "failed export replaced a good backup");
+        if (OperatingSystem.IsWindows())
+        {
+            bool blocked = false;
+            using (File.OpenRead(exportedPackage))
+            {
+                try { HubModelPackage.Export(exportedPackage, gate, direction, 41, "Locked", trained); }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { blocked = true; }
+            }
+            Check(blocked, "an export unexpectedly replaced an open destination that denies deletion");
+            Check(completeArchive.SequenceEqual(File.ReadAllBytes(exportedPackage)), "locked export changed the existing backup");
+        }
+        ExpectFailure<IOException>(
+            () => HubModelPackage.Export(gate, gate, direction, 41, "Combined export", trained),
+            "an export could overwrite one of its own checkpoints");
+        Check(!Directory.EnumerateFiles(fixture, ".qpro-export-*.tmp").Any(), "export staging was not cleaned");
+
+        string corrupt = Path.Combine(fixture, "corrupt.qptonguemodel");
+        File.WriteAllText(corrupt, "incomplete archive");
+        ExpectFailure<InvalidDataException>(
+            () => HubModelPackage.Import(corrupt, models, 43, source => source),
+            "corrupt package unexpectedly imported");
+        Check(HubModelPackage.NextVersion(models) == 43, "corrupt package left files that reserved a local version");
+        Check(!Directory.EnumerateDirectories(models, ".qpro-import-*").Any(), "corrupt import staging was not cleaned");
+        JsonObject exportedManifest = HubModelPackage.Import(exportedPackage, models, 43,
+            source => HubModelMetadata.Create(43, "Combined export", null, "imported package", null, source));
+        Check(exportedManifest["sourceVersion"]?.GetValue<int>() == 41, "export lost the source version");
+        Check(exportedManifest["displayName"]?.GetValue<string>() == "Combined export", "export lost the display name");
+        Check(HubModelMetadata.IsMustachio(exportedManifest) && HubModelMetadata.HasCameraCheeks(exportedManifest),
+            "export lost the original model classification");
+        Check(exportedManifest["capturePath"] is null, "export leaked local capture metadata");
+        Check(File.ReadAllText(Path.Combine(models, "qpro-stereo-tongue-v43-gate.pt")) == File.ReadAllText(gate),
+            "export round trip changed gate bytes");
+        Check(File.ReadAllText(Path.Combine(models, "qpro-stereo-tongue-v43-direction.pt")) == File.ReadAllText(direction),
+            "export round trip changed direction bytes");
+        string blockedModels = Path.Combine(fixture, "blocked-models");
+        File.WriteAllText(blockedModels, "existing file");
+        ExpectFailure<IOException>(
+            () => HubModelPackage.Import(exportedPackage, blockedModels, 1, source => source),
+            "import unexpectedly replaced an existing file with its models directory");
+        Check(File.ReadAllText(blockedModels) == "existing file", "failed import changed an existing file");
     }
     finally
     {
