@@ -57,10 +57,46 @@ internal sealed class BufferedPanel : Panel
     }
 }
 
+// Defer intermediate table layouts while the Hub builds its detached page
+// tree. Release children before parents after attachment establishes the
+// inherited font and bounds. Normal layout resumes before initialization.
+internal sealed class HubLayoutConstructionScope : IDisposable
+{
+    [ThreadStatic] private static HubLayoutConstructionScope? _current;
+    private readonly HubLayoutConstructionScope? _previous = _current;
+    private readonly List<Control> _tables = [];
+    private bool _disposed;
+
+    internal HubLayoutConstructionScope() => _current = this;
+
+    internal static void Track(Control table)
+    {
+        if (_current is not { } scope) return;
+        table.SuspendLayout();
+        scope._tables.Add(table);
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _current = _previous;
+        static int Depth(Control control)
+        {
+            var depth = 0;
+            for (var parent = control.Parent; parent is not null; parent = parent.Parent) depth++;
+            return depth;
+        }
+        foreach (var table in _tables.OrderByDescending(Depth))
+            if (!table.IsDisposed) table.ResumeLayout(true);
+    }
+}
+
 internal sealed class BufferedTableLayoutPanel : TableLayoutPanel
 {
     public BufferedTableLayoutPanel()
     {
+        HubLayoutConstructionScope.Track(this);
         DoubleBuffered = true;
         SetStyle(ControlStyles.ResizeRedraw, true);
     }

@@ -119,10 +119,17 @@ internal sealed partial class HubForm : Form
     internal static readonly Color Good = Color.FromArgb(145, 228, 184);         // #91E4B8
     internal static readonly Color Warning = Color.FromArgb(240, 208, 138);      // #F0D08A
     internal static readonly Color Bad = Color.FromArgb(243, 141, 133);          // #F38D85
-    private static readonly string UiFontName = FontFamily.Families.Any(font => font.Name.Equals("Lexend", StringComparison.OrdinalIgnoreCase)) ? "Lexend" : "Segoe UI";
+    private static readonly string UiFontName = ResolveUiFontName();
+
+    private static string ResolveUiFontName()
+    {
+        using var probe = new Font("Lexend", 9f);
+        return probe.Name.Equals("Lexend", StringComparison.OrdinalIgnoreCase) ? "Lexend" : "Segoe UI";
+    }
 
     private readonly bool _previewOnly;
     private readonly System.ComponentModel.Container _uiComponents = new();
+    private readonly System.Windows.Forms.Timer _setupProgressTimer;
 
     private bool _interactiveResize;
     private bool _paintingSizeTransition;
@@ -259,7 +266,7 @@ internal sealed partial class HubForm : Form
             Location = new Point(workArea.Left + (workArea.Width - Width) / 2, workArea.Top + (workArea.Height - Height) / 2);
         };
 
-        Controls.Add(BuildLayout());
+        using (new HubLayoutConstructionScope()) Controls.Add(BuildLayout());
         InitializeTrackingHealthUi();
         InitializeTrackingSourceUi();
         InitializeControllerInputUi();
@@ -416,17 +423,16 @@ internal sealed partial class HubForm : Form
             }
         };
         if (!previewOnly) pulseTimer.Start();
-        var setupProgressTimer = new System.Windows.Forms.Timer(_uiComponents) { Interval = 45 };
-        setupProgressTimer.Tick += (_, _) =>
+        _setupProgressTimer = new System.Windows.Forms.Timer(_uiComponents) { Interval = 45 };
+        _setupProgressTimer.Tick += (_, _) =>
         {
             if (WindowState != FormWindowState.Minimized && _setupProgress.Visible && _setupProgress.IsIndeterminate)
                 _setupProgress.AdvanceAnimation();
         };
-        if (!previewOnly) setupProgressTimer.Start();
         FormClosed += (_, _) =>
         {
             EndCheekTrackingSession();
-            timer.Stop(); pulseTimer.Stop(); setupProgressTimer.Stop();
+            timer.Stop(); pulseTimer.Stop(); _setupProgressTimer.Stop();
         };
         Disposed += (_, _) =>
         {

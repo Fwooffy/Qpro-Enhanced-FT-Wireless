@@ -430,6 +430,7 @@ internal sealed partial class HubForm
         _setupActionRunning = true;
         _setupProgressContainer.Visible = true;
         _setupProgress.IsIndeterminate = true;
+        if (!_previewOnly) _setupProgressTimer.Start();
         _setupProgress.Value = 0;
         _setupProgressStatus.Text = label.Equals("PC runtime setup", StringComparison.OrdinalIgnoreCase)
             ? "Installing and verifying the private PC runtime… This can take several minutes."
@@ -442,6 +443,7 @@ internal sealed partial class HubForm
     private void FinishSetupProgress(bool succeeded, string label)
     {
         _setupActionRunning = false;
+        _setupProgressTimer.Stop();
         _setupProgress.IsIndeterminate = false;
         _setupProgress.Value = succeeded ? 100 : 0;
         _setupProgressStatus.Text = succeeded ? label + " completed successfully." : _actionTitle.Text + ". " + _actionNext.Text;
