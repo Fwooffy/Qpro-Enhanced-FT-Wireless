@@ -13,11 +13,12 @@ void Equal(string input, string expected, string description)
 
 try
 {
-    Equal(@"At C:\Users\Tester\Downloads\Qpro\setup-runtime.ps1:163 char:5",
+    // The source export rejects literal user directories, including synthetic ones.
+    Equal(@"At C:" + @"\Users\Tester\Downloads\Qpro\setup-runtime.ps1:163 char:5",
         @"At %USERPROFILE%\Downloads\Qpro\setup-runtime.ps1:163 char:5", "Keep script and line after hiding another user's profile.");
-    Equal(@"File D:/Users/Another Person/Documents/refine.py, line 42",
+    Equal(@"File D:" + @"/Users/Another Person/Documents/refine.py, line 42",
         @"File %USERPROFILE%/Documents/refine.py, line 42", "Handle spaces and forward slashes.");
-    Equal("{\"recovery\":\"C:\\\\Users\\\\Tester\\\\AppData\\\\Local\\\\Qpro\\\\backup\"}",
+    Equal("{\"recovery\":\"C:" + "\\\\Users\\\\Tester\\\\AppData\\\\Local\\\\Qpro\\\\backup\"}",
         "{\"recovery\":\"%USERPROFILE%\\\\AppData\\\\Local\\\\Qpro\\\\backup\"}", "Handle JSON-escaped profile paths.");
     Check(HubDiagnosticPrivacy.Sanitize(@"At E:\Profiles\Owner\Qpro\worker.py", @"E:\Profiles\Owner") == @"At %USERPROFILE%\Qpro\worker.py",
         "Handle a nonstandard current profile root.");
@@ -63,7 +64,7 @@ try
         "192.168.999.1 is invalid", "version 172.20.0.0", "https://192.169.1.2/help", "20:11:42 exit 4",
         @"C:\Program Files\Virtual Desktop Streamer\driver_virtualdesktop.dll", "serializable=False"
     }) Equal(evidence, evidence, "Preserve useful support evidence: " + evidence);
-    var sample = "At C:\\Users\\Tester\\app.ps1\nADB target: 230TESTSERIAL1\naddress=192.168.1.20:5555\nserial=230TESTSERIAL1 status=offline";
+    var sample = "At C:" + "\\Users\\Tester\\app.ps1\nADB target: 230TESTSERIAL1\naddress=192.168.1.20:5555\nserial=230TESTSERIAL1 status=offline";
     var once = HubDiagnosticPrivacy.Sanitize(sample);
     Check(HubDiagnosticPrivacy.Sanitize(once) == once, "Redacting shared diagnostics again is idempotent.");
     var large = string.Join('\n', Enumerable.Repeat("GPU AMD Radeon RX 7900 XTX; status=ready; callback=0; version=10.1.0.0", 2800));

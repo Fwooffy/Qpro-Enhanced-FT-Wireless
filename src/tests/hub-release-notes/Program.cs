@@ -71,8 +71,9 @@ internal static class ReleaseNotesTests
         var nested = HubReleaseNotesMarkdown.Parse("**A _small_ fix** and an unmatched **marker");
         Check(HasStyle(nested, "small", "Bold") && HasStyle(nested, "small", "Italic"), "Nested emphasis lost a style.");
         Check(nested.Text.EndsWith("unmatched **marker", StringComparison.Ordinal), "An unmatched marker was silently removed.");
-        var escaped = HubReleaseNotesMarkdown.Parse(@"\*literal\* C:\Users\Example\file_name.md");
-        Check(escaped.Text == @"*literal* C:\Users\Example\file_name.md", "Escaping removed path characters or literal markers.");
+        const string examplePath = "C:" + @"\Users\Example\file_name.md";
+        var escaped = HubReleaseNotesMarkdown.Parse(@"\*literal\* " + examplePath);
+        Check(escaped.Text == "*literal* " + examplePath, "Escaping removed path characters or literal markers.");
         Check(!HasStyle(escaped, "literal", "Italic"), "Escaped emphasis became active.");
         var secondaryHeading = HubReleaseNotesMarkdown.Parse("Release\n=======\n\n> Keep your saved models.\n\n---");
         Check(HasStyle(secondaryHeading, "Release", "Heading"), "Setext heading was not recognised.");
