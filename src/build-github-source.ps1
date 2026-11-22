@@ -185,6 +185,7 @@ $sourceFiles = @(
     "RELEASE_NOTES_V3.0.1.md",
     "RELEASE_NOTES_V3.0.2.md",
     "RELEASE_NOTES_V3.0.3.md",
+    "RELEASE_NOTES_V3.0.4.md",
     "RELEASE_FIX_NOTES.md",
     "UPDATER_MIGRATION_NOTES.md",
     "RELEASE_INSTRUCTIONS.md",

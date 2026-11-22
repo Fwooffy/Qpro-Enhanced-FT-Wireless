@@ -124,7 +124,9 @@ try {
         Assert-Equal $true ($listedSources -contains ('shared\' + $shared.Name)) 'Every shared C# dependency exported'
     }
     foreach ($required in @('test_rocm_environment_isolation.ps1', 'test_vrcft_module_preflight.ps1',
-        'release-package.ps1', 'companion_lifecycle.py', 'RELEASE_NOTES_V3.0.2.md', 'RELEASE_NOTES_V3.0.3.md')) {
+        'camera-transport-recovery.ps1', 'test_camera_transport_recovery.ps1', 'test_camera_transport_status.py',
+        'test_relay_listener_startup.ps1', 'test_wireless_camera_identity.ps1',
+        'release-package.ps1', 'companion_lifecycle.py', 'RELEASE_NOTES_V3.0.2.md', 'RELEASE_NOTES_V3.0.3.md', 'RELEASE_NOTES_V3.0.4.md')) {
         Assert-Equal $true ($listedSources -contains $required) "Public regression inventory: $required"
     }
     Assert-Equal $true ($actualExport -contains 'tests\test-release-package.ps1') 'Release ZIP regression exported with its helper'
