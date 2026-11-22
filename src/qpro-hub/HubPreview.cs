@@ -15,7 +15,7 @@ internal sealed partial class HubForm
         if (!_previewOnly) throw new InvalidOperationException("Sample scenarios require preview mode.");
         if (scenario is not ("ready" or "unsupported" or "runtime-error" or "magisk" or
             "hands-ready" or "hands-blocked" or "hands-unknown" or "hands-modes" or "hands-swipe" or "hands-driver-unknown" or
-            "streamer-paused" or "health-live" or "setup-connect" or "setup-runtime" or "setup-module" or "setup-complete"))
+            "streamer-paused" or "health-live" or "setup-connect" or "setup-runtime" or "setup-module" or "setup-source-switch" or "setup-complete"))
             throw new ArgumentException("Unknown preview scenario: " + scenario);
         if (source is not ("VirtualDesktop" or "SteamLink"))
             throw new ArgumentException("Unknown preview source: " + source);

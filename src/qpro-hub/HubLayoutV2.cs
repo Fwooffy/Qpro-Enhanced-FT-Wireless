@@ -754,19 +754,19 @@ internal sealed partial class HubForm
                 return;
             }
             if (MessageBox.Show(this,
-                    "Remove the Qpro module from VRCFaceTracking and restore any Virtual Desktop modules saved by this Qpro copy?\n\nPersonal tongue models and captures will stay in place.",
+                    "Remove the Qpro module and restore verified source modules saved before Qpro was installed? Existing modules at their original locations will not be overwritten.\n\nPersonal tongue models and captures will stay in place.",
                     "Uninstall Qpro module", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
                 return;
             await RunSetupStepAsync("Uninstall Qpro module", "uninstall-vrcft-eye-bridge.ps1",
                 "The Qpro VRCFaceTracking module has been removed.",
-                "Restart VRCFaceTracking. If normal Virtual Desktop face tracking is missing, install its official module again.");
+                "Restart VRCFaceTracking. Activity shows which saved source modules were restored and any recovery steps still needed.");
         };
         _setupGazeButton.Click += async (_, _) => await PrepareGazeAsync();
         _recoverGazeButton.Click += async (_, _) => await RecoverGazeAsync();
         _inspectGazeButton.Click += async (_, _) => await InspectGazeAsync();
         _resetLegacyGazeButton.Click += async (_, _) => await ResetLegacyGazeAsync();
         var runtimeCard = (TableLayoutPanel)SetupStepCard("2", "Install the PC runtime", "Installs Qpro's private Python and tracking libraries. Keep the Hub open until the downloads finish. Activity keeps the full log.", _setupRuntimeStatus, _setupRuntimeButton);
-        var moduleCard = (TableLayoutPanel)SetupStepCard("3", "Install your VRCFaceTracking module", "Installing replaces the other Qpro source module.",
+        var moduleCard = (TableLayoutPanel)SetupStepCard("3", "Install your VRCFaceTracking module", "Qpro keeps one source module installed, matching the streaming app above.",
             _setupBridgeStatus, _setupBridgeButton, _setupSteamLinkModuleButton);
         var moduleDescription = moduleCard.GetControlFromPosition(0, 3)!;
         moduleCard.Controls.Remove(moduleDescription);
@@ -777,7 +777,7 @@ internal sealed partial class HubForm
         // Reparented controls can retain their old table row metadata. Give
         // each row explicitly so the selector stays before the safety copy.
         moduleChoices.Controls.Add(setupSource, 0, 0);
-        var closeVrcftBeforeInstall = Info("Close VRCFaceTracking and wait for its ModuleProcess helper to exit before installing.");
+        var closeVrcftBeforeInstall = Info("Close VRCFaceTracking and wait for ModuleProcess to exit. Qpro automatically backs up and removes recognized Virtual Desktop or Steam Link source modules before installing. Use Restore stock VRCFT in Activity to restore saved modules later.");
         closeVrcftBeforeInstall.ForeColor = Warning;
         closeVrcftBeforeInstall.Margin = new Padding(0, 2, 0, 6);
         moduleChoices.Controls.Add(closeVrcftBeforeInstall, 0, 1);
@@ -809,7 +809,7 @@ internal sealed partial class HubForm
         var moduleMaintenance = new BufferedTableLayoutPanel { Dock = DockStyle.Top, AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, Margin = Padding.Empty };
         moduleMaintenance.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        moduleMaintenance.Controls.Add(Info("Close VRCFaceTracking before removing its Qpro module. Your personal models and recordings stay in place."));
+        moduleMaintenance.Controls.Add(Info("Close VRCFaceTracking before removing Qpro. Verified source-module backups are restored when their original locations are free. Your personal models and recordings stay in place."));
         moduleMaintenance.Controls.Add(_uninstallBridgeButton);
         var modulePreviewHint = Info("After installation, reopen VRCFaceTracking and check expressions in its source preview. Then choose your features on Facial tracking.");
         modulePreviewHint.Margin = new Padding(0, 8, 0, 0);

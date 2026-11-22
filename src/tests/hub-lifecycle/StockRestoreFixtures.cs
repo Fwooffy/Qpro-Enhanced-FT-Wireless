@@ -35,7 +35,7 @@ internal static class StockRestoreFixtures
         var result = HubSetupResult.Create("uninstall-vrcft-eye-bridge.ps1", [])!;
         result.Observe("""QPRO_MODULE_UNINSTALL {"removed":1,"restored":0,"remainingQpro":0,"recoveryIssues":[]}""");
         if (result.Failure() is not null || result.UninstalledModuleCounts is not { Removed: 1, Restored: 0 } ||
-            !HubForm.StockRestoreSummary(1, 0).Contains("No official module backup was restored."))
+            !HubForm.StockRestoreSummary(1, 0).Contains("No source-module backup was restored."))
             throw new Exception("A missing backup must not be described as restoring an official module.");
         Console.WriteLine("PASS: Activity reset placement, tracking cleanup, host and helper gates, and missing backup feedback");
     }

@@ -149,15 +149,17 @@ internal sealed partial class HubForm
     private void UpdateSetupStepStylesFromSnapshot(HubStatusSnapshot? snapshot)
     {
         if (_previewOnly) return;
-        var ready = new[] { snapshot?.RuntimeReady ?? BackendReady(), snapshot?.Module.IsCurrent ?? CurrentBridgeInstalled() };
+        var module = snapshot?.Module ?? _environment.InspectModuleInstallation();
+        var ready = new[] { snapshot?.RuntimeReady ?? BackendReady(), module.IsCurrent };
         var next = Array.FindIndex(ready, value => !value);
         StyleSetupStep(_setupRuntimeButton, _setupRuntimeStatus, "Install runtime", ready[0], next == 0);
         StyleSetupButton(_setupBridgeButton, "Install Virtual Desktop module",
             ready[1] && !_environment.SteamLinkSelected, next == 1 && !_environment.SteamLinkSelected);
         StyleSetupButton(_setupSteamLinkModuleButton, "Install Steam Link module",
             ready[1] && _environment.SteamLinkSelected, next == 1 && _environment.SteamLinkSelected);
-        _setupBridgeStatus.Text = ready[1] ? "● Module files installed" : next == 1 ? "● Next step" : "○ Waiting";
-        _setupBridgeStatus.ForeColor = ready[1] ? Good : next == 1 ? Warning : Muted;
+        _setupBridgeStatus.Text = ready[1] ? "● Module files installed" : module.State == HubModuleState.SourceReplacement
+            ? "● Existing source will be backed up" : next == 1 ? "● Next step" : "○ Waiting";
+        _setupBridgeStatus.ForeColor = ready[1] ? Good : next == 1 || module.State == HubModuleState.SourceReplacement ? Warning : Muted;
         _uninstallBridgeButton.Enabled = !_setupActionRunning && (snapshot?.BridgeUninstallAvailable ?? BridgeUninstallAvailable());
         UpdateGazeSetupStatus();
         var installedVersion = snapshot is not null ? snapshot.RocmInstalledVersion : LatestRocmInstalledVersion();

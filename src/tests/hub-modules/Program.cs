@@ -13,25 +13,54 @@ if (args.Length == 4 && args[0] == "--inspect")
     Console.WriteLine(JsonSerializer.Serialize(HubModuleInstallation.Inspect(args[1], args[2], args[3] == "SteamLink")));
     return;
 }
-if (args.Length != 1 || !File.Exists(args[0]) || AssemblyName.GetAssemblyName(args[0]).Name != "Qpro.GazeBridge")
-    throw new Exception("Pass an existing packaged Qpro DLL for copying and metadata inspection. No DLL is loaded or executed.");
+if (args.Length is not (1 or 4) || !File.Exists(args[0]) || AssemblyName.GetAssemblyName(args[0]).Name != "Qpro.GazeBridge")
+    throw new Exception("Pass an existing packaged Qpro DLL, optionally followed by the three named foreign-source fixture DLLs. No DLL is loaded or executed.");
 var fixture = Path.Combine(Path.GetTempPath(), "qpro-module-detection-" + Guid.NewGuid().ToString("N"));
 var customLibs = Path.Combine(fixture, "CustomLibs");
 Directory.CreateDirectory(customLibs);
 var research = Path.Combine(fixture, "research");
 Directory.CreateDirectory(research);
-Check(!HubModuleInstallation.HasSavedBackups(research), "An empty research folder enabled uninstall.");
+var sourceRecovery = Path.Combine(fixture, "module-recovery");
+Check(!HubModuleInstallation.HasSavedBackups(research, sourceRecovery), "An empty research folder enabled uninstall.");
 Directory.CreateDirectory(Path.Combine(research, "vrcft-qpro-module-uninstall-backup-fixture"));
 Directory.CreateDirectory(Path.Combine(research, "vrcft-official-virtual-desktop-backup-unrelated"));
-Check(!HubModuleInstallation.HasSavedBackups(research), "Rollback copies or unrelated names enabled uninstall.");
+Check(!HubModuleInstallation.HasSavedBackups(research, sourceRecovery), "Rollback copies or unrelated names enabled uninstall.");
 foreach (var name in new[] { "vrcft-legacy-registry-module-backup", "vrcft-official-virtual-desktop-backup",
     "vrcft-official-virtual-desktop-backup-20260101-120000", "vrcft-official-virtual-desktop-backup-0123456789abcdef0123456789abcdef" })
 {
     var path = Path.Combine(research, name);
     Directory.CreateDirectory(path);
-    Check(HubModuleInstallation.HasSavedBackups(research), "A recognized recovery folder did not enable uninstall: " + name);
+    Check(HubModuleInstallation.HasSavedBackups(research, sourceRecovery), "A recognized recovery folder did not enable uninstall: " + name);
     Directory.Delete(path);
 }
+Directory.CreateDirectory(sourceRecovery);
+var sourceBackup = Path.Combine(sourceRecovery, "vrcft-qpro-module-switch-backup-0123456789abcdef0123456789abcdef");
+Directory.CreateDirectory(sourceBackup);
+var sourceReceipt = Path.Combine(sourceBackup, "source-modules.json");
+foreach (var state in new[] { "prepared", "committed" })
+{
+    File.WriteAllText(sourceReceipt, JsonSerializer.Serialize(new { format = "qpro-source-module-backup-v1", state }));
+    Check(HubModuleInstallation.HasSavedBackups(research, sourceRecovery) && !HubModuleInstallation.IsCurrent(customLibs, args[0], false),
+        "A durable " + state + " source backup did not expose recovery independently of tracking readiness.");
+}
+foreach (var state in new[] { "rolled-back", "restored" })
+{
+    File.WriteAllText(sourceReceipt, JsonSerializer.Serialize(new { format = "qpro-source-module-backup-v1", state }));
+    Check(!HubModuleInstallation.HasSavedBackups(research, sourceRecovery), "A consumed source transaction enabled recovery: " + state);
+}
+File.WriteAllText(sourceReceipt, "{broken");
+Check(HubModuleInstallation.HasSavedBackups(research, sourceRecovery), "A corrupt receipt hid the recovery action needed to review it.");
+File.WriteAllText(sourceReceipt, "{\"format\":\"qpro-source-module-backup-v1\",\"state\":\"committed\",\"state\":\"restored\"}");
+Check(HubModuleInstallation.HasSavedBackups(research, sourceRecovery), "Contradictory receipt states hid pending recovery.");
+File.WriteAllText(sourceReceipt, new string('x', 70000));
+Check(HubModuleInstallation.HasSavedBackups(research, sourceRecovery), "A receipt below the helper's one-megabyte limit hid recovery.");
+File.WriteAllText(sourceReceipt, new string('x', 1048577));
+Check(!HubModuleInstallation.HasSavedBackups(research, sourceRecovery), "An oversized recovery receipt enabled discovery.");
+File.WriteAllText(sourceReceipt, "{broken");
+for (var index = 0; index < 512; index++) File.WriteAllText(Path.Combine(sourceRecovery, index + ".fixture"), "");
+Check(!HubModuleInstallation.HasSavedBackups(research, sourceRecovery), "An oversized recovery inventory was traversed.");
+for (var index = 0; index < 512; index++) File.Delete(Path.Combine(sourceRecovery, index + ".fixture"));
+File.Delete(sourceReceipt); Directory.Delete(sourceBackup);
 var supplied = Path.Combine(fixture, "packaged", "Qpro.GazeBridge.dll");
 Directory.CreateDirectory(Path.GetDirectoryName(supplied)!);
 File.Copy(args[0], supplied);
@@ -57,6 +86,156 @@ Check(!HubModuleInstallation.HasInstalled(customLibs) && !HubModuleInstallation.
 var missing = HubModuleInstallation.Inspect(customLibs, supplied, false);
 Check(missing.State == HubModuleState.Missing && missing.ExpectedDirectory == Path.Combine(customLibs, HubModuleInstallation.VirtualDesktopId) &&
     missing.Detail.Contains("First-time setup") && missing.Detail.Contains("reopen VRCFaceTracking"), "Missing module guidance omitted the current installer folder or next step.");
+foreach (var other in new[]
+{
+    (Id: "91a90618-b020-4064-8832-809b2ca2b3bc", Name: "Virtual Desktop", Dll: "VirtualDesktop.FaceTracking.dll"),
+    (Id: "2a8c8080-2a76-46af-bf76-1da7c0127ef8", Name: "Steam Link", Dll: "VRCFT-SteamLink.dll"),
+})
+{
+    var otherFolder = Path.Combine(customLibs, other.Id);
+    Directory.CreateDirectory(otherFolder);
+    var otherDll = Path.Combine(otherFolder, other.Dll);
+    var otherCard = Path.Combine(otherFolder, "module.json");
+    File.WriteAllText(otherDll, "A foreign source fixture; never loaded.");
+    File.WriteAllText(otherCard, JsonSerializer.Serialize(new
+    {
+        ModuleId = other.Id, ModuleName = other.Name, DllFileName = other.Dll, IsLocal = false, Version = "1.5",
+    }));
+    var cardBefore = File.ReadAllBytes(otherCard);
+    var dllBefore = File.ReadAllBytes(otherDll);
+    foreach (var steamLink in new[] { false, true })
+    {
+        var conflict = HubModuleInstallation.Inspect(customLibs, supplied, steamLink);
+        Check(conflict.State == HubModuleState.Conflict && conflict.Status == "Face source conflict" &&
+            conflict.Detail.Contains(otherFolder) && conflict.Detail.Contains("Remove the " + other.Name + " module through VRCFaceTracking") &&
+            conflict.Detail.Contains("close VRCFaceTracking, then retry"),
+            "A source-only installation sent the user to install Qpro instead of resolving " + other.Name + ".");
+        Check(!HubModuleInstallation.HasInstalled(customLibs) &&
+            conflict.ExpectedDirectory == Path.Combine(customLibs, steamLink ? HubModuleInstallation.SteamLinkId : HubModuleInstallation.VirtualDesktopId),
+            "A competing source module was claimed as Qpro-owned or replaced the expected installer destination.");
+    }
+    var invalidSelected = Path.Combine(customLibs, HubModuleInstallation.VirtualDesktopId);
+    Directory.CreateDirectory(invalidSelected);
+    Check(HubModuleInstallation.Inspect(customLibs, supplied, false).State == HubModuleState.Invalid,
+        "A conflicting foreign source hid an invalid selected Qpro module folder.");
+    Directory.Delete(invalidSelected);
+    var existingQpro = InstallFixture(customLibs, supplied, false);
+    Check(HubModuleInstallation.Inspect(customLibs, supplied, false).State == HubModuleState.Conflict,
+        "An already-installed Qpro source ignored the competing " + other.Name + " module.");
+    File.Delete(Path.Combine(existingQpro, "000-Qpro.VirtualDesktop.dll"));
+    File.Delete(Path.Combine(existingQpro, "module.json"));
+    Directory.Delete(existingQpro);
+    Check(File.ReadAllBytes(otherCard).AsSpan().SequenceEqual(cardBefore) &&
+        File.ReadAllBytes(otherDll).AsSpan().SequenceEqual(dllBefore),
+        "Read-only prechecks changed a foreign module card or DLL.");
+    File.Delete(otherDll); File.Delete(otherCard); Directory.Delete(otherFolder);
+}
+var unrelatedOnly = Path.Combine(customLibs, "98973b67-7d93-4caf-b072-3c13bf96e694");
+Directory.CreateDirectory(unrelatedOnly);
+var unrelatedCard = Path.Combine(unrelatedOnly, "module.json");
+var unrelatedDll = Path.Combine(unrelatedOnly, "OtherFeature.dll");
+File.WriteAllText(unrelatedCard, "{\"ModuleName\":\"Eye movement\",\"ModuleDescription\":\"Works with Virtual Desktop\"}");
+File.WriteAllText(unrelatedDll, "An unrelated feature fixture; never loaded.");
+var unrelatedCardBefore = File.ReadAllText(unrelatedCard);
+Check(HubModuleInstallation.Inspect(customLibs, supplied, false).State == HubModuleState.Missing &&
+    !HubModuleInstallation.HasInstalled(customLibs), "An unrelated module alone was mistaken for a competing face source.");
+Check(File.ReadAllText(unrelatedCard) == unrelatedCardBefore && File.Exists(unrelatedDll),
+    "Inspecting an unrelated module changed its files.");
+File.Delete(unrelatedDll); File.Delete(unrelatedCard); Directory.Delete(unrelatedOnly);
+if (args.Length == 4)
+{
+    var profiles = new[]
+    {
+        (Id: "91a90618-b020-4064-8832-809b2ca2b3bc", Name: "Virtual Desktop", Author: "Virtual Desktop, Inc.", Assembly: "VirtualDesktop.FaceTracking", Source: args[1]),
+        (Id: "2a8c8080-2a76-46af-bf76-1da7c0127ef8", Name: "SteamLink VRCFT Module", Author: "Ykeara", Assembly: "SteamLinkVRCFTModule", Source: args[2]),
+        (Id: "b146eda9-be48-4016-ab63-680a694064bd", Name: "SteamLink VRCFT", Author: "danwillm", Assembly: "SLExtTrackingModule", Source: args[3]),
+    };
+    foreach (var profile in profiles)
+    {
+        Check(File.Exists(profile.Source) && AssemblyName.GetAssemblyName(profile.Source).Name == profile.Assembly,
+            "The source-module test fixture has the wrong assembly identity: " + profile.Assembly);
+        var otherFolder = Path.Combine(customLibs, profile.Id);
+        Directory.CreateDirectory(otherFolder);
+        var dllName = profile.Assembly + ".dll";
+        var dll = Path.Combine(otherFolder, dllName);
+        var card = Path.Combine(otherFolder, "module.json");
+        var configuration = Path.Combine(otherFolder, "settings.json");
+        var dependency = Path.Combine(otherFolder, "native-support.dll");
+        File.Copy(profile.Source, dll);
+        var validCard = JsonSerializer.Serialize(new
+        {
+            ModuleId = profile.Id, ModuleName = profile.Name, AuthorName = profile.Author,
+            DllFileName = dllName, Version = "1.5", IsLocal = false,
+        });
+        File.WriteAllText(card, validCard);
+        File.WriteAllText(configuration, "{\"retain\":true}");
+        File.WriteAllText(dependency, "A native dependency fixture; never loaded.");
+        var before = Directory.EnumerateFiles(otherFolder).ToDictionary(file => Path.GetFileName(file)!,
+            file => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(file))));
+        foreach (var steamLink in new[] { false, true })
+        {
+            var ready = HubModuleInstallation.Inspect(customLibs, supplied, steamLink);
+            Check(ready.State == HubModuleState.SourceReplacement && ready.Status == "Ready to switch source" &&
+                ready.Detail.Contains(otherFolder) && ready.Detail.Contains("verified recovery copy") && !ready.IsCurrent,
+                "A recognized provider was not offered a backed-up source switch: " + profile.Name);
+            Check(!HubModuleInstallation.HasInstalled(customLibs) &&
+                !HubModuleInstallation.TryGetInstalledSource(customLibs, steamLink, out _),
+                "A replaceable source provider was claimed as an installed Qpro module.");
+        }
+        File.WriteAllText(card, validCard.Replace("\"ModuleId\"", "\"moduleid\"", StringComparison.Ordinal)
+            .Replace(profile.Author, profile.Author.ToUpperInvariant(), StringComparison.Ordinal));
+        Check(HubModuleInstallation.Inspect(customLibs, supplied, false).State == HubModuleState.SourceReplacement,
+            "A supported provider's case-insensitive card spelling was rejected.");
+        File.WriteAllText(card, validCard);
+        var currentQpro = InstallFixture(customLibs, supplied, false);
+        Check(HubModuleInstallation.Inspect(customLibs, supplied, false).State == HubModuleState.SourceReplacement,
+            "An existing Qpro source prevented a recognized competing provider from being switched.");
+        File.Delete(Path.Combine(currentQpro, "000-Qpro.VirtualDesktop.dll"));
+        File.Delete(Path.Combine(currentQpro, "module.json")); Directory.Delete(currentQpro);
+        foreach (var invalid in new[]
+        {
+            validCard.Replace(profile.Author, "Unrecognized publisher", StringComparison.Ordinal),
+            validCard.Replace(profile.Name, "Unrecognized source module", StringComparison.Ordinal),
+            validCard.Replace(dllName, "../" + dllName, StringComparison.Ordinal),
+            validCard[..^1] + ",\"authorname\":\"" + profile.Author + "\"}",
+            "{broken", new string('x', 65537),
+        })
+        {
+            File.WriteAllText(card, invalid);
+            Check(HubModuleInstallation.Inspect(customLibs, supplied, false).State == HubModuleState.Conflict,
+                "Malformed or borrowed provider metadata enabled automatic replacement: " + profile.Name);
+        }
+        File.WriteAllText(card, validCard);
+        File.Copy(Assembly.GetExecutingAssembly().Location, dll, overwrite: true);
+        Check(HubModuleInstallation.Inspect(customLibs, supplied, false).State == HubModuleState.Conflict,
+            "Matching names without the expected assembly identity enabled source replacement.");
+        File.Copy(profile.Source, dll, overwrite: true);
+        var nested = Path.Combine(otherFolder, "nested"); Directory.CreateDirectory(nested);
+        var hiddenQpro = Path.Combine(nested, "copied-qpro.dll"); File.Copy(supplied, hiddenQpro);
+        File.SetAttributes(hiddenQpro, FileAttributes.Hidden);
+        Check(HubModuleInstallation.Inspect(customLibs, supplied, false).State == HubModuleState.Conflict,
+            "A nested hidden Qpro DLL allowed the foreign folder to be claimed for replacement.");
+        File.SetAttributes(hiddenQpro, FileAttributes.Normal); File.Delete(hiddenQpro); Directory.Delete(nested);
+        var unknownSource = Path.Combine(customLibs, "LinkFT.dll"); File.WriteAllText(unknownSource, "An unknown source fixture.");
+        Check(HubModuleInstallation.Inspect(customLibs, supplied, false).State == HubModuleState.Conflict,
+            "A recognized provider hid an unknown competing source.");
+        Check(File.ReadAllText(unknownSource) == "An unknown source fixture.", "Unknown mixed source files changed during inspection.");
+        File.Delete(unknownSource);
+        if (profile.Assembly == "VirtualDesktop.FaceTracking")
+        {
+            var inventory = Path.Combine(otherFolder, "inventory"); Directory.CreateDirectory(inventory);
+            for (var index = 0; index < 4092; index++) File.WriteAllText(Path.Combine(inventory, index + ".fixture"), "");
+            Check(HubModuleInstallation.Inspect(customLibs, supplied, false).State == HubModuleState.Conflict,
+                "An oversized recognized provider tree enabled automatic replacement.");
+            foreach (var file in Directory.EnumerateFiles(inventory)) File.Delete(file);
+            Directory.Delete(inventory);
+        }
+        Check(before.All(pair => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(otherFolder, pair.Key!)))) == pair.Value),
+            "Source-switch eligibility inspection changed the provider, its card, dependencies or settings.");
+        foreach (var file in Directory.EnumerateFiles(otherFolder)) File.Delete(file);
+        Directory.Delete(otherFolder);
+    }
+}
 var legacy = Path.Combine(customLibs, "000-Qpro.VirtualDesktop.dll");
 File.Copy(supplied, legacy);
 Check(HubModuleInstallation.HasInstalled(customLibs) && !HubModuleInstallation.IsCurrent(customLibs, supplied, false),
@@ -132,22 +311,34 @@ if (OperatingSystem.IsWindows())
     Directory.Delete(nestedModuleLink);
     Check(HubModuleInstallation.Inspect(customLibs, supplied, false).IsCurrent,
         "Removing the unrelated module link did not restore valid module readiness.");
-    var linkedOfficialSource = Path.Combine(customLibs, "91a90618-b020-4064-8832-809b2ca2b3bc");
-    MakeJunction(linkedOfficialSource, Path.GetDirectoryName(supplied)!);
-    Check(HubModuleInstallation.Inspect(customLibs, supplied, false).State == HubModuleState.Conflict,
-        "A known linked official source module was ignored.");
-    Directory.Delete(linkedOfficialSource);
+    foreach (var sourceId in new[] { "91a90618-b020-4064-8832-809b2ca2b3bc", "2a8c8080-2a76-46af-bf76-1da7c0127ef8", "b146eda9-be48-4016-ab63-680a694064bd" })
+    {
+        var linkedOfficialSource = Path.Combine(customLibs, sourceId);
+        MakeJunction(linkedOfficialSource, Path.GetDirectoryName(supplied)!);
+        Check(HubModuleInstallation.Inspect(customLibs, supplied, false).State == HubModuleState.Conflict,
+            "A known linked source module was ignored or became replaceable: " + sourceId);
+        Directory.Delete(linkedOfficialSource);
+    }
+    var recoveryTarget = Path.Combine(fixture, "source recovery target"); Directory.CreateDirectory(recoveryTarget);
+    var targetReceipt = Path.Combine(recoveryTarget, "source-modules.json");
+    File.WriteAllText(targetReceipt, "{\"format\":\"qpro-source-module-backup-v1\",\"state\":\"committed\"}");
+    MakeJunction(sourceBackup, recoveryTarget);
+    Check(!HubModuleInstallation.HasSavedBackups(research, sourceRecovery), "A linked source recovery transaction enabled recovery.");
+    Directory.Delete(sourceBackup);
+    var recoveryLink = Path.Combine(fixture, "linked source recovery"); MakeJunction(recoveryLink, sourceRecovery);
+    Check(!HubModuleInstallation.HasSavedBackups(research, recoveryLink), "A linked durable source recovery root enabled recovery.");
+    Directory.Delete(recoveryLink); File.Delete(targetReceipt); Directory.Delete(recoveryTarget);
     var linkedResearch = Path.Combine(fixture, "linked research");
     MakeJunction(linkedResearch, research);
     var knownBackup = Path.Combine(research, "vrcft-legacy-registry-module-backup");
     Directory.CreateDirectory(knownBackup);
-    Check(HubModuleInstallation.HasSavedBackups(linkedResearch),
+    Check(HubModuleInstallation.HasSavedBackups(linkedResearch, sourceRecovery),
         "Read-only backup discovery rejected a regular backup below a linked package ancestor.");
     Directory.Delete(knownBackup);
     var backupTarget = Path.Combine(fixture, "backup target");
     Directory.CreateDirectory(backupTarget);
     MakeJunction(knownBackup, backupTarget);
-    Check(!HubModuleInstallation.HasSavedBackups(linkedResearch), "A linked backup directory enabled uninstall.");
+    Check(!HubModuleInstallation.HasSavedBackups(linkedResearch, sourceRecovery), "A linked backup directory enabled uninstall.");
     Directory.Delete(knownBackup);
     Directory.Delete(linkedResearch);
     for (uint variant = 0; variant < 16; variant++)

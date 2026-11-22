@@ -43,6 +43,22 @@ internal sealed record HubActionFailure(string Title, string Detail, string Next
         // preflight errors also say to close VRCFT before reinstalling.
         if (Has("packaged Qpro module is missing or unreadable"))
             return new("A required app file is missing", "The module supplied with this app could not be read.", "Extract the entire ready-to-run release ZIP into a new folder, keeping your models and captures, then retry.");
+        var installingSourceModule = action.Equals("Install Virtual Desktop module", StringComparison.OrdinalIgnoreCase) ||
+            action.Equals("Install Steam Link module", StringComparison.OrdinalIgnoreCase);
+        if (Has("Automatic module backup and recovery require CustomLibs and Qpro's recovery folder on the same drive") &&
+            Has("No installed module files were changed") && !Has("Rollback needs attention"))
+            return new("Module storage needs manual review",
+                "The module and recovery folders are on different drives. Automatic switching stopped before changing installed modules.",
+                "Keep the existing modules installed. Copy diagnostics so this redirected folder layout can be checked before using automatic switching.");
+        if (installingSourceModule &&
+            Matches(@"Another\s+Virtual\s+Desktop\s+or\s+Steam\s+Link\s+(?:face\s+)?module\s+is\s+installed\s+at\b") &&
+            Matches(@"Qpro\s+left\s+those\s+files\s+unchanged\b") &&
+            !Has("Installing the Qpro ") && !Has("Rollback needs attention") && !Has("Recovery copies:"))
+            return new(Has("identity could not be verified for automatic backup") ? "Source module needs manual review" : "Another face-tracking module is installed",
+                Has("identity could not be verified for automatic backup")
+                    ? "Qpro could not verify one existing source module for automatic backup. The new Qpro module was not installed, and existing module files were left unchanged."
+                    : "An existing Virtual Desktop or Steam Link module is blocking installation. The new Qpro module was not installed, and existing module files were left unchanged.",
+                "Open VRCFaceTracking and uninstall the other Virtual Desktop or Steam Link module from its module list. Close VRCFaceTracking and wait for its module helper to exit, then retry " + action + " in First-time setup. Reopen VRCFaceTracking after installation.");
         if (Has("module was not found") || Has("module is not installed") || Has("module card needs repair") ||
             Has("selected module folder has no readable Qpro DLL") || Has("installed Qpro DLL differs") ||
             Has("module folder contains an unexpected DLL") || Has("only installed Qpro module") ||

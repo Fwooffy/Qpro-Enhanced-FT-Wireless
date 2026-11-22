@@ -8,7 +8,7 @@ using Microsoft.Win32.SafeHandles;
 
 namespace QproFaceTracking.Hub;
 
-internal enum HubModuleState { Missing, Legacy, WrongSource, Conflict, Invalid, UpdateNeeded, Current, Unreadable }
+internal enum HubModuleState { Missing, Legacy, WrongSource, Conflict, Invalid, UpdateNeeded, Current, Unreadable, SourceReplacement }
 internal sealed record HubModuleInspection(HubModuleState State, string Status, string Detail, string ExpectedDirectory)
 {
     internal bool IsCurrent => State == HubModuleState.Current;
@@ -22,7 +22,14 @@ internal static class HubModuleInstallation
     internal const string SteamLinkId = "5d5cb4f9-63d7-4e8f-9802-24a5d78ea6ee";
     internal const string LegacyId = "7f9be083-a4f1-4e30-b28a-8e6ec878d583";
     private static readonly string[] LegacyDlls = ["000-Qpro.VirtualDesktop.dll", "000-Qpro.SteamLink.dll", "000-Qpro.IndependentGaze.dll"];
-    private static readonly string[] OtherSourceIds = ["2a8c8080-2a76-46af-bf76-1da7c0127ef8", "91a90618-b020-4064-8832-809b2ca2b3bc", LegacyId];
+    private sealed record SourceProfile(string Id, string Name, string Author, string Dll, string Assembly);
+    private static readonly SourceProfile[] ReplacementProfiles =
+    [
+        new("91a90618-b020-4064-8832-809b2ca2b3bc", "Virtual Desktop", "Virtual Desktop, Inc.", "VirtualDesktop.FaceTracking.dll", "VirtualDesktop.FaceTracking"),
+        new("2a8c8080-2a76-46af-bf76-1da7c0127ef8", "SteamLink VRCFT Module", "Ykeara", "SteamLinkVRCFTModule.dll", "SteamLinkVRCFTModule"),
+        new("b146eda9-be48-4016-ab63-680a694064bd", "SteamLink VRCFT", "danwillm", "SLExtTrackingModule.dll", "SLExtTrackingModule"),
+    ];
+    private static readonly string[] OtherSourceIds = ReplacementProfiles.Select(profile => profile.Id).Append(LegacyId).ToArray();
     private static readonly Regex OtherSourceName = new(@"steam[ ._-]*link|linkft|virtual[ ._-]*desktop", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     internal static bool HasInstalled(string customLibs)
@@ -31,16 +38,17 @@ internal static class HubModuleInstallation
         catch (Exception error) when (IsInspectionError(error)) { return false; }
     }
 
-    internal static bool HasSavedBackups(string research)
+    internal static bool HasSavedBackups(string research, string? sourceRecoveryRoot = null)
     {
         try
         {
-            if (!ReadableSourcePath(research, directory: true)) return false;
-            return Directory.EnumerateDirectories(research).Any(path => !File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint) &&
+            if (ReadableSourcePath(research, directory: true) && Directory.EnumerateDirectories(research).Any(path => !File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint) &&
                 ReadableSourcePath(path, directory: true) &&
-                Regex.IsMatch(Path.GetFileName(path), @"^(vrcft-legacy-registry-module-backup|vrcft-official-virtual-desktop-backup(?:-\d{8}-\d{6}|-[0-9a-f]{32})?)$", RegexOptions.IgnoreCase));
+                Regex.IsMatch(Path.GetFileName(path), @"^(vrcft-legacy-registry-module-backup|vrcft-official-virtual-desktop-backup(?:-\d{8}-\d{6}|-[0-9a-f]{32})?)$", RegexOptions.IgnoreCase))) return true;
         }
-        catch (Exception error) when (IsInspectionError(error)) { return false; }
+        catch (Exception error) when (IsInspectionError(error)) { }
+        sourceRecoveryRoot ??= Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "QproFaceTracking", "module-recovery");
+        return HasSourceRecoveryReceipt(sourceRecoveryRoot);
     }
 
     internal static bool TryGetInstalledSource(string customLibs, bool legacySteamLink, out bool steamLink)
@@ -73,6 +81,25 @@ internal static class HubModuleInstallation
         var folder = Path.Combine(customLibs, id);
         HubModuleInspection Result(HubModuleState state, string status, string detail)
             => new(state, status, detail, folder);
+        HubModuleInspection SourceConflict(IReadOnlyList<string> paths)
+        {
+            if (paths.All(CanReplaceSourceModule))
+            {
+                var sources = paths.Select(path => ReplacementProfiles.First(profile =>
+                    profile.Id.Equals(Path.GetFileName(path), StringComparison.OrdinalIgnoreCase)).Name + " (" + path + ")");
+                return Result(HubModuleState.SourceReplacement, "Ready to switch source",
+                    $"Qpro can replace {string.Join("; ", sources)}. Close VRCFaceTracking, then install the Qpro {source} module in First-time setup. Qpro will save a verified recovery copy before replacing the existing source module. No files have been changed by this check.");
+            }
+            var names = paths.Select(path => Path.GetFileName(path).ToLowerInvariant() switch
+            {
+                "91a90618-b020-4064-8832-809b2ca2b3bc" => "the Virtual Desktop module",
+                "2a8c8080-2a76-46af-bf76-1da7c0127ef8" => "the Steam Link module",
+                "b146eda9-be48-4016-ab63-680a694064bd" => "the Steam Link module",
+                _ => "the other face source module",
+            }).Distinct(StringComparer.Ordinal).ToArray();
+            return Result(HubModuleState.Conflict, "Face source conflict",
+                $"Another Virtual Desktop or Steam Link face module is installed at {string.Join("; ", paths)}. Remove {string.Join(" and ", names)} through VRCFaceTracking, close VRCFaceTracking, then retry. Qpro left those files unchanged.");
+        }
         var repair = $"Close VRCFaceTracking, install the Qpro {source} module in First-time setup, then reopen VRCFaceTracking.";
         try
         {
@@ -85,7 +112,14 @@ internal static class HubModuleInstallation
                 if (Directory.Exists(folder) || File.Exists(folder))
                     return Result(HubModuleState.Invalid, "Module needs repair", $"The selected module folder has no readable Qpro DLL: {folder}. " + repair);
                 if (qproDlls.Count == 0)
+                {
+                    // A source conflict blocks installation even when no Qpro
+                    // module exists yet. Do not send users into an install loop.
+                    var otherSources = RegularPath(customLibs, directory: true)
+                        ? FindCompetingSourceModules(customLibs, folder) : [];
+                    if (otherSources.Count > 0) return SourceConflict(otherSources);
                     return Result(HubModuleState.Missing, "Setup needed", $"The Qpro {source} module was not found at {folder}. " + repair);
+                }
                 if (TryGetInstalledSource(customLibs, steamLink, out var installedSteamLink) && installedSteamLink != steamLink)
                     return Result(HubModuleState.WrongSource, "Different source installed",
                         $"The installed Qpro module uses {(installedSteamLink ? "Steam Link" : "Virtual Desktop")}, but this session selects {source}. " + repair);
@@ -105,8 +139,7 @@ internal static class HubModuleInstallation
                 return Result(HubModuleState.Invalid, "Module folder needs repair", $"The module folder contains a linked entry or exceeds its file inventory limit: {folder}. " + repair);
             var competingSources = FindCompetingSourceModules(customLibs, folder);
             if (competingSources.Count > 0)
-                return Result(HubModuleState.Conflict, "Face source conflict",
-                    $"Another Virtual Desktop or Steam Link face module is installed at {string.Join("; ", competingSources)}. Remove that other source module through VRCFaceTracking, close VRCFaceTracking, then retry. Qpro left those files unchanged.");
+                return SourceConflict(competingSources);
             var metadataPath = Path.Combine(folder, "module.json");
             if (!RegularPath(metadataPath, directory: false) || new FileInfo(metadataPath).Length > 65536)
                 return Result(HubModuleState.Invalid, "Module card needs repair", $"The module card is missing, linked or too large: {metadataPath}. " + repair);
@@ -181,6 +214,67 @@ internal static class HubModuleInstallation
         catch (Exception error) when (IsInspectionError(error)) { return false; }
     }
 
+    private static bool CanReplaceSourceModule(string path)
+    {
+        try
+        {
+            var profile = ReplacementProfiles.FirstOrDefault(candidate => candidate.Id.Equals(Path.GetFileName(path), StringComparison.OrdinalIgnoreCase));
+            if (profile is null || !RegularPath(path, directory: true) || !RegularModuleTree(path)) return false;
+            var cardPath = Path.Combine(path, "module.json");
+            if (!RegularPath(cardPath, directory: false) || new FileInfo(cardPath).Length > 65536) return false;
+            using var card = JsonDocument.Parse(File.ReadAllText(cardPath), new JsonDocumentOptions { MaxDepth = 8 });
+            if (card.RootElement.ValueKind != JsonValueKind.Object) return false;
+            var fields = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+            foreach (var field in card.RootElement.EnumerateObject())
+                if (!fields.TryAdd(field.Name, field.Value) || fields.Count > 32) return false;
+            bool Matches(string key, string expected) => fields.TryGetValue(key, out var value) &&
+                value.ValueKind == JsonValueKind.String && string.Equals(value.GetString(), expected, StringComparison.OrdinalIgnoreCase);
+            if (!Matches("ModuleId", profile.Id) || !Matches("ModuleName", profile.Name) ||
+                !Matches("AuthorName", profile.Author) || !Matches("DllFileName", profile.Dll)) return false;
+            var sourceDll = Path.Combine(path, profile.Dll);
+            if (!RegularPath(sourceDll, directory: false) ||
+                !string.Equals(AssemblyName.GetAssemblyName(sourceDll).Name, profile.Assembly, StringComparison.OrdinalIgnoreCase)) return false;
+            // A borrowed source folder may also contain an ad-hoc Qpro copy.
+            // The installer must not retire the same file under two identities.
+            return !Directory.EnumerateFiles(path, "*.dll", SearchOption.AllDirectories).Any(IsQproAssembly);
+        }
+        catch (Exception error) when (IsInspectionError(error)) { return false; }
+    }
+
+    private static bool HasSourceRecoveryReceipt(string root)
+    {
+        try
+        {
+            if (!RegularPath(root, directory: true)) return false;
+            var entries = new DirectoryInfo(root).EnumerateFileSystemInfos().Take(513).ToArray();
+            if (entries.Length > 512) return false;
+            foreach (var directory in entries.OfType<DirectoryInfo>())
+            {
+                if (!Regex.IsMatch(directory.Name, @"^vrcft-qpro-module-switch-backup-[0-9a-f]{32}$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) ||
+                    !RegularPath(directory.FullName, directory: true) || !RegularModuleTree(directory.FullName)) continue;
+                var receiptPath = Path.Combine(directory.FullName, "source-modules.json");
+                if (!RegularPath(receiptPath, directory: false) || new FileInfo(receiptPath).Length > 1048576) continue;
+                try
+                {
+                    using var receipt = JsonDocument.Parse(File.ReadAllText(receiptPath), new JsonDocumentOptions { MaxDepth = 8 });
+                    var data = receipt.RootElement;
+                    var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    if (data.ValueKind == JsonValueKind.Object && data.EnumerateObject().All(field => names.Add(field.Name)) &&
+                        data.TryGetProperty("format", out var format) &&
+                        format.ValueKind == JsonValueKind.String && format.GetString() == "qpro-source-module-backup-v1" &&
+                        data.TryGetProperty("state", out var state) && state.ValueKind == JsonValueKind.String &&
+                        state.GetString() is "rolled-back" or "restored") continue;
+                }
+                catch (Exception error) when (IsInspectionError(error)) { }
+                // Availability is not restoration proof. Corrupt receipts keep
+                // recovery reachable; the helper still validates before moving.
+                return true;
+            }
+            return false;
+        }
+        catch (Exception error) when (IsInspectionError(error)) { return false; }
+    }
+
     private static List<string> FindCompetingSourceModules(string customLibs, string ownFolder)
     {
         // Match the installer's source hints without loading unrelated DLLs.
@@ -198,7 +292,7 @@ internal static class HubModuleInstallation
             if (entry is not DirectoryInfo directory || !Guid.TryParseExact(directory.Name, "D", out _)) continue;
             if (directory.Attributes.HasFlag(FileAttributes.ReparsePoint))
             {
-                if (OtherSourceIds.Take(2).Contains(directory.Name, StringComparer.OrdinalIgnoreCase)) found.Add(directory.FullName);
+                if (ReplacementProfiles.Any(profile => profile.Id.Equals(directory.Name, StringComparison.OrdinalIgnoreCase))) found.Add(directory.FullName);
                 continue;
             }
             var dlls = directory.EnumerateFiles("*.dll", SearchOption.TopDirectoryOnly).Take(65).ToArray();

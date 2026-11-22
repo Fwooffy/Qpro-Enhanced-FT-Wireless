@@ -341,10 +341,10 @@ internal sealed partial class HubForm
         if (!succeeded) return;
         UpdateSetupStepStyles();
         await RefreshStatusAsync();
-        AppendLog($"The Qpro {sourceName} module is active on disk; the other Qpro source module was removed. Restart VRCFaceTracking to load it.");
+        AppendLog($"The Qpro {sourceName} module is active on disk. Any replaced source modules have verified recovery copies; see Activity for their location. Restart VRCFaceTracking to load Qpro.");
         PlaySfx("succeed.wav");
         MessageBox.Show(this,
-            $"The Qpro {sourceName} module is installed. The other Qpro source module was removed.\n\nReopen VRCFaceTracking and confirm expressions move in its preview. Choose your features on Facial tracking.\n\nUsing a Magisk independent-gaze module? Leave Independent Eye Gaze off in the Hub; Check gaze setup and Prepare gaze are not needed.",
+            $"The Qpro {sourceName} module is installed. Any replaced source modules have verified backups; their location is in Activity. Restore stock VRCFT can restore saved modules later.\n\nReopen VRCFaceTracking and confirm expressions move in its preview. Choose your features on Facial tracking.\n\nUsing a Magisk independent-gaze module? Leave Independent Eye Gaze off in the Hub; Check gaze setup and Prepare gaze are not needed.",
             "Setup step complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 

@@ -13,18 +13,19 @@ internal sealed partial class HubForm
             return;
         }
         bool connected = scenario != "setup-connect";
-        bool runtime = scenario is "setup-module" or "setup-complete";
+        bool switching = scenario == "setup-source-switch";
+        bool runtime = scenario is "setup-module" or "setup-source-switch" or "setup-complete";
         bool module = scenario == "setup-complete";
         SetStatus(_usbStatus, connected ? StatusKind.Good : StatusKind.Warning,
             connected ? "USB connected · sample" : "Not connected · sample");
         SetStatus(_runtimeStatus, runtime ? StatusKind.Good : StatusKind.Warning,
             runtime ? "Verified · sample" : "Setup needed · sample");
         SetStatus(_bridgeStatus, module ? StatusKind.Good : StatusKind.Warning,
-            module ? "Files match · sample" : "Setup needed · sample");
+            module ? "Files match · sample" : switching ? "Ready to switch source · sample" : "Setup needed · sample");
         SetStatus(_vrcftStatus, StatusKind.Warning, "Closed for setup · sample");
         _setupRuntimeStatus.Text = runtime ? "PC runtime verified · sample" : "Install needed · sample";
         _setupRuntimeStatus.ForeColor = runtime ? Good : Warning;
-        _setupBridgeStatus.Text = module ? "Module files installed · sample" : "Install needed · sample";
+        _setupBridgeStatus.Text = module ? "Module files installed · sample" : switching ? "Existing source will be backed up · sample" : "Install needed · sample";
         _setupBridgeStatus.ForeColor = module ? Good : Warning;
         _compatibilityIdentity.Text = "Headset compatibility has not been checked · sample";
         _compatibilitySummary.Text = "Optional features are checked separately.";
@@ -33,6 +34,7 @@ internal sealed partial class HubForm
         UpdateSetupNavigationReadiness(runtime, module);
         var next = !connected ? "Connect the rooted Quest Pro and allow USB debugging."
             : !runtime ? "Install the PC runtime. Keep the Hub open while it downloads."
+            : switching ? "Close VRCFaceTracking and install the selected Qpro module. The recognized source is backed up before removal."
             : !module ? "Choose your streaming app and install its Qpro module with VRCFaceTracking closed."
             : "Reopen VRCFaceTracking and confirm expressions move in its preview, then choose features on Facial tracking.";
         SetActionFeedback("Setup preview · sample data", "These are example setup states, not live device checks.", next);

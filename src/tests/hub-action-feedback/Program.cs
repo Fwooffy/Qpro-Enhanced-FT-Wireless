@@ -110,6 +110,40 @@ Expect("The installed Qpro DLL differs from this app's module, even if both show
 Expect("The selected Qpro DLL is not the only installed Qpro module. Close VRCFaceTracking, install the Qpro Virtual Desktop module in First-time setup, then reopen VRCFaceTracking.", "module needs installation or repair");
 Expect("An alternate or legacy Qpro module slot is still present: 000-Qpro.SteamLink.dll. Close VRCFaceTracking, install the Qpro Virtual Desktop module in First-time setup, then reopen VRCFaceTracking.", "module needs installation or repair");
 Expect("This app's packaged Qpro module is missing or unreadable. Extract the complete release ZIP, then retry.", "file is missing");
+var competingSource = "Another Virtual Desktop or Steam Link module is installed at C:\\QproFixture\\CustomLibs\\91a90618-b020-4064-8832-809b2ca2b3bc. Remove it through VRCFaceTracking, close VRCFaceTracking, then retry. Qpro left those files unchanged.";
+Expect(competingSource.Replace("Remove it", "Its identity could not be verified for automatic backup. Remove it"),
+    "Source module needs manual review", "Install Virtual Desktop module");
+foreach (var action in new[] { "Install Virtual Desktop module", "Uninstall Qpro module", "Restore stock VRCFT" })
+    Expect("Automatic module backup and recovery require CustomLibs and Qpro's recovery folder on the same drive. No installed module files were changed.",
+        "Module storage needs manual review", action);
+var wrappedCompetingSource = "21:15:45  [NORMAL] Starting Install Virtual Desktop module…\r\n" +
+    "21:15:46  [NORMAL] [Install Virtual Desktop module] Another Virtual Desktop or Steam Link module is installed at \r\n" +
+    "21:15:46  [NORMAL] [Install Virtual Desktop module] C:\\QproFixture\\CustomLibs\\91a90618-b020-4064-8832-809b2ca2b3bc. Remove it through \r\n" +
+    "21:15:46  [NORMAL] [Install Virtual Desktop module] VRCFaceTracking, close VRCFaceTracking, then retry. Qpro left those files unchanged.\r\n" +
+    "21:15:46  [ERROR] Install Virtual Desktop module finished with code 1.";
+foreach (var action in new[] { "Install Virtual Desktop module", "Install Steam Link module" })
+    foreach (var evidence in new[] { competingSource, wrappedCompetingSource,
+        competingSource.Replace("module is installed", "face module is installed", StringComparison.Ordinal) })
+    {
+        Expect(evidence, "Another face-tracking module", action);
+        var result = HubActionFailure.Explain(action, "exit 1", evidence);
+        if (!result.Detail.Contains("new Qpro module was not installed", StringComparison.Ordinal) ||
+            !result.Detail.Contains("left unchanged", StringComparison.Ordinal) ||
+            !result.NextStep.StartsWith("Open VRCFaceTracking and uninstall the other", StringComparison.Ordinal) ||
+            !result.NextStep.Contains("Close VRCFaceTracking and wait for its module helper to exit", StringComparison.Ordinal) ||
+            !result.NextStep.Contains("retry " + action, StringComparison.Ordinal) ||
+            !result.NextStep.Contains("Reopen VRCFaceTracking after installation", StringComparison.Ordinal))
+            throw new Exception("A source conflict must explain safe replacement in the correct order: " + result);
+    }
+Expect(competingSource, "did not complete", "Camera tracking");
+Expect("Another Virtual Desktop or Steam Link module is installed at C:\\QproFixture\\CustomLibs. The action failed before its unchanged state was confirmed.",
+    "did not complete", "Install Virtual Desktop module");
+foreach (var transactionFailure in new[]
+{
+    "Installing the Qpro Virtual Desktop module failed: injected transaction error. Recovery copies: C:\\QproFixture\\Recovery.",
+    "Rollback needs attention: failed to restore the prior module."
+})
+    Expect(competingSource + "\n" + transactionFailure, "did not complete", "Install Virtual Desktop module");
 Expect("An unrelated action failed. Close VRCFaceTracking before trying a replacement module.", "did not complete");
 Expect("PyTorch did not detect a supported discrete Radeon GPU", "GPU was not verified");
 Expect("AMD packages imported successfully, but the discrete GPU check failed. See the detected adapter, driver or device error above.", "GPU was not verified");

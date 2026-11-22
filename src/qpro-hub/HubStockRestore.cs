@@ -3,11 +3,11 @@ namespace QproFaceTracking.Hub;
 internal sealed partial class HubForm
 {
     private const string StockRestoreTitle = "Restore stock VRCFT";
-    private const string StockRestoreNext = "Reopen VRCFaceTracking. If your usual source is missing, install or enable its official module in VRCFaceTracking.";
+    private const string StockRestoreNext = "Reopen VRCFaceTracking. If your usual source is missing, install or enable its source module in VRCFaceTracking.";
 
     internal static string StockRestoreSummary(int removed, int restored)
         => (removed == 0 ? "No installed Qpro module was found." : $"Removed {removed} Qpro module {(removed == 1 ? "entry" : "entries")}.") + " " +
-           (restored == 0 ? "No official module backup was restored." : $"Restored {restored} saved module {(restored == 1 ? "backup" : "backups")}.");
+           (restored == 0 ? "No source-module backup was restored." : $"Restored {restored} saved module {(restored == 1 ? "backup" : "backups")}.");
 
     internal enum StockRestoreOutcome { CleanupUnconfirmed, HostOpen, HelperFailed, Completed }
 
@@ -31,7 +31,7 @@ internal sealed partial class HubForm
         bool stopRequired = LiveTrackingRunning || _trackingProcesses.Count != 0;
         if (MessageBox.Show(this,
                 (stopRequired ? "First, stop this Hub's live tracking overrides. " : "") +
-                "Remove the Qpro tracking modules from VRCFaceTracking on this PC? If there is a verified official module backup and its original location is free, the Hub will restore it. Close VRCFaceTracking and its module helper before continuing.\n\n" +
+                "Remove the Qpro tracking modules from VRCFaceTracking on this PC? Verified source-module backups will be restored when their original locations are free. Close VRCFaceTracking and its module helper before continuing.\n\n" +
                 "Your VRCFaceTracking settings, other modules, personal models and captures are kept. This does not disable headset Magisk modules.",
                 StockRestoreTitle, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
 
