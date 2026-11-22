@@ -75,8 +75,9 @@ def tongue_output_state(prediction: "TonguePrediction", enabled: bool) -> str:
     """Describe what the module can receive, rather than only the toggle."""
     if not enabled:
         return "off"
-    if (not np.isfinite(prediction.pipeline_ms)
-            or not 0.0 <= prediction.pipeline_ms <= TONGUE_MAX_PIPELINE_MS):
+    age = prediction.pipeline_ms + prediction.age_ms
+    if (not np.isfinite(age) or prediction.age_ms < 0 or prediction.pipeline_ms < 0
+            or age > TONGUE_MAX_PIPELINE_MS):
         return "stale"
     return "visible" if prediction.visible else "hidden"
 
@@ -307,6 +308,10 @@ class TongueBroadcaster:
     ) -> None:
         target = vrcft_tongue_values(prediction, target_names)
         now = time.perf_counter()
+        # The bridge has restored native tracking once our last packet expires.
+        # Treat the next packet as a fresh start so it cannot replay that pose.
+        if now > self._last_sent + TONGUE_MAX_PIPELINE_MS / 1000.0:
+            self._last_values = None
         elapsed = (
             now - self._last_sent
             if self._last_values is not None else self._first_interval
@@ -487,11 +492,15 @@ class LiveTongueModelPreview:
         self.visibility_mode = visibility_mode
         self._motion_filter = TongueMotionFilter(self.smoothing, self.target_names)
         self._visibility_hold = TongueVisibilityHold()
+        self._last_prediction_at: float | None = None
+        self._last_visibility_mode = visibility_mode
 
     def reset_temporal_state(self) -> None:
-        """Discard rejected frame history before accepting another camera pose."""
+        """Discard expired or rejected frame history before accepting another pose."""
         self._motion_filter = TongueMotionFilter(self.smoothing, self.target_names)
         self._visibility_hold = TongueVisibilityHold(self._visibility_hold.hold_seconds)
+        self._last_prediction_at = None
+        self._last_visibility_mode = self.visibility_mode
 
     def _inputs(
         self, strip: np.ndarray, image_size: int, preprocessing: str = "raw-v1"
@@ -568,6 +577,14 @@ class LiveTongueModelPreview:
             transfer_ms = (time.perf_counter() - transfer_started) * 1000.0
         completed_at = time.perf_counter()
         inference_ms = (completed_at - started) * 1000.0
+        if (self._last_prediction_at is not None
+                and completed_at > self._last_prediction_at + TONGUE_MAX_PIPELINE_MS / 1000.0):
+            self.reset_temporal_state()
+        elif self.visibility_mode != self._last_visibility_mode:
+            # A hold belongs to the visibility rule that admitted the pose.
+            self._visibility_hold = TongueVisibilityHold(self._visibility_hold.hold_seconds)
+        self._last_prediction_at = completed_at
+        self._last_visibility_mode = self.visibility_mode
         smoothed = self._motion_filter.update(values, completed_at)
         native, native_status = _native_tongue_reference(
             factory_sample, factory_names, time.monotonic_ns()
@@ -584,9 +601,8 @@ class LiveTongueModelPreview:
         visible, fused, output_values = self._visibility_hold.update(
             fused, self.threshold, smoothed, completed_at
         )
-        output_values = output_values.copy()
         return TonguePrediction(
-            values=output_values.copy(),
+            values=output_values,
             native_tongue_out=native,
             fused_visibility=fused,
             visible=visible,

@@ -11,7 +11,7 @@ import torch
 
 from tongue_model_preview import (
     LiveTongueModelPreview, TongueBroadcaster, TongueInferenceWorker,
-    TongueMotionFilter, TonguePrediction, smooth_tongue_output,
+    TONGUE_PACKET, TongueMotionFilter, TonguePrediction, smooth_tongue_output,
 )
 from gpu_readback import GPUReadbackCancelled
 
@@ -19,6 +19,90 @@ from gpu_readback import GPUReadbackCancelled
 class TongueResponsivenessTests(unittest.TestCase):
     names = ["visibility", "extension", "horizontal", "cheekPuffLeft", "cheekPuffRight"]
     default_alpha = 1.0 - 0.88 * 0.55
+
+    def _sequence_preview(self, poses, *, smoothing=0.12, visibility_mode="weighted"):
+        class Model(torch.nn.Module):
+            def forward(self, _inputs):
+                return torch.as_tensor([next(poses)], dtype=torch.float32)
+
+        poses = iter(poses)
+        checkpoint = {"targetNames": ["visibility", "extension", "horizontal"],
+                      "imageSize": 32, "modelState": {},
+                      "visibilityGate": {"cameraWeight": 0.6, "threshold": 0.5}}
+        with (mock.patch("tongue_model_preview.load_model_checkpoint", return_value=checkpoint),
+              mock.patch("tongue_model_preview.create_model", return_value=Model())):
+            return LiveTongueModelPreview("gate.pt", device_name="cpu", smoothing=smoothing,
+                                          visibility_mode=visibility_mode)
+
+    def test_expired_camera_stream_reacquires_only_the_current_pose(self):
+        strip = np.zeros((400, 800), np.uint8)
+        names = ["TongueOut"]
+        extended_left = (0.98, 0.8, -0.7)
+        extended_right = (0.92, 0.8, 0.7)
+        retracted = (0.08, 0.0, 0.0)
+        for prior, fresh in ((extended_left, retracted), (extended_left, extended_right),
+                             (retracted, extended_right)):
+            with self.subTest(prior=prior, fresh=fresh):
+                preview = self._sequence_preview([prior] * 12 + [fresh])
+                with mock.patch("tongue_model_preview.socket.socket") as socket:
+                    broadcaster = TongueBroadcaster(enabled=True)
+                try:
+                    for frame in range(12):
+                        now = 10 + frame / 24
+                        with (mock.patch("tongue_model_preview.time.perf_counter", return_value=now),
+                              mock.patch("tongue_model_preview.time.monotonic_ns", return_value=int(now * 1e9))):
+                            native = {"arrivalMonotonicNs": int(now * 1e9), "faceFlags": 1, "values": [1.0]}
+                            prediction = preview.predict(strip, native, names)
+                            broadcaster.send_prediction(prediction, preview.target_names)
+                    previous_values = TONGUE_PACKET.unpack(socket.return_value.sendto.call_args.args[0])[4:]
+                    self.assertAlmostEqual(previous_values[0], prior[1])
+                    self.assertAlmostEqual(previous_values[3], abs(prior[2]))
+
+                    restart = now + 0.301
+                    with (mock.patch("tongue_model_preview.time.perf_counter", return_value=restart),
+                          mock.patch("tongue_model_preview.time.monotonic_ns", return_value=int(restart * 1e9))):
+                        prediction = preview.predict(strip, native, names)
+                        broadcaster.send_prediction(prediction, preview.target_names)
+                    packet = TONGUE_PACKET.unpack(socket.return_value.sendto.call_args.args[0])
+                    self.assertEqual(packet[2], 1)
+                    self.assertEqual(prediction.native_status, "stale")
+                    self.assertEqual(prediction.visible, fresh == extended_right)
+                    np.testing.assert_array_equal(prediction.values, np.asarray(fresh, np.float32))
+                    self.assertEqual(packet[7], 0.0)  # No previous left direction on the wire.
+                    if prediction.visible:
+                        self.assertGreater(packet[8], 0.0)
+                        self.assertGreater(packet[4], 0.0)
+                    else:
+                        np.testing.assert_array_equal(packet[4:], np.zeros(12))
+                finally:
+                    broadcaster.close()
+
+    def test_packet_slew_restarts_only_after_bridge_freshness_expires(self):
+        visible = TonguePrediction(np.asarray([0.8]), 0, 1, True, 1)
+        hidden = replace(visible, visible=False)
+        for gap, has_previous_pose in ((0.299, True), (0.300, True), (0.301, False)):
+            with self.subTest(gap=gap), mock.patch("tongue_model_preview.socket.socket") as socket:
+                broadcaster = TongueBroadcaster(enabled=True)
+                try:
+                    with mock.patch("tongue_model_preview.time.perf_counter", side_effect=(10.0, 10.0 + gap)):
+                        broadcaster.send_prediction(visible, ["extension"])
+                        broadcaster.send_prediction(hidden, ["extension"])
+                    packet = TONGUE_PACKET.unpack(socket.return_value.sendto.call_args.args[0])
+                    self.assertEqual(packet[4] > 0, has_previous_pose)
+                finally:
+                    broadcaster.close()
+
+    def test_visibility_mode_switch_does_not_carry_a_previous_gate_hold(self):
+        preview = self._sequence_preview([(0.9, 0.8, 0.7), (0.9, 0.8, 0.7)],
+                                         visibility_mode="camera")
+        strip = np.zeros((400, 800), np.uint8)
+        with mock.patch("tongue_model_preview.time.perf_counter", return_value=10.0):
+            self.assertTrue(preview.predict(strip, None, []).visible)
+        preview.visibility_mode = "native"
+        with mock.patch("tongue_model_preview.time.perf_counter", return_value=10.04):
+            prediction = preview.predict(strip, None, [])
+        self.assertFalse(prediction.visible)
+        self.assertEqual(prediction.fused_visibility, 0.0)
 
     def test_stop_cancels_gpu_wait_without_publishing_or_worker_error(self):
         entered = threading.Event()

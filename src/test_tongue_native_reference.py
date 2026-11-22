@@ -109,9 +109,13 @@ class NativeTongueReferenceTests(unittest.TestCase):
 
 
 class TongueOutputStateTests(unittest.TestCase):
-    def prediction(self, *, visible=True, pipeline=20):
+    def prediction(self, *, visible=True, pipeline=20, age=0):
         return TonguePrediction(np.asarray([0.8], np.float32), 0, 0.9,
-                                visible, 4, pipeline_ms=pipeline)
+                                visible, 4, pipeline_ms=pipeline, age_ms=age)
+
+    def test_last_prediction_expires_even_if_inference_was_fast(self):
+        self.assertEqual(tongue_output_state(self.prediction(pipeline=8, age=292), True), "visible")
+        self.assertEqual(tongue_output_state(self.prediction(pipeline=8, age=293), True), "stale")
 
     def test_toggle_and_effective_output_are_distinct(self):
         self.assertEqual(tongue_output_state(self.prediction(), False), "off")
