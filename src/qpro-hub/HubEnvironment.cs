@@ -225,19 +225,19 @@ internal sealed class HubEnvironment
         var supplied = Path.Combine(_root, "vrcft-gaze-bridge", "bin", "Release", "net10.0", "Qpro.GazeBridge.dll");
         return HubModuleInstallation.IsCurrent(CustomLibsPath, supplied, SteamLinkSelected);
     }
-    internal bool BackendReady() => FindPythonRuntime() is not null;
+    internal bool BackendReady(bool allowPeriodicReprobe = true) => FindPythonRuntime(allowPeriodicReprobe) is not null;
     internal bool EyeModelReady()
     {
         var prepared = Path.Combine(_root, "research", "seacliff_eye_model");
         return File.Exists(Path.Combine(prepared, "bolt-independent-axes.ptl"))
             && File.Exists(Path.Combine(prepared, "bolt-independent-axes.manifest.json"));
     }
-    internal string? FindPythonRuntime()
+    internal string? FindPythonRuntime(bool allowPeriodicReprobe = true)
     {
         var configuredPython = Environment.GetEnvironmentVariable("QPRO_PYTHON");
         if (!string.IsNullOrWhiteSpace(configuredPython) && File.Exists(configuredPython))
         {
-            var configuredReady = VerifiedPythonRuntime(configuredPython, "configured", _configuredRuntimeProbe);
+            var configuredReady = VerifiedPythonRuntime(configuredPython, "configured", _configuredRuntimeProbe, allowPeriodicReprobe);
             if (configuredReady is not null) return configuredReady;
         }
         // A stale explicit override should not hide a healthy Qpro runtime.
@@ -256,7 +256,7 @@ internal sealed class HubEnvironment
             return marker?["format"]?.GetValue<string>() == "qpro-runtime-ready-v1"
                 && !string.IsNullOrWhiteSpace(recordedPython)
                 && string.Equals(Path.GetFullPath(recordedPython), Path.GetFullPath(sharedPython), StringComparison.OrdinalIgnoreCase)
-                ? VerifiedPythonRuntime(sharedPython, markerText, _sharedRuntimeProbe) : null;
+                ? VerifiedPythonRuntime(sharedPython, markerText, _sharedRuntimeProbe, allowPeriodicReprobe) : null;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException
             or JsonException or InvalidOperationException)
@@ -265,7 +265,7 @@ internal sealed class HubEnvironment
         }
     }
 
-    private string? VerifiedPythonRuntime(string python, string markerIdentity, RuntimeProbeState cache)
+    private string? VerifiedPythonRuntime(string python, string markerIdentity, RuntimeProbeState cache, bool allowPeriodicReprobe)
     {
         try
         {
@@ -287,10 +287,14 @@ internal sealed class HubEnvironment
                 // A changed readiness marker invalidates the cached result;
                 // timed retries also notice repairs made outside the Hub.
                 var retryAfter = cache.LastKnownReady ? TimeSpan.FromMinutes(5) : TimeSpan.FromSeconds(30);
+                // Leave an unchanged verified runtime alone during tracking.
+                // Do not reset StartedUtc: the next idle poll refreshes an
+                // overdue result. Failures and changed identities still retry.
                 // Importing PyTorch may take seconds. Start it off the UI thread,
                 // and reuse the result across the Hub's frequent status refreshes.
                 if (cache.Task is null ||
-                    (cache.Task.IsCompleted && now - cache.StartedUtc >= retryAfter))
+                    (cache.Task.IsCompleted && now - cache.StartedUtc >= retryAfter
+                        && (!cache.LastKnownReady || allowPeriodicReprobe)))
                 {
                     cache.StartedUtc = now;
                     cache.Task = Task.Run(() => ProbePythonRuntimeAsync(executable.FullName));

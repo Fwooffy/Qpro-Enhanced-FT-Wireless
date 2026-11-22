@@ -42,14 +42,14 @@ internal sealed partial class HubForm
         _previewStatusRefreshDependencies = new(readSnapshot, refreshHeartbeat);
     }
 
-    private HubStatusSnapshot ReadStatusSnapshot()
+    private HubStatusSnapshot ReadStatusSnapshot(bool allowRuntimeReprobe)
     {
         var steam = HubProcessProbe.AnyRunning("vrserver");
         var vrcft = HubProcessProbe.AnyRunning("VRCFaceTracking");
         var module = _environment.InspectModuleInstallation();
         var needsRestart = module.IsCurrent && vrcft && _environment.TrackingSourceRequiresVrcftRestart();
         var rocm = HubRocmRuntime.ReadStatus(_root, _amdGpuLatestTarget, _amdGpuLegacyEligible);
-        return new(steam, vrcft, module, needsRestart, _environment.BackendReady(), module.IsCurrent || BridgeUninstallAvailable(),
+        return new(steam, vrcft, module, needsRestart, _environment.BackendReady(allowRuntimeReprobe), module.IsCurrent || BridgeUninstallAvailable(),
             rocm.LatestReadyVersion, rocm.LegacyReady, rocm.LatestEnvironmentExists);
     }
 
@@ -78,7 +78,10 @@ internal sealed partial class HubForm
             await DetectMagiskGazeOnceAsync(quest);
             if (_closingInProgress || IsDisposed || Disposing || ContextChanged()) return;
             var dependencies = _previewStatusRefreshDependencies;
-            var snapshot = await (dependencies?.ReadSnapshot() ?? Task.Run(ReadStatusSnapshot));
+            // Capture process-list/transition state on the UI thread. The
+            // snapshot worker must not enumerate the mutable tracking list.
+            var allowRuntimeReprobe = !TrackingShutdownPending;
+            var snapshot = await (dependencies?.ReadSnapshot() ?? Task.Run(() => ReadStatusSnapshot(allowRuntimeReprobe)));
             if (_closingInProgress || IsDisposed || Disposing || ContextChanged()) return;
             await (dependencies?.RefreshHeartbeat(snapshot.VrcftRunning, snapshot.Module) ??
                 RefreshModuleHeartbeatAsync(snapshot.VrcftRunning, snapshot.Module));
@@ -340,12 +343,12 @@ internal sealed partial class HubForm
         return BridgeInstalled() || HubModuleInstallation.HasSavedBackups(Path.Combine(_root, "research"));
     }
     private bool CurrentBridgeInstalled() => _environment.CurrentBridgeInstalled();
-    private bool BackendReady() => !_previewOnly && _environment.BackendReady();
+    private bool BackendReady() => !_previewOnly && _environment.BackendReady(!TrackingShutdownPending);
     private bool EyeModelReady() => _environment.EyeModelReady();
     private string VisibilityModeValue() => _visibilityMode.SelectedIndex switch { 1 => "camera", 2 => "native", 3 => "agreement", _ => "weighted" };
     private string PupilSensitivityValue() => ((10 + 2 * Math.Max(0, _pupilSensitivity.SelectedIndex)) / 10.0)
         .ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
-    private string? FindPythonRuntime() => _previewOnly ? null : _environment.FindPythonRuntime();
+    private string? FindPythonRuntime() => _previewOnly ? null : _environment.FindPythonRuntime(!TrackingShutdownPending);
 
     private void UpdateControlState() => UpdateControlStateFromSnapshot(null);
 

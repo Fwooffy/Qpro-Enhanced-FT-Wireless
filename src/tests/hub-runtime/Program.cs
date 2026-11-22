@@ -65,23 +65,39 @@ try
     var cachedTask = cacheType.GetField("Task", PrivateInstance)!;
     var started = cacheType.GetField("StartedUtc", PrivateInstance)!;
     var verify = typeof(HubEnvironment).GetMethod("VerifiedPythonRuntime", PrivateInstance)!;
-    string? Verify(string marker = "fixture-v1") => (string?)verify.Invoke(environment, [Environment.ProcessPath!, marker, cache]);
+    string? Verify(string marker = "fixture-v1", bool allowPeriodicReprobe = true) => (string?)verify.Invoke(environment, [Environment.ProcessPath!, marker, cache, allowPeriodicReprobe]);
     async Task AwaitCachedProbe() => await ((Task<bool>)cachedTask.GetValue(cache)!).WaitAsync(TimeSpan.FromSeconds(8));
     Environment.SetEnvironmentVariable(ModeKey, "success");
     Check(Verify() is null, "first cache probe does not assume readiness");
     await AwaitCachedProbe();
     Check(Verify() == Environment.ProcessPath, "completed successful probe is cached");
+    var verifiedTask = cachedTask.GetValue(cache);
+    var overdue = DateTime.UtcNow.AddMinutes(-6);
+    started.SetValue(cache, overdue);
+    for (var poll = 0; poll < 5; poll++)
+        Check(Verify(allowPeriodicReprobe: false) == Environment.ProcessPath,
+            "busy tracking poll retains unchanged verified runtime");
+    Check(ReferenceEquals(verifiedTask, cachedTask.GetValue(cache)),
+        "busy tracking polls do not launch another Python import");
+    Check((DateTime)started.GetValue(cache)! == overdue,
+        "busy tracking leaves overdue retry time intact");
+    Check(Verify() == Environment.ProcessPath,
+        "first idle poll retains readiness while refreshing overdue runtime");
+    Check(!ReferenceEquals(verifiedTask, cachedTask.GetValue(cache)),
+        "first idle poll resumes overdue import verification");
+    await AwaitCachedProbe();
+    Check(Verify() == Environment.ProcessPath, "idle recheck finishes successfully");
     Environment.SetEnvironmentVariable(ModeKey, "failure");
     started.SetValue(cache, DateTime.UtcNow.AddMinutes(-6));
     Check(Verify() == Environment.ProcessPath, "periodic recheck preserves last verified result while pending");
     await AwaitCachedProbe();
-    Check(Verify() is null, "failed periodic recheck clears cached readiness");
+    Check(Verify(allowPeriodicReprobe: false) is null, "failed periodic recheck clears cached readiness even while busy");
     Environment.SetEnvironmentVariable(ModeKey, "success");
     started.SetValue(cache, DateTime.UtcNow.AddSeconds(-31));
-    Check(Verify() is null, "failure retry remains unverified while pending");
+    Check(Verify(allowPeriodicReprobe: false) is null, "failed runtime still retries while busy and remains unverified while pending");
     await AwaitCachedProbe();
     Check(Verify() == Environment.ProcessPath, "completed failure can retry and recover");
-    Check(Verify("fixture-v2") is null, "changed readiness marker immediately invalidates cache");
+    Check(Verify("fixture-v2", allowPeriodicReprobe: false) is null, "changed readiness marker immediately invalidates cache even while busy");
     await AwaitCachedProbe();
     Check(Verify("fixture-v2") == Environment.ProcessPath, "changed marker becomes ready after fresh verification");
 }
