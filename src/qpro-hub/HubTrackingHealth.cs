@@ -31,6 +31,7 @@ internal sealed class HubTrackingHealth
     internal double? InferenceMs { get; private set; }
     internal double? TransferMs { get; private set; }
     internal double? PupilMs { get; private set; }
+    private double? PupilWorkerCpuMs { get; set; }
     internal double? PupilAgeMs { get; private set; }
     internal long? DroppedFrames { get; private set; }
     internal long? PupilDroppedFrames { get; private set; }
@@ -73,7 +74,7 @@ internal sealed class HubTrackingHealth
         _cameraTimeout = 6.5;
         _tongue = _pupil = "warming";
         LowerFaceBackend = PupilBackend = "Waiting for backend";
-        CameraFps = InferenceFps = FrameAgeMs = ResultAgeMs = PipelineMs = DecodeMs = PreprocessMs = InferenceMs = TransferMs = PupilMs = PupilAgeMs = QueueP95Ms = null;
+        CameraFps = InferenceFps = FrameAgeMs = ResultAgeMs = PipelineMs = DecodeMs = PreprocessMs = InferenceMs = TransferMs = PupilMs = PupilWorkerCpuMs = PupilAgeMs = QueueP95Ms = null;
         DroppedFrames = PupilDroppedFrames = SourceSkips = null;
     }
 
@@ -141,6 +142,7 @@ internal sealed class HubTrackingHealth
         static string Metric(double? value) => value?.ToString("0.0", CultureInfo.InvariantCulture) ?? "unavailable";
         return $"Camera health: {CameraState}; tongue: {FeatureState("tongue")}; pupils: {FeatureState("pupil")}\n"
             + $"Lower-face backend: {LowerFaceBackend}; pupil backend: {PupilBackend}\n"
+            + $"Last pupil estimate: {Metric(PupilMs)} ms elapsed, {Metric(PupilWorkerCpuMs)} ms CPU on the pupil worker thread\n"
             + $"Last camera FPS: {Metric(CameraFps)}; inference FPS: {Metric(InferenceFps)}; processing delay ms: {Metric(PipelineMs)}; snapshot age seconds: {Metric(SnapshotAgeSeconds)}\n"
             + $"Last PC frame age ms: {Metric(FrameAgeMs)}; result age ms: {Metric(ResultAgeMs)}; pupil age ms: {Metric(PupilAgeMs)}\n"
             + $"Queue drops: {DroppedFrames?.ToString(CultureInfo.InvariantCulture) ?? "unavailable"}; pupil drops: {PupilDroppedFrames?.ToString(CultureInfo.InvariantCulture) ?? "unavailable"}; source skips: {SourceSkips?.ToString(CultureInfo.InvariantCulture) ?? "unavailable"}";
@@ -188,6 +190,7 @@ internal sealed class HubTrackingHealth
             _pupil = leftValid && rightValid ? "valid" : "invalid";
             _pupilAt = observedAt;
             PupilMs = Optional(fields, "processing_ms");
+            PupilWorkerCpuMs = Optional(fields, "worker_cpu_ms");
             PupilAgeMs = Optional(fields, "age_ms");
             PupilDroppedFrames = Count(fields, "dropped_frames");
             return true;
@@ -206,6 +209,7 @@ internal sealed class HubTrackingHealth
         DroppedFrames = dropped; _tongue = tongue; _pupil = pupil;
         _pupilAt = observedAt;
         PupilMs = Optional(fields, "pupil_ms"); PupilAgeMs = Optional(fields, "pupil_age_ms");
+        PupilWorkerCpuMs = Optional(fields, "pupil_worker_cpu_ms");
         PupilDroppedFrames = Count(fields, "pupil_dropped_frames");
         return true;
     }

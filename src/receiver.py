@@ -139,6 +139,7 @@ def format_tracking_health(
         f"dropped_frames={getattr(prediction, 'dropped_frames', 0)} "
         f"tongue={tongue} pupil={pupil} "
         f"pupil_ms={getattr(pupil_result, 'processing_ms', -1.0):.1f} "
+        f"pupil_worker_cpu_ms={getattr(pupil_result, 'worker_cpu_ms', -1.0):.1f} "
         f"pupil_age_ms={pupil_age:.1f} "
         f"pupil_dropped_frames={getattr(pupil_result, 'dropped_frames', 0)}"
     )

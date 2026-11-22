@@ -358,17 +358,21 @@ def encode_pupil_packet(values: tuple[float | None, float | None]) -> bytes:
 
 
 class PupilBroadcaster:
+    _interval = 1.0 / 24
+
     def __init__(self, port: int = 27277) -> None:
         self._address = ("127.0.0.1", port)
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._last_sent = 0.0
+        self._next_send = 0.0
 
     def send(self, values: tuple[float | None, float | None]) -> None:
         now = time.perf_counter()
-        if now - self._last_sent < 1 / 24:
+        if now < self._next_send:
             return
         self._socket.sendto(encode_pupil_packet(values), self._address)
-        self._last_sent = now
+        # Keep time against the 24 Hz schedule. A late prediction should not
+        # disqualify the next one. Allow at most a quarter-frame of credit.
+        self._next_send = max(self._next_send + self._interval, now + 0.75 * self._interval)
 
     def close(self) -> None:
         try:

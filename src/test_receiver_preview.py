@@ -108,7 +108,7 @@ class ReceiverPreviewTests(unittest.TestCase):
         self.assertIn("tongue=warming pupil=stale", text)
 
     def test_pupil_only_and_first_frame_health_keep_camera_metrics(self) -> None:
-        pupil = SimpleNamespace(age_ms=13.0, completed_at=9.99, processing_ms=11.0,
+        pupil = SimpleNamespace(age_ms=13.0, completed_at=9.99, processing_ms=11.0, worker_cpu_ms=2.5,
                                 dropped_frames=1, values=(5.1, 5.0))
         text = format_tracking_health(camera_fps=30, inference_fps=28,
             frame_age_ms=.2, decode_ms=.004, pupil_result=pupil, pupil_enabled=True, now=10)
@@ -116,14 +116,14 @@ class ReceiverPreviewTests(unittest.TestCase):
             "TRACKING_HEALTH camera_fps=30.0 inference_fps=28.0 frame_age_ms=0.2 "
             "decode_ms=0.004 preprocess_ms=-1.000 inference_ms=-1.0 transfer_ms=-1.000 "
             "pipeline_ms=-1.0 result_age_ms=-1.0 dropped_frames=0 tongue=off "
-            "pupil=valid pupil_ms=11.0 pupil_age_ms=23.0 pupil_dropped_frames=1")
+            "pupil=valid pupil_ms=11.0 pupil_worker_cpu_ms=2.5 pupil_age_ms=23.0 pupil_dropped_frames=1")
         text = format_tracking_health(camera_fps=30, inference_fps=0,
             frame_age_ms=.2, decode_ms=.004, pupil_enabled=True, now=10)
         self.assertEqual(text,
             "TRACKING_HEALTH camera_fps=30.0 inference_fps=0.0 frame_age_ms=0.2 "
             "decode_ms=0.004 preprocess_ms=-1.000 inference_ms=-1.0 transfer_ms=-1.000 "
             "pipeline_ms=-1.0 result_age_ms=-1.0 dropped_frames=0 tongue=off "
-            "pupil=warming pupil_ms=-1.0 pupil_age_ms=-1.0 pupil_dropped_frames=0")
+            "pupil=warming pupil_ms=-1.0 pupil_worker_cpu_ms=-1.0 pupil_age_ms=-1.0 pupil_dropped_frames=0")
 
 
 if __name__ == "__main__":

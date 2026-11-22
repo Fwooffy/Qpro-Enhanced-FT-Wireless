@@ -87,6 +87,10 @@ internal static class TrackingHealthTests
             "Receiver initial warmup did not show live frames while waiting for pupil output.");
         Check(health.Observe(pupilOnly) && health.CameraFresh && health.PipelineMs is null && health.InferenceMs is null
             && health.FeatureState("pupil") == TrackingSignalState.Live, "Receiver pupil-only unavailable timings invalidated live pupils.");
+        Check(health.DiagnosticText().Contains("unavailable ms CPU on the pupil worker thread")
+            && health.Observe(pupilOnly + " pupil_worker_cpu_ms=2.5")
+            && health.DiagnosticText().Contains("11.0 ms elapsed, 2.5 ms CPU"),
+            "Pupil diagnostics must distinguish elapsed time from worker CPU time, including older receivers.");
         now += 3.6;
         Check(!health.CameraFresh && health.FeatureState("pupil") == TrackingSignalState.Stale, "Pupil-only receiver snapshot failed to expire.");
         health.Observe("PUPIL_STATUS relative_mm left=3.40 right=3.50 processing_ms=7.4 age_ms=3501 dropped_frames=3");
