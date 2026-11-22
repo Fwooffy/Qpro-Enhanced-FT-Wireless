@@ -8,7 +8,7 @@ On **First-time setup**, follow **1. Connect**, **2. PC runtime**, then **3. VRC
 
 1. **Connect your Quest Pro.** Start with **USB cable**, approve USB debugging in the headset, then press **Check USB connection**. Allow **Shell / ADB Shell** in Magisk.
 2. **Install the PC runtime.** Press **Install runtime**. Keep the Hub open while its private Python and tracking libraries download. Wait for completion in **Activity**.
-3. **Install your VRCFaceTracking module.** Close VRCFaceTracking and wait for **ModuleProcess** to exit. Choose **Streaming app**, install the matching Qpro module, then reopen VRCFaceTracking.
+3. **Install your VRCFaceTracking module.** Close VRCFaceTracking and wait for **ModuleProcess** to exit. Choose **Streaming app**, install its Qpro module, then reopen VRCFaceTracking.
 
 **Back** and **Next step** only navigate. **Open Facial tracking** changes pages; it does not start tracking.
 
@@ -45,14 +45,14 @@ Read only the optional feature pages you need. The top-right **Contents** link r
 
 Install **SteamVR**, the [latest VRCFaceTracking from Steam](https://store.steampowered.com/app/3329480/VRCFaceTracking/) and your streaming app's PC software. Setup needs internet access and several gigabytes of free space.
 
-1. Download **QproCompanion.V3.0.3.zip** from [Releases](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases), or use the supplied release ZIP.
+1. Download **QproCompanion.V3.0.4.zip** from [Releases](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases), or use the supplied release ZIP.
 2. Right-click the ZIP in File Explorer and choose **Extract All**. Keep `QproFaceTracking.exe`, `Helpers` and `QproRuntime` together.
 3. Open `QproFaceTracking.exe`. For OneDrive, first choose **Always keep on this device** for the whole extracted folder.
 
 > [!NOTE] Independent gaze is optional
 > You do not need a gaze Magisk module or the Hub's gaze preparation for ordinary face tracking, tongue tracking or pupil dilation.
 
-ADB and private Python are supplied. For update compatibility, the executable, app/data folders and `.qptonguemodel` format keep their old names. The legacy **QproFaceTracking.V3.0.3.zip** is the same package for older updaters; use either ZIP. GitHub's **Source code** archives are not the app.
+ADB and private Python are supplied. For update compatibility, the executable, app/data folders and `.qptonguemodel` format keep their old names. The legacy **QproFaceTracking.V3.0.4.zip** is the same package for older updaters; use either ZIP. GitHub's **Source code** archives are not the app.
 
 ## Virtual Desktop and Steam Link
 
@@ -77,7 +77,7 @@ For **Hands + controllers**, also enable Quest **Hand tracking** and **Automatic
 In the headset's **Advanced Settings**, enable **OSC**, **Share eye tracking data** and **Share face tracking data**. Set **OSC Output Port** to **9015**. Use **Install Steam Link module** with VRCFaceTracking closed.
 
 > [!WARNING] Use one source module
-> Installing one Qpro source module removes the other Qpro source module. Remove separate Virtual Desktop, LinkFT or Steam Link face modules through VRCFaceTracking; competing modules can occupy the same tracking slots or OSC port.
+> Installing one Qpro source removes the other Qpro source. Recognized Virtual Desktop, LinkFT and Steam Link modules are backed up and replaced automatically. Unknown competing modules need manual review; follow **Activity**.
 
 **USB cable** and **Wireless ADB (Wi-Fi)** choose the Qpro tracking-data connection, not the VR picture stream. The [full text guide](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/blob/main/src/RELEASE_INSTRUCTIONS.md) also covers the optional Virtual Desktop USB-video beta setup.
 
@@ -168,7 +168,7 @@ Open **Show optional tools and recovery > Recovery > Show PC runtime repair and 
 
 1. Open **3. VRCFT module**. **Close VRCFaceTracking** and wait for its **ModuleProcess** helper to exit.
 2. Choose **Virtual Desktop** or **Steam Link** under **Streaming app**.
-3. Press **Install Virtual Desktop module** or **Install Steam Link module**. Only the selected source's button is available. Wait for completion in **Activity**.
+3. Press **Install Virtual Desktop module** or **Install Steam Link module**. Qpro verifies backups before replacing recognized sources. Wait for completion in **Activity**.
 4. Reopen VRCFaceTracking with the source connected. Check that ordinary expressions move in its preview, then press **Open Facial tracking**.
 
 Its card is **Qpro Companion — Virtual Desktop** or **Qpro Companion — Steam Link**, using the Hub's release version. Older QproFaceTracking cards remain recognized.
@@ -176,7 +176,7 @@ Its card is **Qpro Companion — Virtual Desktop** or **Qpro Companion — Steam
 > [!NOTE] What a module check proves
 > **Installed · files verified** confirms the module files match. **Facial tracking > View module input** opens the live status in Activity without starting tracking. **Virtual Desktop source available** is neutral: native shared memory has no timestamp. Confirm moving expressions in VRCFaceTracking's preview; Companion tracking can stay off for that check.
 
-Junctions, symlinks and Windows Cloud Files are supported. For OneDrive, keep the whole app available offline. Recovery copies go under `%LOCALAPPDATA%\QproFaceTracking\module-recovery`; **Activity** gives the exact path.
+Local app-folder links and Windows Cloud Files are supported. Keep OneDrive files offline. Backups stay in `%LOCALAPPDATA%\QproFaceTracking\module-recovery`, across Qpro folders. **Activity** gives the path. Failed switches roll back; unknown modules stay untouched.
 
 For module or file-access errors, follow **Activity**; they do not establish card damage. Optional **Check headset compatibility** and **Show firmware details** are under **Checks & Updates > Show headset compatibility**.
 
@@ -487,7 +487,7 @@ Stopping a session, removing a PC module and disabling headset gaze are differen
 | --- | --- |
 | Native cheek puff/suck | **Stop tracking**. Disable the individual cheek switches for native values during a session too. |
 | Native eyebrows | Turn **Adjust eyebrow movement** off. |
-| Remove Qpro's whole face mapping | Stop, close VRCFaceTracking and **Uninstall Qpro module**. Reopen with exactly one official source module. |
+| Remove Qpro's whole face mapping | Stop, close VRCFaceTracking and use **Restore stock VRCFT** or **Uninstall Qpro module**. Check Activity before reopening. |
 | Restore a recorded Hub gaze session | Stop, then **Recover Qpro gaze** and read its result. |
 | Remove Magisk independent gaze | Disable that gaze module in Magisk and reboot. |
 
@@ -495,7 +495,7 @@ Stopping a session, removing a PC module and disabling headset gaze are differen
 
 Open **First-time setup > Show optional tools and recovery > Recovery > Show VRCFaceTracking module maintenance**. Press **Uninstall Qpro module**, confirm and wait for **Setup step complete** before reopening VRCFaceTracking.
 
-Verified Qpro modules are removed. An official Virtual Desktop module saved by an older installer can be restored if verified; otherwise install the official source module through VRCFaceTracking. Models/recordings remain saved.
+Qpro modules are removed; verified source-module backups are restored when their original locations are free. **Activity > Restore stock VRCFT** does the same recovery. Occupied locations and damaged backups are left untouched with recovery instructions. Models/recordings stay saved.
 
 > [!NOTE] The tongue model stays on the PC
 > It outputs only through a running Qpro camera process and module. Persistent eyebrow/smirk mapping belongs to the installed PC module; Magisk gaze is a separate headset modification.
@@ -511,7 +511,7 @@ Read the first specific error in **Activity**. An exit code is a result, not the
 | Install runtime seems stuck | Keep the Hub open. Look for PowerShell PID, phase and still-running messages. With no script message, check Windows Security for blocked PowerShell and send the log. |
 | Code 1 with VCRUNTIME, native DLL or WinError 126/1114 | Install/repair [Microsoft's latest x64 Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170#latest-supported-redistributable-version), then retry. |
 | ModuleNotFoundError | Follow the missing-package/file repair message. Extract the whole named release ZIP. It is not automatically a Visual C++ issue. |
-| Module missing or wrong source | Close VRCFaceTracking and its module process, select **Streaming app**, install its Qpro module and reopen. |
+| Module missing, wrong source or ready to switch | Close VRCFaceTracking and its module helper, choose **Streaming app**, then install. Recognized sources are backed up and replaced. Reopen afterward. |
 | No Steam Link expressions | Check OSC, eye/face sharing and **9015**. Remove competing source modules and restart VRCFaceTracking. |
 | ROCm missing torchgen or another import | Use **Verify / repair ROCm 10.1** or **Repair ROCm 10.1**. An import failure alone does not mean an unsupported GPU. |
 | Integrated AMD GPU appears | Qpro requires a mapped **discrete** Radeon. Check its driver and Windows detection; otherwise use CPU/NVIDIA runtime. |

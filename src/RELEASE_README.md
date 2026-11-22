@@ -1,14 +1,14 @@
-# Qpro Companion V3.0.2 - release candidate
+# Qpro Companion V3.0.4 test build
 
-Qpro Companion is the new name for QproFaceTracking. Download **QproCompanion.V3.0.2.zip** when published. For update compatibility, the executable, existing app/data folders and `.qptonguemodel` format keep their old names. The legacy **QproFaceTracking.V3.0.2.zip** asset contains the same bytes for older updaters; use either ZIP, not both.
+Qpro Companion is the new name for QproFaceTracking. Extract the entire ready-to-run ZIP before opening the app. For update compatibility, the executable, existing app/data folders and `.qptonguemodel` format keep their old names.
 
 This is a clean derivative of [Qpro-Enhanced-FT](https://github.com/n0tmast3r/Qpro-Enhanced-FT) v0.1.10-poc. V2.0 added AMD ROCm for tongue-model tracking and training, while NVIDIA CUDA has also been live-tested and is functional. A CPU fallback remains available. It carries headset camera and eye data over USB or wireless ADB on a trusted Wi-Fi network. Independent gaze and relative pupil dilation remain experimental features. A rooted Quest Pro is required.
 
-V3.0.2 includes a selectable Steam Link source alongside Virtual Desktop, native individual cheek puff/suck controls, eyebrow sensitivity, an updated Developer tongue model and the separate experimental Mustachio tongue model. Runtime setup uses a private Python archive and reports setup progress in Activity. AMD ROCm becomes ready only after its GPU inference and training checks pass. This folder is a release candidate; publishing the GitHub release is a separate step.
+Qpro Companion includes a selectable Steam Link source alongside Virtual Desktop, native individual cheek puff/suck controls, eyebrow sensitivity, an updated Developer tongue model and the separate experimental Mustachio tongue model. Runtime setup uses a private Python archive and reports setup progress in Activity. AMD ROCm becomes ready only after its GPU inference and training checks pass. This folder is a release candidate; publishing the GitHub release is a separate step.
 
 **Updater notes in V3.0.2:** The Hub displays release-note headings, bold and italic text, lists and code formatting, with HTTP/HTTPS links that open only when clicked. Reading notes does not download or install an update. Older Hub versions keep showing plain notes until upgraded; the update checks, package verification and preservation of your data are unchanged.
 
-**Upgrading from a version before V2.0? Record and train a new tongue model.** Keep older models as backups. Working V2.0 or newer models can be exported from the old version and imported into V3.0.2 through **Model manager**, without retraining. See the [beginner PDF guide](Quest_Pro_Enhanced_Face_Tracking_Guide.pdf) for the recording steps.
+**Upgrading from a version before V2.0? Record and train a new tongue model.** Keep older models as backups. Working V2.0 or newer models can be exported from the old version and imported into this version through **Model manager**, without retraining. See the [beginner PDF guide](Quest_Pro_Enhanced_Face_Tracking_Guide.pdf) for the recording steps.
 
 **Required:** install the [latest VRCFaceTracking from Steam](https://store.steampowered.com/app/3329480/VRCFaceTracking/) and let Steam finish updating it before installing Qpro's module.
 
@@ -67,7 +67,7 @@ ROCm setup verifies exact host, device, and SDK packages before testing GPUs. Mi
 
 ## Install on NVIDIA or CPU
 
-Use **First-time setup > Install runtime** in `QproFaceTracking.exe` and skip AMD ROCm. The setup detects NVIDIA hardware and installs its CUDA 12.8 PyTorch build. The original CPU path remains available when no supported GPU runtime is detected, though training is slower. NVIDIA CUDA hardware has been live-tested and is functional in this edition. See [PyTorch's Windows installation guide](https://pytorch.org/get-started/locally/) for CUDA requirements.
+Use **First-time setup > Install runtime** in `QproFaceTracking.exe` and skip AMD ROCm. For GTX 10-series cards, including Ti and notebook variants, setup installs PyTorch 2.14.1 with CUDA 12.6. Newer NVIDIA cards use the CUDA 12.8 package. Setup tests arithmetic and a convolution on the GPU before marking it ready. If an update fails, Companion restores the previous working GPU environment or offers CPU tracking through a verified CPU installation. The GTX install path has passed offline tests. Verification on a physical GTX card is pending. [PyTorch architecture support](https://dev-discuss.pytorch.org/t/3432)
 
 ### Python on the PC
 
@@ -130,7 +130,7 @@ The AMD ROCm 10.1 setup downloads packages from `stable.repo.amd.com`; the origi
 
 ## Changes from the upstream package
 
-The Hub executable is built from this project's source. Changes cover source-specific VRCFaceTracking modules, tongue capture and training, gaze recovery, relative pupil processing, isolated runtime setup, GPU selection, and wireless connection helpers. `SHA256SUMS.txt` lists the exact contents of the V3.0.2 ZIP.
+The Hub executable is built from this project's source. Changes cover source-specific VRCFaceTracking modules, tongue capture and training, gaze recovery, relative pupil processing, isolated runtime setup, GPU selection, and wireless connection helpers. `SHA256SUMS.txt` lists the exact contents of the release ZIP.
 
 This edition is not an official release of the upstream repository. See [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).
 
