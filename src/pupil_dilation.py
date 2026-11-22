@@ -11,6 +11,7 @@ import socket
 import struct
 import time
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import cv2
@@ -23,8 +24,8 @@ CAMERA_WIDTH = 400
 CAMERA_HEIGHT = 400
 PUPIL_PACKET = struct.Struct("<4sBBHff")
 PUPIL_MAGIC = b"QPDI"
-_CLOSE_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-_OPEN_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+_LARGE_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+_SMALL_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 _PUPIL_QUANTILES = np.asarray((5, 10, 15, 20, 25, 30), dtype=np.float64) / 100.0
 
 
@@ -40,6 +41,13 @@ class PupilDetection:
     confidence: float
 
 
+def _valid_eye_roi(roi: np.ndarray) -> bool:
+    # Camera ROIs are strided views. OpenCV reduces them directly without
+    # NumPy's slower strided passes or changing the intensity checks.
+    low, high, _, _ = cv2.minMaxLoc(roi)
+    return high - low >= 18 and cv2.mean(roi)[0] >= 8
+
+
 def detect_pupil(
     image: np.ndarray,
     previous_center: tuple[float, float] | None = None,
@@ -48,11 +56,11 @@ def detect_pupil(
     if image.shape != (CAMERA_HEIGHT, CAMERA_WIDTH) or image.dtype != np.uint8:
         raise ValueError("Pupil detection expects one 400x400 grayscale eye frame")
     roi = image[75:355, 55:390]
-    if np.ptp(roi) < 18 or np.mean(roi) < 8:
+    if not _valid_eye_roi(roi):
         return None
     # Median filtering removes bright headset LED glints inside the pupil.
     clean = cv2.medianBlur(roi, 7)
-    return _detect_clean_pupil(clean, _cpu_masks(clean, _thresholds(clean)), previous_center)
+    return _detect_clean_pupil(clean, _morph_pupil_image(clean), previous_center)
 
 
 def _thresholds(clean: np.ndarray) -> list[int]:
@@ -79,23 +87,37 @@ def _thresholds(clean: np.ndarray) -> list[int]:
     ))
 
 
-def _cpu_masks(clean: np.ndarray, thresholds: list[int]) -> list[np.ndarray]:
-    masks = []
+def _morph_pupil_image(clean: np.ndarray) -> np.ndarray:
+    # Inverse thresholding swaps min and max. Grayscale opening/closing
+    # therefore reproduces the binary closing/opening at every cutoff.
+    opened = cv2.morphologyEx(clean, cv2.MORPH_OPEN, _LARGE_KERNEL)
+    return cv2.morphologyEx(opened, cv2.MORPH_CLOSE, _SMALL_KERNEL)
+
+
+def _threshold_masks(morphed: np.ndarray, thresholds: list[int]) -> Iterator[np.ndarray]:
     for threshold in thresholds:
-        dark = cv2.threshold(clean, threshold, 255, cv2.THRESH_BINARY_INV)[1]
-        dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, _CLOSE_KERNEL)
-        masks.append(cv2.morphologyEx(dark, cv2.MORPH_OPEN, _OPEN_KERNEL))
-    return masks
+        yield cv2.threshold(morphed, threshold, 255, cv2.THRESH_BINARY_INV)[1]
+
+
+def _median_uint8_samples(samples: np.ndarray) -> float:
+    # The selected ellipse pixels are disposable 1-D copies. Select the
+    # middle values in place and widen before adding an even pair.
+    middle = samples.size // 2
+    if samples.size % 2:
+        samples.partition(middle)
+        return float(samples[middle])
+    samples.partition((middle - 1, middle))
+    return (int(samples[middle - 1]) + int(samples[middle])) / 2
 
 
 def _detect_clean_pupil(
-    clean: np.ndarray, masks: list[np.ndarray],
+    clean: np.ndarray, morphed: np.ndarray,
     previous_center: tuple[float, float] | None,
 ) -> PupilDetection | None:
     x0, y0 = 55, 75
     best: tuple[float, PupilDetection] | None = None
     seen_contours: set[bytes] = set()
-    for dark in masks:
+    for dark in _threshold_masks(morphed, _thresholds(clean)):
         contours, _ = cv2.findContours(dark, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for contour in contours:
             # Several thresholds often produce the same boundary. Its score
@@ -138,8 +160,8 @@ def _detect_clean_pupil(
             ring = patch[outer != 0]
             if inside.size < 20 or ring.size < 30:
                 continue
-            inside_median = float(np.median(inside))
-            contrast = float(np.median(ring) - inside_median)
+            inside_median = _median_uint8_samples(inside)
+            contrast = _median_uint8_samples(ring) - inside_median
             if inside_median > 45 or contrast < 25:
                 continue
             center = (float(x + x0), float(y + y0))
@@ -153,12 +175,12 @@ def _detect_clean_pupil(
                 contrast + 20 * circularity + 7 * fill
                 - prior_penalty - location_penalty - oversize_penalty
             )
-            detection = PupilDetection(
-                center=center,
-                diameter_px=float(major),
-                confidence=float(np.clip(contrast / 50 * circularity, 0, 1)),
-            )
             if best is None or score > best[0]:
+                detection = PupilDetection(
+                    center=center,
+                    diameter_px=float(major),
+                    confidence=min(contrast / 50 * circularity, 1.0),
+                )
                 best = (score, detection)
     return best[1] if best is not None else None
 
@@ -278,7 +300,7 @@ class RelativePupilTracker:
             if image.shape != (CAMERA_HEIGHT, CAMERA_WIDTH) or image.dtype != np.uint8:
                 raise ValueError("Pupil detection expects one 400x400 grayscale eye frame")
             roi = image[75:355, 55:390]
-            if np.ptp(roi) >= 18 and np.mean(roi) >= 8:
+            if _valid_eye_roi(roi):
                 valid_rois[eye] = roi
         if not valid_rois:
             return results
@@ -286,9 +308,8 @@ class RelativePupilTracker:
         prepared = None
         if self._gpu is not None:
             try:
-                clean_batch, gpu_clean = self._gpu.median(list(valid_rois.values()))
-                masks = self._gpu.masks(gpu_clean, [_thresholds(clean) for clean in clean_batch])
-                prepared = list(zip(clean_batch, masks))
+                clean_batch, morphed_batch = self._gpu.prepare(list(valid_rois.values()))
+                prepared = zip(clean_batch, morphed_batch)
             except GPUReadbackCancelled:
                 # Stop is not a GPU failure. Do not start CPU fallback work
                 # or change this tracker's backend while shutting down.
@@ -305,9 +326,9 @@ class RelativePupilTracker:
             prepared = []
             for roi in valid_rois.values():
                 clean = cv2.medianBlur(roi, 7)
-                prepared.append((clean, _cpu_masks(clean, _thresholds(clean))))
-        for eye, (clean, masks) in zip(eye_ids, prepared):
-            results[eye] = _detect_clean_pupil(clean, masks, self._previous_centers[eye])
+                prepared.append((clean, _morph_pupil_image(clean)))
+        for eye, (clean, morphed) in zip(eye_ids, prepared):
+            results[eye] = _detect_clean_pupil(clean, morphed, self._previous_centers[eye])
         return results
 
     def update(

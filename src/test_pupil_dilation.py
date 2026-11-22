@@ -13,6 +13,9 @@ from pupil_dilation import (
     RelativePupilTracker,
     detect_pupil,
     encode_pupil_packet,
+    _median_uint8_samples,
+    _morph_pupil_image,
+    _threshold_masks,
     _thresholds,
 )
 from receiver import stereo_mouth_strip
@@ -44,6 +47,53 @@ class PupilDilationTests(unittest.TestCase):
         frame = eye(24)[75:355, 55:390]
         self.assertEqual(_thresholds(frame), reference(frame))
 
+    def test_opencv_roi_validation_matches_numpy_checks(self) -> None:
+        from pupil_dilation import _valid_eye_roi
+
+        rng = np.random.default_rng(38)
+        frames = [rng.integers(0, 256, (400, 800), dtype=np.uint8),
+                  np.zeros((400, 800), np.uint8),
+                  np.full((400, 800), 8, np.uint8)]
+        # Exercise mean and range boundaries with strided camera views.
+        for maximum in (17, 18, 19, 255):
+            for fill in (7, 8, 9):
+                frame = np.full((400, 800), fill, np.uint8)
+                frame[75, 55] = 0
+                frame[75, 56] = maximum
+                frames.append(frame)
+        for frame in frames:
+            roi = frame[75:355, 55:390]
+            self.assertEqual(_valid_eye_roi(roi),
+                             bool(np.ptp(roi) >= 18 and np.mean(roi) >= 8))
+
+    def test_grayscale_morphology_preserves_threshold_masks(self) -> None:
+        rng = np.random.default_rng(75)
+        textured = rng.integers(0, 256, (280, 670), dtype=np.uint8)[:, ::2]
+        dim = np.full((280, 335), 43, np.uint8)
+        # Components and reflections that touch each ROI edge exercise
+        # the default min/max border behavior for both kernel sizes.
+        for center in ((0, 90), (170, 0), (334, 190), (130, 279), (140, 125)):
+            cv2.circle(dim, center, 21, 5, -1)
+            cv2.circle(dim, center, 4, 130, -1)
+        bright = np.where(dim > 10, 255, 250).astype(np.uint8)
+        closing = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        opening = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        for name, clean in (("pattern", textured), ("dim", dim), ("bright", bright)):
+            cutoffs = sorted({0, 5, 43, 127, 254, 255, 270, *_thresholds(clean)})
+            masks = _threshold_masks(_morph_pupil_image(clean), cutoffs)
+            for cutoff, actual in zip(cutoffs, masks, strict=True):
+                with self.subTest(image=name, cutoff=cutoff):
+                    binary = cv2.threshold(clean, cutoff, 255, cv2.THRESH_BINARY_INV)[1]
+                    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, closing)
+                    expected = cv2.morphologyEx(binary, cv2.MORPH_OPEN, opening)
+                    np.testing.assert_array_equal(actual, expected)
+
+    def test_uint8_sample_median_preserves_even_and_odd_ranks(self) -> None:
+        for values in ([0, 255], [250, 225, 245, 255], [8, 4, 9, 5, 8]):
+            samples = np.array(values, dtype=np.uint8)
+            expected = float(np.median(samples))
+            self.assertEqual(_median_uint8_samples(samples), expected)
+
     def test_dark_pupil_changes_size_and_position(self) -> None:
         for radius, center in ((24, (200, 200)), (35, (245, 175))):
             detection = detect_pupil(eye(radius, center))
@@ -61,11 +111,13 @@ class PupilDilationTests(unittest.TestCase):
         image = eye(30, center)
         for offset in ((-9, -7), (8, 3), (4, 12)):
             cv2.circle(image, (center[0] + offset[0], center[1] + offset[1]), 4, 255, -1)
-        detection = detect_pupil(image)
-        self.assertIsNotNone(detection)
-        self.assertAlmostEqual(detection.center[0], center[0], delta=6)
-        self.assertAlmostEqual(detection.center[1], center[1], delta=6)
-        self.assertAlmostEqual(detection.diameter_px, 60, delta=10)
+        for brightness in (1, 2):
+            with self.subTest(divisor=brightness):
+                detection = detect_pupil(image // brightness)
+                self.assertIsNotNone(detection)
+                self.assertAlmostEqual(detection.center[0], center[0], delta=6)
+                self.assertAlmostEqual(detection.center[1], center[1], delta=6)
+                self.assertAlmostEqual(detection.diameter_px, 60, delta=10)
 
     def test_baseline_waits_for_steady_gaze_and_rejects_large_shift(self) -> None:
         tracker = RelativePupilEye()
@@ -224,7 +276,7 @@ class PupilDilationTests(unittest.TestCase):
             values = tracker.update(strip, [0, 1])
         baselines = tuple(eye_tracker._baseline for eye_tracker in tracker.eyes)
         class BrokenGpu:
-            def median(self, images):
+            def prepare(self, images):
                 raise RuntimeError()
         tracker._gpu = BrokenGpu()
         tracker.backend, tracker.device = "amd-rocm", "cuda:0"

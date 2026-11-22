@@ -6,9 +6,9 @@ from unittest import mock
 import cv2
 import numpy as np
 
-from pupil_dilation import RelativePupilTracker, _cpu_masks
+from pupil_dilation import RelativePupilTracker
 from pupil_gpu import TorchPupilPreprocessor
-from gpu_readback import GPUReadbackCancelled
+from gpu_readback import GPUReadbackCancelled, copy_to_cpu
 from test_pupil_dilation import eye
 
 
@@ -20,7 +20,7 @@ class PupilGpuParityTests(unittest.TestCase):
             tracker.update(strip, [0, 1])
         baselines = tuple(value._baseline for value in tracker.eyes)
         tracker._gpu = mock.Mock()
-        tracker._gpu.median.side_effect = GPUReadbackCancelled("Tracking stopped")
+        tracker._gpu.prepare.side_effect = GPUReadbackCancelled("Tracking stopped")
         tracker.backend, tracker.device = "nvidia-cuda", "cuda:1"
         tracker.device_name = "Discrete GPU"
         tracker.backend_notice = ""
@@ -41,7 +41,7 @@ class PupilGpuParityTests(unittest.TestCase):
             expected = tracker.update(strip, [0, 1])
         baselines = tuple(value._baseline for value in tracker.eyes)
         tracker._gpu = mock.Mock()
-        tracker._gpu.median.side_effect = TimeoutError("GPU readback timeout")
+        tracker._gpu.prepare.side_effect = TimeoutError("GPU readback timeout")
         tracker.backend, tracker.device = "nvidia-cuda", "cuda:1"
         self.assertEqual(tracker.update(strip, [0, 1]), expected)
         self.assertIsNone(tracker._gpu)
@@ -58,19 +58,30 @@ class PupilGpuParityTests(unittest.TestCase):
         # without GPU hardware. Only production construction selects a GPU.
         processor = object.__new__(TorchPupilPreprocessor)
         processor.torch, processor.device = torch, "cpu"
-        processor._kernel_rows = {
-            size: tuple(int(row.sum()) for row in cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size)))
+        processor.readback_cancelled = None
+        kernels = {
+            size: cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
             for size in (3, 7)
+        }
+        processor._kernel_rows = {
+            size: tuple(int(row.sum()) for row in kernel) for size, kernel in kernels.items()
         }
         rois = [np.random.default_rng(seed).integers(0, 256, (29, 37), dtype=np.uint8) for seed in (9, 11)]
         rois[0][:8, :8] = 0
         rois[1][-8:, -8:] = 255
-        clean, gpu_clean = processor.median(rois)
+        with mock.patch("pupil_gpu.copy_to_cpu", wraps=copy_to_cpu) as readback:
+            clean, morphed = processor.prepare(rois)
+        readback.assert_called_once()
+        transferred = readback.call_args.args[0]
+        self.assertEqual(transferred.shape, (2, 2, 29, 37))
+        self.assertEqual(transferred.dtype, torch.uint8)
         np.testing.assert_array_equal(clean, np.stack([cv2.medianBlur(roi, 7) for roi in rois]))
-        thresholds = [[0, 64, 128, 200, 275], [125, 130, 140]]
-        gpu_masks = processor.masks(gpu_clean, thresholds)
-        for index, cutoffs in enumerate(thresholds):
-            for actual, expected in zip(gpu_masks[index], _cpu_masks(clean[index], cutoffs)):
+        for median_image, morph_image in zip(clean, morphed):
+            for cutoff in (0, 64, 125, 128, 130, 140, 200, 255, 275):
+                expected = cv2.threshold(median_image, cutoff, 255, cv2.THRESH_BINARY_INV)[1]
+                expected = cv2.morphologyEx(expected, cv2.MORPH_CLOSE, kernels[7])
+                expected = cv2.morphologyEx(expected, cv2.MORPH_OPEN, kernels[3])
+                actual = cv2.threshold(morph_image, cutoff, 255, cv2.THRESH_BINARY_INV)[1]
                 np.testing.assert_array_equal(actual, expected)
 
     def test_available_discrete_gpu_matches_cpu_detector(self) -> None:

@@ -34,57 +34,45 @@ class TorchPupilPreprocessor:
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
             self._kernel_rows[size] = tuple(int(row.sum()) for row in kernel)
 
-    def median(self, rois: list[np.ndarray]) -> tuple[np.ndarray, object]:
-        """Return exact uint8 medians and retain the GPU image for morphology."""
+    def prepare(self, rois: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+        """Read back the median and morphology images together."""
         torch = self.torch
         # OpenCV medianBlur uses replicated borders. Keep uint8 levels exact
         # in float32 so threshold decisions do not depend on half precision.
         with torch.inference_mode():
-            pixels = torch.as_tensor(np.stack(rois), device=self.device, dtype=torch.float32)
+            pixels = torch.as_tensor(np.stack(rois), device=self.device).to(dtype=torch.float32)
             padded = torch.nn.functional.pad(pixels[:, None], (3, 3, 3, 3), mode="replicate")
             windows = padded.unfold(2, 7, 1).unfold(3, 7, 1)
             clean = windows.flatten(-2).median(dim=-1).values
-            pixels = copy_to_cpu(
-                clean[:, 0].to(dtype=torch.uint8),
-                cancelled=getattr(self, "readback_cancelled", None),
-            )
-            return pixels.numpy(), clean
+            # An inverse threshold turns a grayscale minimum into a binary
+            # maximum and vice versa. Do each morphology pass once per eye.
+            morphed = self._morph(clean, 7, erode=True)
+            morphed = self._morph(morphed, 7, erode=False)
+            morphed = self._morph(morphed, 3, erode=False)
+            morphed = self._morph(morphed, 3, erode=True)
+            images = copy_to_cpu(
+                torch.cat((clean, morphed), dim=1).to(dtype=torch.uint8),
+                cancelled=self.readback_cancelled,
+            ).numpy()
+            return images[:, 0], images[:, 1]
 
-    def _morph(self, masks: object, size: int, *, erode: bool) -> object:
+    def _morph(self, image: object, size: int, *, erode: bool) -> object:
         torch = self.torch
         rows = self._kernel_rows[size]
         # OpenCV's default morphology border is neutral: outside pixels are
-        # white for erosion and black for dilation. A constant zero border
-        # for both would shrink pupils near the ROI edge differently.
-        source = 1.0 - masks if erode else masks
+        # ignored for either minimum or maximum. For erosion, negate the
+        # image so max pooling computes the negated minimum.
+        source = -image if erode else image
         horizontal = {}
         for width in set(rows):
             filtered = source if width == 1 else torch.nn.functional.max_pool2d(
                 source, (1, width), stride=1, padding=(0, width // 2),
             )
-            horizontal[width] = torch.nn.functional.pad(filtered, (0, 0, size // 2, size // 2))
+            horizontal[width] = torch.nn.functional.pad(
+                filtered, (0, 0, size // 2, size // 2), value=float("-inf"),
+            )
         height = source.shape[-2]
         result = horizontal[rows[0]][:, :, :height]
         for offset, width in enumerate(rows[1:], 1):
             result = torch.maximum(result, horizontal[width][:, :, offset:offset + height])
-        return 1.0 - result if erode else result
-
-    def masks(self, clean: object, thresholds: list[list[int]]) -> list[list[np.ndarray]]:
-        torch = self.torch
-        width = max(map(len, thresholds))
-        padded_thresholds = [values + [values[-1]] * (width - len(values)) for values in thresholds]
-        with torch.inference_mode():
-            cutoffs = torch.as_tensor(padded_thresholds, device=self.device, dtype=torch.float32)
-            dark = (clean <= cutoffs[:, :, None, None]).float()
-            dark = dark.reshape(-1, 1, clean.shape[-2], clean.shape[-1])
-            dark = self._morph(dark, 7, erode=False)
-            dark = self._morph(dark, 7, erode=True)
-            dark = self._morph(dark, 3, erode=True)
-            dark = self._morph(dark, 3, erode=False)
-            output = dark.reshape(len(thresholds), width, clean.shape[-2], clean.shape[-1])
-            output = copy_to_cpu(
-                output.to(dtype=torch.uint8).mul_(255),
-                cancelled=getattr(self, "readback_cancelled", None),
-            ).numpy()
-        return [[output[eye, index] for index in range(len(values))]
-                for eye, values in enumerate(thresholds)]
+        return -result if erode else result
