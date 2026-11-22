@@ -1,6 +1,7 @@
 """Readback ownership, completion, cancellation, and package integration checks."""
 
 import math
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -107,6 +108,52 @@ class GpuReadbackTests(unittest.TestCase):
                   self.assertRaises(ValueError)):
                 copy_to_cpu(source, timeout_seconds=invalid)
             torch.empty.assert_not_called()
+
+    def legacy_fixture(self, ready=(False, True)):
+        source, torch, event, calls, _ = self.fixture(ready)
+        self.enterContext(mock.patch("gpu_readback.sys.platform", "win32"))
+        torch.__version__ = "2.9.1+rocm7.2.1"
+        torch.version = SimpleNamespace(hip="7.2.53211")
+        return source, torch, event, calls
+
+    def test_legacy_rocm_copies_only_after_compute_finishes(self):
+        source, torch, _, calls = self.legacy_fixture()
+        source.cpu.side_effect = lambda: calls.append(("cpu", None)) or "completed tensor"
+        with (mock.patch.dict("sys.modules", {"torch": torch}),
+              mock.patch("gpu_readback.time.sleep") as sleep):
+            self.assertEqual(copy_to_cpu(source), "completed tensor")
+        self.assertEqual([name for name, _ in calls], ["device", "record", "query", "query", "cpu"])
+        torch.empty.assert_not_called()
+        sleep.assert_called_once()
+
+    def test_legacy_rocm_timeout_and_stop_never_start_a_pending_copy(self):
+        for stop in (True, False):
+            source, torch, _, _ = self.legacy_fixture(ready=(False, False))
+            cancelled = mock.Mock(side_effect=(False, False, stop))
+            with (self.subTest(stop=stop), mock.patch.dict("sys.modules", {"torch": torch}),
+                  mock.patch("gpu_readback.time.sleep"),
+                  mock.patch("gpu_readback.time.perf_counter", side_effect=(0, .1, 1)),
+                  self.assertRaises(GPUReadbackCancelled if stop else TimeoutError)):
+                copy_to_cpu(source, cancelled=cancelled, timeout_seconds=1)
+            source.cpu.assert_not_called()
+            torch.empty.assert_not_called()
+
+    def test_legacy_rocm_stop_during_completed_copy_discards_output(self):
+        source, torch, _, _ = self.legacy_fixture(ready=(True,))
+        stopped = threading.Event()
+        source.cpu.side_effect = stopped.set
+        with mock.patch.dict("sys.modules", {"torch": torch}), self.assertRaises(GPUReadbackCancelled):
+            copy_to_cpu(source, cancelled=stopped.is_set)
+        source.cpu.assert_called_once_with()
+
+    def test_new_rocm_retains_the_stream_ordered_pinned_copy(self):
+        source, torch, _, _, targets = self.fixture(ready=(True,))
+        torch.__version__ = "2.14.0+rocm10.1.0"
+        torch.version = SimpleNamespace(hip="7.15.26333")
+        with (mock.patch.dict("sys.modules", {"torch": torch}),
+              mock.patch("gpu_readback.sys.platform", "win32")):
+            self.assertIs(copy_to_cpu(source), targets[0])
+        source.cpu.assert_not_called()
 
     def test_gpu_errors_propagate_for_existing_backend_failure_handling(self):
         source, torch, event, _calls, _targets = self.fixture()

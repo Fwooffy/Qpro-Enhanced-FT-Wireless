@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import sys
 import time
 from typing import Callable
 
@@ -17,10 +18,11 @@ def copy_to_cpu(
 ):
     """Return a completed CPU tensor with unchanged shape and precision.
 
-    Each GPU transfer owns its pinned buffer. The event is recorded after
-    the transfer on this worker's current stream, so unrelated device work
-    does not need a global synchronization. CPU inference keeps its existing
-    direct path and importing this helper does not initialize Torch.
+    Poll this worker's stream event so a busy GPU doesn't occupy a CPU core.
+    The Windows ROCm 7.2.1 wheel uses a normal CPU copy once the kernels
+    finish. Its timeout bounds the wait for the kernels, and cancellation
+    during the short final copy discards the result. Other GPU runtimes
+    enqueue the copy before recording the event.
     """
     if tensor.device.type != "cuda":
         return tensor.cpu()
@@ -30,10 +32,15 @@ def copy_to_cpu(
         raise GPUReadbackCancelled("Tracking stopped before GPU readback")
 
     import torch
+    from qpro_gpu import is_rocm_721_torch_build
 
+    target = None
     with torch.cuda.device(tensor.device):
-        target = torch.empty(tensor.shape, dtype=tensor.dtype, device="cpu", pin_memory=True)
-        target.copy_(tensor, non_blocking=True)
+        # A pinned async device-to-host transfer on the legacy Windows ROCm
+        # wheel can keep Python alive after Stop, even after the worker exits.
+        if sys.platform != "win32" or not is_rocm_721_torch_build(torch):
+            target = torch.empty(tensor.shape, dtype=tensor.dtype, device="cpu", pin_memory=True)
+            target.copy_(tensor, non_blocking=True)
         event = torch.cuda.Event()
         event.record(torch.cuda.current_stream(tensor.device))
 
@@ -46,7 +53,12 @@ def copy_to_cpu(
         if cancelled is not None and cancelled():
             raise GPUReadbackCancelled("Tracking stopped during GPU readback")
         if event.query():
-            return target
+            if target is not None:
+                return target
+            result = tensor.cpu()
+            if cancelled is not None and cancelled():
+                raise GPUReadbackCancelled("Tracking stopped during GPU readback")
+            return result
         remaining = deadline - time.perf_counter()
         if remaining <= 0:
             raise TimeoutError("GPU result did not finish within the readback timeout")
