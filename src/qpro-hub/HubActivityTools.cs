@@ -12,6 +12,7 @@ internal sealed partial class HubForm
     private bool _activityDisplayPaused;
     private DarkButton? _activityPauseDisplay;
     private Label? _activityDisplayHint;
+    private Label? _activityExportHint;
 
     private Control BuildActivityTools()
     {
@@ -24,7 +25,7 @@ internal sealed partial class HubForm
         _activityPauseDisplay.AccessibleDescription = "Pause only this log view. Tracking and diagnostic collection continue.";
         var latest = ActionButton("Jump to latest", (_, _) => JumpToLatestActivity());
         latest.AccessibleDescription = "Resume the log display and follow new messages at the bottom.";
-        _activityDisplayHint = Info("Tracking and logging continue while paused.");
+        _activityDisplayHint = Info("");
         _activityDisplayHint.AutoSize = true;
         _activityDisplayHint.Margin = new Padding(4, 14, 0, 4);
         tools.Controls.Add(_activityPauseDisplay);
@@ -49,7 +50,7 @@ internal sealed partial class HubForm
         ActivityMessage(_log.Handle, 0x115, 7, 0); // WM_VSCROLL, SB_BOTTOM
     }
 
-    private void UpdateActivityDisplayTools()
+    private void UpdateActivityDisplayTools(string? exportResult = null, bool failed = false)
     {
         if (_activityPauseDisplay is not null)
         {
@@ -58,10 +59,15 @@ internal sealed partial class HubForm
         }
         if (_activityDisplayHint is not null)
         {
-            _activityDisplayHint.Text = _activityDisplayPaused
-                ? "Display paused. Tracking and logging continue."
-                : "Tracking and logging continue while paused.";
-            _activityDisplayHint.ForeColor = _activityDisplayPaused ? Warning : Muted;
+            _activityDisplayHint.Text = _activityDisplayPaused ? "Display paused. Tracking and logging continue." : "";
+            _activityDisplayHint.Visible = _activityDisplayPaused;
+            _activityDisplayHint.ForeColor = Warning;
+        }
+        if (exportResult is not null && _activityExportHint is not null)
+        {
+            _activityExportHint.Text = exportResult;
+            _activityExportHint.ForeColor = failed ? Bad : Good;
+            _activityExportHint.Visible = true;
         }
     }
 

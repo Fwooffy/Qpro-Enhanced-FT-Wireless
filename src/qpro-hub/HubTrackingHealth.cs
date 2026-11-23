@@ -137,7 +137,7 @@ internal sealed class HubTrackingHealth
         if (invalid.Count > 0) return string.Join(" ", invalid);
         if (tongue == TrackingSignalState.Waiting || pupil == TrackingSignalState.Waiting)
             return "Camera frames are live. Waiting for selected model outputs to warm up.";
-        return "Processing delay is measured on this PC. Check tracking output in VRCFaceTracking.";
+        return "Processing delay is measured on this PC. Check that expressions move on your VRChat avatar.";
     }
 
     internal string DiagnosticText()
@@ -275,17 +275,7 @@ internal sealed partial class HubForm
     private readonly Label _healthStages = Info("Decode — ms · prepare — ms · prediction total — ms · GPU wait/readback — ms");
     private readonly Label _healthPupil = Info("Pupil processing — ms · pupil result age — ms · queue delay p95 — ms");
     private TableLayoutPanel? _trackingHealthCard;
-    private Control? _trackingHealthDetails;
-    private Button? _trackingHealthDisclosure;
-
-    private void ShowTrackingDetails()
-    {
-        if (_trackingHealthDetails is null || _trackingHealthDisclosure is null) return;
-        _trackingHealthDetails.Visible = true;
-        _trackingHealthDisclosure.Text = "Hide tracking details";
-        _trackingHealthDisclosure.AccessibleName = _trackingHealthDisclosure.Text;
-        RefreshTrackingHealth();
-    }
+    private readonly Label _healthVrchat = Info("");
 
     private Control BuildTrackingHealthCard()
     {
@@ -295,10 +285,11 @@ internal sealed partial class HubForm
         card.ColumnCount = 1;
         card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         card.Controls.Add(SectionTitle("Tracking health", HubIcon.Activity));
-        foreach (var label in new[] { _healthRates, _healthFeatures, _healthModule, _healthNote })
+        MirrorStatus(_directVrchatStatus, _healthVrchat, "VRChat OSC");
+        foreach (var label in new[] { _healthRates, _healthFeatures, _healthVrchat, _healthNote })
         {
             label.Margin = new Padding(0, 0, 0, 6);
-            label.AccessibleName = label.Text;
+            if (label != _healthVrchat) label.AccessibleName = label.Text;
             card.Controls.Add(label);
         }
         _healthFeatures.Font = new System.Drawing.Font(UiFontName, 10F, System.Drawing.FontStyle.Bold);
@@ -312,11 +303,8 @@ internal sealed partial class HubForm
         details.Controls.Add(_healthDrops);
         details.Controls.Add(_healthStages);
         details.Controls.Add(_healthPupil);
-        details.Controls.Add(_healthModuleDetail);
         details.Controls.Add(Info("Prediction includes preparation and GPU wait/readback. These timings overlap and cannot be added to estimate total latency."));
         var disclosure = DisclosureButton("Show tracking details");
-        _trackingHealthDetails = details;
-        _trackingHealthDisclosure = disclosure;
         disclosure.Enabled = true;
         disclosure.Click += (_, _) =>
         {
@@ -362,7 +350,6 @@ internal sealed partial class HubForm
     private void RefreshTrackingHealth()
     {
         if (IsDisposed || Disposing || WindowState == FormWindowState.Minimized) return;
-        RefreshModuleHeartbeatDecoration();
         var cameraFresh = _trackingHealth.CameraFresh;
         if (_cameraInputReady != cameraFresh)
         {

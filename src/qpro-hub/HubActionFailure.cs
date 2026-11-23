@@ -19,7 +19,7 @@ internal sealed record HubActionFailure(string Title, string Detail, string Next
             return new("Headset root access is needed", "Qpro could not verify Magisk root permission.", "Open Magisk, allow Shell / ADB Shell Superuser access, and retry with the headset awake.");
         if (Has("An active Magisk gaze module was found") || Has("Another headset gaze method is enabled in Magisk"))
             return new("Another gaze method is already active", "The Magisk gaze method conflicts with the Hub's temporary gaze method. This action stopped before changing headset tracking.",
-                "Leave Independent Eye Gaze off in the Hub. Skip Check gaze setup and Prepare gaze, and confirm the Magisk module's eye tracking in VRCFaceTracking's preview. To use the Hub method instead, disable the Magisk gaze module and reboot first.");
+                "Leave Independent Eye Gaze off in the Hub. Skip Check gaze setup and Prepare gaze, then test eye movement on your VRChat avatar. To use the Hub method, disable the Magisk gaze module and reboot first.");
         var unsupportedHands = Has("Controller ABI") || Has("no validated hand profile");
         if (!unsupportedHands && (Has("Enable headset hand tracking") ||
             Matches(@"could not verify (?:hand_tracking_enabled|multimodal_hands_and_controllers_enabled)|Could not read one supported current-user value for (?:hand_tracking_enabled|multimodal_hands_and_controllers_enabled|simultaneous_hands_and_controllers_mode)|Headset current-user setting simultaneous_hands_and_controllers_mode must be 1")))
@@ -32,18 +32,19 @@ internal sealed record HubActionFailure(string Title, string Detail, string Next
                 "Keep the original .qpcap, .qplabel.jsonl and .qpsession.json files, then retry training in the Hub to rebuild the cache. For command-line training, rerun the matching prepare_tongue_stills.py or prepare_tongue_training.py command.");
         if (Has("The factory TongueOut layout is ambiguous"))
             return new("The recording's streaming source is unknown", "This older label file does not identify whether Virtual Desktop or Steam Link supplied its factory reference.",
-                "Identify the streaming app used for that recording. For command-line preparation, rebuild its cache with --tracking-source VirtualDesktop or --tracking-source SteamLink accordingly. If the original source is unknown, update the matching Qpro module and make a new capture; keep the original recording.");
+                "Identify the streaming app used for that recording. For command-line preparation, rebuild its cache with --tracking-source VirtualDesktop or --tracking-source SteamLink accordingly. If the source is unknown, choose your streaming app in the Hub and make a new capture. Keep the original recording.");
         if (Has("The native tongue source override conflicts with the recorded trackingSource"))
             return new("The training source does not match the recording", "The requested source override differs from the streaming app saved with the capture.",
                 "Correct or omit the command-line --tracking-source override, then prepare the capture again using its recorded streaming app. Keep the original capture and labels.");
         if (Has("The alternate Virtual Desktop tongue layout needs the full 70-channel factory schema"))
             return new("The capture's factory reference is incomplete", "This Virtual Desktop recording lacks the full factory expression data needed to interpret its tongue reference.",
-                "Close VRCFaceTracking, update its matching Qpro Virtual Desktop module, reopen VRCFaceTracking and record a new capture. Keep existing recordings and trained models.");
+                "Select Virtual Desktop as your streaming app in Qpro, enable forwarding of eye and face tracking to the PC, and make a new capture. Keep existing recordings and trained models.");
         // A repair instruction is not proof that the app is open. Module
         // preflight errors also say to close VRCFT before reinstalling.
         if (Has("packaged Qpro module is missing or unreadable"))
             return new("A required app file is missing", "The module supplied with this app could not be read.", "Extract the entire ready-to-run release ZIP into a new folder, keeping your models and captures, then retry.");
-        var installingSourceModule = action.Equals("Install Virtual Desktop module", StringComparison.OrdinalIgnoreCase) ||
+        var installingBackup = action.Equals("Install backup module", StringComparison.OrdinalIgnoreCase);
+        var installingSourceModule = installingBackup || action.Equals("Install Virtual Desktop module", StringComparison.OrdinalIgnoreCase) ||
             action.Equals("Install Steam Link module", StringComparison.OrdinalIgnoreCase);
         if (Has("Automatic module backup and recovery require CustomLibs and Qpro's recovery folder on the same drive") &&
             Has("No installed module files were changed") && !Has("Rollback needs attention"))
@@ -58,18 +59,15 @@ internal sealed record HubActionFailure(string Title, string Detail, string Next
                 Has("identity could not be verified for automatic backup")
                     ? "Qpro could not verify one existing source module for automatic backup. The new Qpro module was not installed, and existing module files were left unchanged."
                     : "An existing Virtual Desktop or Steam Link module is blocking installation. The new Qpro module was not installed, and existing module files were left unchanged.",
-                "Open VRCFaceTracking and uninstall the other Virtual Desktop or Steam Link module from its module list. Close VRCFaceTracking and wait for its module helper to exit, then retry " + action + " in First-time setup. Reopen VRCFaceTracking after installation.");
+                "Open VRCFaceTracking and uninstall the other Virtual Desktop or Steam Link module from its module list. Close VRCFaceTracking and wait for its module helper to exit, then " +
+                (installingBackup ? "select Install Qpro backup module" : "retry " + action) + ". Reopen VRCFaceTracking after installation.");
         if (Has("module was not found") || Has("module is not installed") || Has("module card needs repair") ||
             Has("selected module folder has no readable Qpro DLL") || Has("installed Qpro DLL differs") ||
             Has("module folder contains an unexpected DLL") || Has("only installed Qpro module") ||
             Has("alternate or legacy Qpro module slot") || Has("alternate or legacy module slot") ||
             Has("More than one Qpro DLL is installed") || Has("installed Qpro module uses"))
-        {
-            var source = Regex.Match(evidence, @"Qpro (Virtual Desktop|Steam Link)(?: VRCFaceTracking)? module", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-            var install = source.Success ? "Install " + source.Groups[1].Value + " module" : "install the module for your selected streaming app";
-            return new("The Qpro module needs installation or repair", "The selected module is missing, mismatched or duplicated. Its folder and module card must match this app.",
-                "Close VRCFaceTracking, use First-time setup to " + install + ", then reopen VRCFaceTracking. Keep the module recovery copies listed in Activity.");
-        }
+            return new("The Qpro module needs installation or repair", "Companion could not verify the installed module for the selected streaming app.",
+                "Close VRCFaceTracking and its module helper. In First-time setup, choose VRCFaceTracking backup and your streaming app, then select Install Qpro backup module. Reopen VRCFaceTracking after installation.");
         if (Has("Close VRCFaceTracking and wait") || Has("VRCFaceTracking is still open") ||
             Has("VRCFaceTracking must be closed"))
             return new("VRCFaceTracking is still open", "Its loaded module cannot be replaced safely while the app or module helper is running.", "Close VRCFaceTracking and wait for its module helper to exit, then retry.");

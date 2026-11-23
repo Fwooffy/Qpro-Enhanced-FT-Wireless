@@ -29,11 +29,37 @@ internal static class LayoutTests
         while (timer.ElapsedMilliseconds < milliseconds) { Application.DoEvents(); Thread.Sleep(5); }
     }
 
+    static void CheckNamePrompt()
+    {
+        using var dialog = new TextPromptDialog("Rename tongue model",
+            "Choose the friendly name shown in the hub. The model files remain paired and unchanged.", "Sample",
+            "Segoe UI", Color.Black, Color.Black, Color.Gray, Color.Gray, Color.White)
+        {
+            StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000), ShowInTaskbar = false,
+        };
+        dialog.Size = dialog.MinimumSize;
+        dialog.Show();
+        Application.DoEvents();
+        var save = (Button)dialog.AcceptButton!;
+        var cancel = (Button)dialog.CancelButton!;
+        var input = Descendants(dialog).OfType<TextBox>().Single();
+        var client = dialog.RectangleToScreen(dialog.ClientRectangle);
+        if (new Control[] { input, save, cancel }.Any(control =>
+            !client.Contains(control.RectangleToScreen(control.ClientRectangle))) || save.Right > cancel.Left)
+            throw new Exception("Rename controls clip or overlap at minimum size.");
+        if (dialog.ActiveControl != input || !dialog.SelectNextControl(input, true, true, true, true) ||
+            dialog.ActiveControl != save || !dialog.SelectNextControl(save, true, true, true, true) ||
+            dialog.ActiveControl != cancel)
+            throw new Exception("Rename dialog does not tab through name, Save name, then Cancel.");
+        Console.WriteLine("PASS minimum-size rename dialog geometry and keyboard navigation");
+    }
+
     static void Run(string[] args)
     {
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
         Application.SetColorMode(SystemColorMode.Dark);
+        if (args.Length == 1 && args[0] == "--name-dialog") { CheckNamePrompt(); return; }
         if (args.Length == 2 && args[0] == "--paint-presentation")
         {
             PresentationPaintTests.Run(args[1]);
@@ -59,6 +85,7 @@ internal static class LayoutTests
             RunPaintFixture(args[1]);
             return;
         }
+        CheckNamePrompt();
         var root = Path.Combine(Path.GetTempPath(), "qpro-layout-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         var offscreen = args.Contains("--offscreen");
@@ -304,7 +331,7 @@ internal static class LayoutTests
     static void CheckReadinessBatch(HubForm form, Button[] tabs)
     {
         const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Instance;
-        var names = new[] { "_usbStatus", "_steamStatus", "_vrcftStatus", "_bridgeStatus", "_runtimeStatus" };
+        var names = new[] { "_usbStatus", "_steamStatus", "_directVrchatStatus", "_runtimeStatus" };
         var labels = names.Select(name => (Label)typeof(HubForm).GetField(name, flags)!.GetValue(form)!).ToArray();
         var texts = labels.Select(label => label.Text).ToArray();
         var statuses = (TableLayoutPanel)labels[0].Parent!.Parent!;
@@ -404,7 +431,7 @@ internal static class LayoutTests
             if (eventArgs.KeyCode == Keys.F6) Capture("displayed-" + ++captureNumber);
             else if (eventArgs.KeyCode == Keys.F7)
             {
-                foreach (var name in new[] { "connection and camera settings", "eye settings and guidance", "camera settings", "cheek adjustment details", "hand and controller details" })
+                foreach (var name in new[] { "connection and camera settings", "eye settings and guidance", "tongue settings", "cheek adjustment details", "hand and controller details" })
                     controls.OfType<Button>().SingleOrDefault(button => button.Text == "Show " + name)?.PerformClick();
             }
             else if (eventArgs.KeyCode == Keys.F8)

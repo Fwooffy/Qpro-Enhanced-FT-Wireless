@@ -26,15 +26,15 @@ Assert-QproVrcftClosed
 $source = Join-Path $root "vrcft-gaze-bridge\bin\Release\net10.0\Qpro.GazeBridge.dll"
 if ($Rebuild) {
     $project = Join-Path $root "vrcft-gaze-bridge\Qpro.GazeBridge.csproj"
-    if (-not (Test-Path -LiteralPath $project -PathType Leaf)) { throw "The module source project is missing. Install the prebuilt release ZIP instead." }
+    if (-not (Test-Path -LiteralPath $project -PathType Leaf)) { throw "Rebuilding the backup module requires the Qpro Companion source checkout." }
     if ([string]::IsNullOrWhiteSpace($VrcftInstallDir) -or
         -not (Test-Path -LiteralPath (Join-Path $VrcftInstallDir "VRCFaceTracking.SDK.dll") -PathType Leaf)) {
-        throw "For -Rebuild, pass -VrcftInstallDir with your Steam VRCFaceTracking installation containing its SDK DLL. Release users do not need to rebuild."
+        throw "For -Rebuild, pass -VrcftInstallDir with your Steam VRCFaceTracking installation containing its SDK DLL."
     }
     & dotnet build $project -c Release "-p:Version=$QproModuleVersion" "-p:VrcftInstallDir=$([System.IO.Path]::GetFullPath($VrcftInstallDir))"
     if ($LASTEXITCODE -ne 0) { throw "Building the Qpro module failed." }
 }
-if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "The prebuilt Qpro module is missing. Re-extract the complete release ZIP." }
+if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "This copy of Companion is missing the backup module. Extract the full package with VRCFaceTracking backup support and retry." }
 Assert-QproReadableSourcePath $source
 if ((Get-QproAssemblyIdentity $source -ReadableSource) -ne "Qpro.GazeBridge") { throw "The packaged DLL is not a readable Qpro module. Re-extract the complete release ZIP. If the folder is synced by OneDrive, choose 'Always keep on this device' for the extracted Qpro folder, then retry." }
 $inventory = @(Get-QproModuleInstallInventory $customLibs)
@@ -75,9 +75,9 @@ try {
         AuthorName = "Fwooffy"
         ModuleName = $identity.DisplayName
         ModuleDescription = "Quest Pro face tracking from " + $identity.Name + " with opt-in Qpro gaze, tongue, cheek and pupil outputs."
-        UsageInstructions = "Select " + $identity.Name + " in Qpro Companion. Use one source module at a time. Start VRCFaceTracking after installing; start optional live overrides in Qpro Companion."
+        UsageInstructions = "Select VRCFaceTracking backup in Qpro Companion for " + $identity.Name + ". Reopen VRCFaceTracking after installing the module. Enable OSC in VRChat."
         DownloadUrl = $null
-        ModulePageUrl = "https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless"
+        ModulePageUrl = "https://github.com/Fwooffy/Qpro-Companion"
         DllFileName = $identity.Dll
         FileHash = (Get-QproFileHash $stageDll "MD5").ToLowerInvariant()
     }

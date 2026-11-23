@@ -19,10 +19,10 @@ internal sealed partial class HubForm
     private static Label SetupStatusLabel() => new() { Text = "○ Waiting", AutoSize = true, Font = new Font(UiFontName, 9.5F, FontStyle.Bold), ForeColor = Muted, Margin = new Padding(0, 4, 0, 8) };
     private static void SetStatus(Label label, StatusKind status, string text)
     {
-        label.Text = "● " + text;
-        label.ForeColor = status switch { StatusKind.Good => Good, StatusKind.Warning => Warning, _ => Bad };
+        label.Text = (status == StatusKind.Neutral ? "○ " : "● ") + text;
+        label.ForeColor = status switch { StatusKind.Good => Good, StatusKind.Warning => Warning, StatusKind.Bad => Bad, _ => Muted };
     }
-    private static Label SectionTitle(string text, HubIcon icon = HubIcon.None) => new HubIconLabel { Text = text, Icon = icon, AutoSize = true, Font = new Font(UiFontName, 12F, FontStyle.Bold), ForeColor = Color.White, Margin = new Padding(0, 0, 0, 12), Tag = "responsive-info" };
+    private static Label SectionTitle(string text, HubIcon icon = HubIcon.None) => new HubIconLabel { Text = text, Icon = icon, AutoSize = true, Font = new Font(UiFontName, 12F, FontStyle.Bold), ForeColor = TextPrimary, Margin = new Padding(0, 0, 0, 12), Tag = "responsive-info" };
     private static Label SectionCaption(string text) => new() { Text = text, AutoSize = true, Font = new Font(UiFontName, 8.5F, FontStyle.Bold), ForeColor = Muted, Margin = new Padding(0, 12, 0, 6) };
     private static Label Info(string text) => new() { Text = text, AutoSize = true, MaximumSize = new Size(395, 0), ForeColor = Muted, Margin = new Padding(0, 0, 0, 12), Tag = "responsive-info" };
     private static Label FieldLabel(string text) => new() { Text = text, AutoSize = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Muted, Margin = new Padding(0, 3, 12, 3) };
@@ -44,41 +44,11 @@ internal sealed partial class HubForm
     }
     private static DarkButton SecondaryButton(string text)
     {
-        var button = new DarkButton { Text = text, AutoSize = true, BackColor = Raised, ForeColor = Color.White, Padding = new Padding(12, 6, 12, 6), Margin = new Padding(0, 0, 8, 0), Enabled = false };
+        var button = new DarkButton { Text = text, AutoSize = true, BackColor = Raised, ForeColor = TextPrimary, Padding = new Padding(12, 6, 12, 6), Margin = new Padding(0, 0, 8, 0), Enabled = false };
         return button;
     }
     private static DarkButton ActionButton(string text, EventHandler action) { var button = SecondaryButton(text); button.Enabled = true; button.Margin = new Padding(0, 4, 8, 4); button.Click += action; return button; }
     private static DarkButton SetupButton(string text) { var button = SecondaryButton(text); button.Enabled = true; button.AutoSize = false; button.Height = 42; button.Dock = DockStyle.Bottom; button.Margin = new Padding(0, 8, 0, 3); return button; }
-
-    private static Control SetupStepCard(string number, string title, string description, Label status, params DarkButton[] buttons)
-    {
-        if (buttons.Length == 0) throw new ArgumentException("A setup step needs an action", nameof(buttons));
-        var card = new BufferedTableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, RowCount = 5, ColumnCount = 1, BackColor = Raised, Padding = new Padding(16), Margin = new Padding(0, 0, 0, 12) };
-        card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        card.RowStyles.Add(new RowStyle(SizeType.Absolute, 54 * buttons.Length));
-        card.Controls.Add(new Label { Text = $"STEP {number}", AutoSize = true, ForeColor = Warning, Font = new Font(UiFontName, 8.5F, FontStyle.Bold), Margin = new Padding(0, 0, 0, 4) }, 0, 0);
-        card.Controls.Add(new HubIconLabel { Text = title, Icon = number == "2" ? HubIcon.Desktop : HubIcon.Module, AutoSize = true, ForeColor = Color.White, Font = new Font(UiFontName, 11F, FontStyle.Bold), Margin = new Padding(0, 3, 0, 6), Tag = "responsive-info" }, 0, 1);
-        card.Controls.Add(status, 0, 2);
-        card.Controls.Add(new Label { Text = description, AutoSize = true, MaximumSize = new Size(900, 0), ForeColor = Muted, Margin = new Padding(0, 0, 0, 8), Tag = "responsive-info" }, 0, 3);
-        if (buttons.Length == 1)
-            card.Controls.Add(buttons[0], 0, 4);
-        else
-        {
-            var actions = new BufferedTableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = buttons.Length, Margin = Padding.Empty };
-            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            for (var index = 0; index < buttons.Length; index++)
-            {
-                // Divide the outer action row evenly after its DPI height is set.
-                actions.RowStyles.Add(new RowStyle(SizeType.Percent, 100F / buttons.Length));
-                actions.Controls.Add(buttons[index], 0, index);
-            }
-            card.Controls.Add(actions, 0, 4);
-        }
-        return card;
-    }
 
     private static Control WorkflowCard(string title, string description, ComboBox queue, Label queueStatus, ComboBox recorded, Button capture, Button train, Button delete)
     {
@@ -87,7 +57,7 @@ internal sealed partial class HubForm
         for (var row = 0; row < 9; row++) card.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         card.Controls.Add(new Label { Text = title, AutoSize = true, Font = new Font(UiFontName, 11F, FontStyle.Bold), ForeColor = Accent, Margin = new Padding(0, 0, 0, 8), Tag = "responsive-info" });
         card.Controls.Add(new Label { Text = description, AutoSize = true, ForeColor = Muted, Margin = new Padding(0, 0, 0, 12), Tag = "responsive-info" });
-        card.Controls.Add(new Label { Text = "Recording to train", AutoSize = true, ForeColor = Color.White, Margin = new Padding(0, 4, 0, 4) });
+        card.Controls.Add(new Label { Text = "Recording to train", AutoSize = true, ForeColor = TextPrimary, Margin = new Padding(0, 4, 0, 4) });
         queue.Margin = new Padding(0, 3, 0, 8);
         queue.AccessibleName = "Recording to train";
         card.Controls.Add(queue);
@@ -166,7 +136,7 @@ internal sealed partial class HubForm
             Dock = DockStyle.Top,
             FlatStyle = FlatStyle.Flat,
             TextAlign = ContentAlignment.MiddleLeft,
-            ForeColor = Color.White,
+            ForeColor = TextPrimary,
             BackColor = Panel,
             Margin = new Padding(0, 2, 0, 4),
         };
@@ -191,7 +161,7 @@ internal sealed partial class HubForm
     {
         toggle.Text = toggle.Text.TrimStart(' ', '◆', '◇');
         toggle.BackColor = Panel;
-        toggle.ForeColor = Color.White;
+        toggle.ForeColor = TextPrimary;
         toggle.FlatAppearance.BorderColor = toggle.Checked ? Accent : Border;
         toggle.FlatAppearance.BorderSize = toggle.Checked ? 2 : 1;
         toggle.FlatAppearance.MouseOverBackColor = RaisedHover;
@@ -200,9 +170,53 @@ internal sealed partial class HubForm
 
     private static void ConfigureDropDown(ComboBox box)
     {
+#if QPRO_REMOTE_CLICKER
+        box.FlatStyle = FlatStyle.Flat;
+        box.BackColor = Inset;
+        box.ForeColor = TextPrimary;
+        box.DrawMode = DrawMode.OwnerDrawFixed;
+        if (box is KilobyteComboBox styled) styled.UpdateItemHeight();
+        else box.ItemHeight = Math.Max(box.LogicalToDeviceUnits(25), box.Font.Height + box.LogicalToDeviceUnits(8));
+        box.DrawItem += (_, e) =>
+        {
+            bool closed = (e.State & DrawItemState.ComboBoxEdit) != 0;
+            bool selected = !closed && (e.State & DrawItemState.Selected) != 0;
+            bool highContrast = SystemInformation.HighContrast;
+            Color fillColor = highContrast ? selected ? SystemColors.Highlight : SystemColors.Window
+                : closed ? Inset : selected ? NavigationAccent : Panel;
+            Color ink = highContrast ? !box.Enabled ? SystemColors.GrayText : selected ? SystemColors.HighlightText : SystemColors.WindowText
+                : !box.Enabled ? DisabledText : selected ? ShellSurface : TextPrimary;
+            using (var fill = new SolidBrush(fillColor)) e.Graphics.FillRectangle(fill, e.Bounds);
+            if (e.Index < 0 || e.Index >= box.Items.Count) return;
+            int gap = box.LogicalToDeviceUnits(7);
+            bool rtl = box.RightToLeft == RightToLeft.Yes;
+            Rectangle textBounds = Rectangle.FromLTRB(e.Bounds.Left + gap, e.Bounds.Top,
+                e.Bounds.Right - gap, e.Bounds.Bottom);
+            if (closed && box is KilobyteComboBox chrome)
+            {
+                Rectangle arrow = chrome.ArrowBounds;
+                if (rtl) textBounds.X = Math.Max(textBounds.Left, arrow.Right + gap);
+                else textBounds.Width = Math.Max(0, Math.Min(textBounds.Right, arrow.Left - gap) - textBounds.Left);
+                if (rtl) textBounds.Width = Math.Max(0, e.Bounds.Right - gap - textBounds.Left);
+            }
+            if (box.Items[e.Index] is FileChoice { HasMoustacheIcon: true })
+            {
+                int iconWidth = box.LogicalToDeviceUnits(24);
+                int iconLeft = rtl ? textBounds.Right - iconWidth : textBounds.Left;
+                int occupied = DrawMoustacheIcon(e.Graphics, e.Bounds, iconLeft, ink);
+                if (rtl) textBounds.Width = Math.Max(0, textBounds.Width - occupied);
+                else { textBounds.X += occupied; textBounds.Width = Math.Max(0, textBounds.Width - occupied); }
+            }
+            TextFormatFlags flags = TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix
+                | (rtl ? TextFormatFlags.Right | TextFormatFlags.RightToLeft : TextFormatFlags.Left);
+            TextRenderer.DrawText(e.Graphics, box.Items[e.Index]?.ToString() ?? string.Empty, box.Font, textBounds, ink, flags);
+            if (!closed && (e.State & DrawItemState.Focus) != 0 && (e.State & DrawItemState.NoFocusRect) == 0)
+                ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(e.Bounds, -2, -2), ink, fillColor);
+        };
+#else
         box.FlatStyle = FlatStyle.Flat;
         box.BackColor = Raised;
-        box.ForeColor = Color.White;
+        box.ForeColor = TextPrimary;
         box.DrawMode = DrawMode.OwnerDrawFixed;
         box.ItemHeight = 25;
         box.DrawItem += (_, e) =>
@@ -215,15 +229,16 @@ internal sealed partial class HubForm
             var textLeft = e.Bounds.X + 7;
             if (box.Items[e.Index] is FileChoice { HasMoustacheIcon: true })
                 textLeft += DrawMoustacheIcon(e.Graphics, e.Bounds, textLeft);
-            TextRenderer.DrawText(e.Graphics, item, box.Font, new Rectangle(textLeft, e.Bounds.Y, e.Bounds.Right - textLeft, e.Bounds.Height), box.Enabled ? Color.White : DisabledText, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            TextRenderer.DrawText(e.Graphics, item, box.Font, new Rectangle(textLeft, e.Bounds.Y, e.Bounds.Right - textLeft, e.Bounds.Height), box.Enabled ? TextPrimary : DisabledText, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
             e.DrawFocusRectangle();
         };
+#endif
     }
 
     private static void ConfigureModelList(ListBox box)
     {
         box.BackColor = Inset;
-        box.ForeColor = Color.White;
+        box.ForeColor = TextPrimary;
         box.DrawMode = DrawMode.OwnerDrawFixed;
         box.ItemHeight = 56;
         box.DrawItem += (_, e) =>
@@ -243,12 +258,12 @@ internal sealed partial class HubForm
             var textLeft = e.Bounds.X + 10;
             if (box.Items[e.Index] is FileChoice { HasMoustacheIcon: true })
                 textLeft += DrawMoustacheIcon(e.Graphics, e.Bounds, textLeft);
-            TextRenderer.DrawText(e.Graphics, item, box.Font, new Rectangle(textLeft, e.Bounds.Y + 4, e.Bounds.Right - textLeft - 12, e.Bounds.Height - 8), box.Enabled ? Color.White : DisabledText, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            TextRenderer.DrawText(e.Graphics, item, box.Font, new Rectangle(textLeft, e.Bounds.Y + 4, e.Bounds.Right - textLeft - 12, e.Bounds.Height - 8), box.Enabled ? TextPrimary : DisabledText, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
             e.DrawFocusRectangle();
         };
     }
 
-    private static int DrawMoustacheIcon(Graphics graphics, Rectangle itemBounds, int left)
+    private static int DrawMoustacheIcon(Graphics graphics, Rectangle itemBounds, int left, Color? ink = null)
     {
         var scale = graphics.DpiX / 96F;
         var width = 24F * scale;
@@ -264,7 +279,7 @@ internal sealed partial class HubForm
         path.CloseFigure();
         var previousSmoothing = graphics.SmoothingMode;
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var brush = new SolidBrush(Accent);
+        using var brush = new SolidBrush(ink ?? Accent);
         graphics.FillPath(brush, path);
         graphics.SmoothingMode = previousSmoothing;
         return (int)Math.Ceiling(width + 7F * scale);
@@ -278,8 +293,8 @@ internal sealed partial class HubForm
             Icon = icon,
             AccessibleName = text,
             AutoSize = false,
-            ForeColor = Color.White,
-            BackColor = Panel,
+            ForeColor = TextPrimary,
+            BackColor = ShellSurface,
             Tag = "workflow-tab",
         };
         button.Dock = DockStyle.Fill;
@@ -291,7 +306,7 @@ internal sealed partial class HubForm
 
     private static void StyleNavigationButton(DarkButton button, bool selected)
     {
-        button.BackColor = selected ? Selected : Panel;
+        button.BackColor = selected ? Selected : ShellSurface;
         button.Emphasized = selected;
         button.Invalidate();
     }
@@ -300,7 +315,7 @@ internal sealed partial class HubForm
     {
         nextAction &= button.Enabled;
         button.BackColor = Raised;
-        button.ForeColor = button.Enabled ? Color.White : DisabledText;
+        button.ForeColor = button.Enabled ? TextPrimary : DisabledText;
         button.FlatAppearance.BorderColor = nextAction ? Accent : Border;
         button.FlatAppearance.BorderSize = nextAction ? 2 : 1;
         if (button is DarkButton dark) dark.Emphasized = nextAction;
@@ -315,6 +330,12 @@ internal sealed partial class HubForm
         {
             var enabled = 1;
             _ = DwmSetWindowAttribute(handle, 20, ref enabled, sizeof(int));
+#if QPRO_REMOTE_CLICKER
+            var caption = ColorTranslator.ToWin32(ShellSurface);
+            var captionText = ColorTranslator.ToWin32(Muted);
+            _ = DwmSetWindowAttribute(handle, 35, ref caption, sizeof(int)); // DWMWA_CAPTION_COLOR
+            _ = DwmSetWindowAttribute(handle, 36, ref captionText, sizeof(int)); // DWMWA_TEXT_COLOR
+#endif
         }
         catch { }
     }

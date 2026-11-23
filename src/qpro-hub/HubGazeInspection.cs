@@ -76,7 +76,7 @@ internal sealed record HubGazeInspection(string Firmware, string ExperimentalSel
             method += "\nModule: " + names;
             next = "A Magisk gaze module is active. Skip Check gaze setup and Prepare gaze. Leave Independent Eye Gaze unchecked in the Hub. " +
                 "You can still use Qpro tongue, pupil and eyebrow features. " +
-                "Confirm the module's eye tracking in VRCFaceTracking's preview. " +
+                "Confirm the module's eye tracking in VRChat with direct tracking running. " +
                 "To use the Hub method instead, disable that gaze module in Magisk, reboot, then reconnect the headset or run Check headset compatibility to refresh detection.";
             if (QproSessionRecorded) next += " A Qpro record also remains; stop its owning Hub and use Recover Qpro gaze.";
         }

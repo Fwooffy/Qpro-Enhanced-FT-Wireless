@@ -12,15 +12,17 @@ try
     Check(!HubModelMetadata.HasCameraCheeks(new JsonObject { ["hasCameraCheeks"] = "true" }),
         "malformed string capability is not accepted");
     foreach (string source in new[] { "VirtualDesktop", "SteamLink" })
+    foreach (bool direct in new[] { false, true })
     foreach (bool tongue in new[] { false, true })
     foreach (bool pupil in new[] { false, true })
     foreach (bool preview in new[] { false, true })
     {
-        var selection = Selection(source, tongue, pupil, preview);
+        var selection = Selection(source, tongue, pupil, preview) with { DirectVrchat = direct };
         var plan = HubCameraTrackingLaunch.Create(selection);
         Check(plan.Required == (tongue || pupil), "only selected tongue/pupil features start a process");
         if (!plan.Required) continue;
         var arguments = plan.Arguments;
+        Check(arguments.Contains("-DirectVrchat") == direct, "the camera follows the chosen face output");
         Check(Value(arguments, "-TrackingSource") == source, "streaming source stays isolated");
         Check(Value(arguments, "-TrackingProfile") == "responsive", "existing options preserve full processing cadence");
         Check(arguments.Contains("-EnableTongueOutput") == tongue, "tongue output follows explicit selection");

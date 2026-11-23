@@ -14,6 +14,20 @@
     <Description>Qpro Companion</Description>
     <Version>3.0.0</Version>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(QproRemoteClicker)' == 'true'">
+    <DefineConstants>$(DefineConstants);QPRO_REMOTE_CLICKER</DefineConstants>
+    <Title>Qpro Companion · Kilobyte Edition</Title>
+    <AssemblyTitle>Qpro Companion · Kilobyte Edition</AssemblyTitle>
+    <Product>Qpro Companion · Kilobyte Edition</Product>
+    <Description>Qpro Companion · Kilobyte Edition</Description>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(QproRemoteClicker)' != 'true'">
+    <Compile Remove="RemoteClicker/**/*.cs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(QproRemoteClicker)' == 'true'">
+    <EmbeddedResource Include="RemoteClicker/click.wav" LogicalName="Qpro.RemoteClicker.wav" />
+    <EmbeddedResource Include="RemoteClicker/double-click.wav" LogicalName="Qpro.RemoteDoubleClick.wav" />
+  </ItemGroup>
   <ItemGroup>
     <Compile Include="../shared/CheekTrackingSession.cs" Link="CheekTrackingSession.cs" />
     <Compile Include="../shared/EyebrowPreference.cs" Link="EyebrowPreference.cs" />
@@ -21,4 +35,5 @@
     <Compile Include="../shared/CheekPuffTelemetry.cs" Link="CheekPuffTelemetry.cs" />
     <Compile Include="../shared/DeveloperCheekPuffBaseline.cs" Link="DeveloperCheekPuffBaseline.cs" />
   </ItemGroup>
+  <Import Project="DirectVrchat.sources.props" />
 </Project>

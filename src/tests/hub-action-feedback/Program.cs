@@ -136,6 +136,10 @@ foreach (var action in new[] { "Install Virtual Desktop module", "Install Steam 
             throw new Exception("A source conflict must explain safe replacement in the correct order: " + result);
     }
 Expect(competingSource, "did not complete", "Camera tracking");
+var backupFailure = HubActionFailure.Explain("Install backup module", "exit 1", competingSource);
+if (!backupFailure.Title.Contains("Another face-tracking module") ||
+    !backupFailure.NextStep.Contains("select Install Qpro backup module"))
+    throw new Exception("The current backup installer must identify the source conflict and name the visible retry button.");
 Expect("Another Virtual Desktop or Steam Link module is installed at C:\\QproFixture\\CustomLibs. The action failed before its unchanged state was confirmed.",
     "did not complete", "Install Virtual Desktop module");
 foreach (var transactionFailure in new[]

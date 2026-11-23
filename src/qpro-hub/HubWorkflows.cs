@@ -22,22 +22,13 @@ internal sealed partial class HubForm
     private bool _utilityActionRunning;
     private bool _gazeRecoveryRunning;
     private bool _trackingCleanupPending;
-    private CheekTrackingSession? _cheekTrackingSession;
-    private bool _nativeCheekOnlySession;
-    private bool LiveTrackingRunning => _cheekTrackingSession is not null || _trackingProcesses.Any(p => !p.HasExited);
-    private bool NativeCheekAdjustmentsSelected => _individualCheekPuff.Checked || _individualCheekSuck.Checked;
+    private Task<bool>? _trackingStop;
+    private bool LiveTrackingRunning => _directSession is not null || _backupFaceSession is not null || _trackingProcesses.Any(p => !p.HasExited);
     private bool WorkerTrackingSelected => _gaze.Checked || _tongue.Checked || _pupil.Checked || _hybridHands.Checked || _controllerTouchpad.Checked;
-
-    private void EndCheekTrackingSession()
-    {
-        _cheekTrackingSession?.Dispose();
-        _cheekTrackingSession = null;
-        _nativeCheekOnlySession = false;
-    }
 
     private bool UtilityActionIsBusy(bool allowTrackingTransition = false)
     {
-        if (_closingInProgress) return true;
+        if (_closingInProgress || _faceRouteChanging) return true;
         if (!allowTrackingTransition && (_starting || _stopping))
         {
             SetActionFeedback("Tracking is changing state", "Wait for tracking startup or cleanup to finish before starting another action.", "Press Stop tracking to cancel startup, then wait for cleanup.");
@@ -196,78 +187,91 @@ internal sealed partial class HubForm
         _tongueModelNote.Text += " Stop tracking before changing models, then press Start tracking to load the selection.";
     }
 
+    private async Task<IReadOnlyList<string>> CapturePrerequisitesAsync()
+    {
+        if (_previewDataInteraction is { } interaction) return await interaction.CapturePrerequisites();
+        var missing = new List<string>();
+        if (FindAdb() is null) missing.Add("re-extract the release to restore the bundled Android tools");
+        else if (!await HasQuestAsync()) missing.Add("connect and authorize the rooted Quest Pro over USB or wireless ADB");
+        else if (await QuestIdentityProblemAsync() is { } identityProblem) missing.Add(identityProblem);
+        if (!HubProcessProbe.AnyRunning("vrserver")) missing.Add("start SteamVR");
+        if (!DataRuntimeReady()) missing.Add("open First-time setup and set up the PC runtime");
+        return missing;
+    }
+
     private async Task ConfirmCaptureAsync(TongueDatasetKind kind)
     {
-        if (UtilityActionIsBusy()) return;
-        var missing = new List<string>();
-        if (FindAdb() is null) missing.Add("re-extract the release; bundled platform-tools\\adb.exe is missing");
-        else if (!await HasQuestAsync()) missing.Add("connect and authorize the rooted Quest Pro over USB or wireless ADB");
-        if (!Process.GetProcessesByName("vrserver").Any()) missing.Add("start SteamVR");
-        if (!Process.GetProcessesByName("VRCFaceTracking").Any()) missing.Add($"start VRCFaceTracking and confirm {(_environment.SteamLinkSelected ? "Steam Link" : "Virtual Desktop")} face tracking is flowing");
-        else if (_environment.TrackingSourceRequiresVrcftRestart()) missing.Add("close and reopen VRCFaceTracking so its module loads the selected face-tracking source");
-        if (!BackendReady()) missing.Add("run First-time setup: Set up PC runtime");
-        if (_closingInProgress) return;
-        if (missing.Count > 0)
-        {
-            MessageBox.Show(
-                this,
-                "Before recording:\n\n• " + string.Join("\n• ", missing) +
-                "\n\nThe trainer uses the selected streaming app's native TongueOut confidence as a reference label, so SteamVR and VRCFaceTracking are required during capture.",
-                "Capture is not ready",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
-            return;
-        }
-        var title = kind switch
-        {
-            TongueDatasetKind.Quick => "Start quick tongue refinement?",
-            TongueDatasetKind.Focused => "Start focused tongue capture?",
-            _ => "Start full tongue capture?",
-        };
-        var estimate = kind switch
-        {
-            TongueDatasetKind.Quick => "about 15–30 minutes",
-            TongueDatasetKind.Focused => "about 15–30 minutes",
-            _ => "about 60–120 minutes",
-        };
-        var purpose = kind switch
-        {
-            TongueDatasetKind.Quick => "This records tongue poses to refine the selected model for your face. Training creates a separate personal tongue model.",
-            TongueDatasetKind.Focused => "This records fixed diagonal tongue poses plus matched tongue-hidden and tongue-visible poses with facial hair. Keep the tongue visible in both camera views for each visible card. It fine-tunes a new model without replacing your other captures or models.",
-            _ => "This records broad tongue coverage for a new personal model. It requires many carefully held poses and trains independently of the selected model.",
-        };
-        var choice = MessageBox.Show(
-            this,
-            $"Estimated capture time: {estimate}.\n\n{purpose}\n\nA guided camera window will open. Press Q at any point to stop safely. Existing captures and models will not be overwritten.\n\nStart now?",
-            title,
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Question,
-            MessageBoxDefaultButton.Button2);
-        if (choice != DialogResult.Yes) return;
-        if (UtilityActionIsBusy()) return;
+        if (!DataActionsAvailable || UtilityActionIsBusy()) return;
+        bool captureAttempted = false;
         _datasetOperationBusy = true;
         UpdateControlState();
         try
         {
-            var started = DateTime.UtcNow;
-            var succeeded = await RunUtilityAsync(
-                kind switch
-                {
-                    TongueDatasetKind.Quick => "Quick refinement capture",
-                    TongueDatasetKind.Focused => "Focused tongue capture",
-                    _ => "Full tongue capture",
-                },
-                "build-and-run.ps1",
-                "-TrackingSource", _environment.TrackingSourceArgument,
-                kind switch
-                {
-                    TongueDatasetKind.Quick => "-TongueRefinementCalibration",
-                    TongueDatasetKind.Focused => "-TongueArcCalibration",
-                    _ => "-TongueStillCalibration",
-                });
-            if (!succeeded) return;
-            var dataset = FindLatestDataset(kind, requireCompleted: false, newerThan: started.AddSeconds(-3));
-            if (dataset is null || dataset.SampleCount == 0) return;
+            var missing = await CapturePrerequisitesAsync();
+            if (_closingInProgress || IsDisposed || Disposing) return;
+            if (missing.Count > 0)
+            {
+                DataMessage("Before recording\n\n• " + string.Join("\n• ", missing) +
+                    "\n\nLeave face sharing enabled so the trainer receives the streaming app's native TongueOut reference.",
+                    "Capture is not ready");
+                return;
+            }
+            var title = kind switch
+            {
+                TongueDatasetKind.Quick => "Start quick tongue refinement?",
+                TongueDatasetKind.Focused => "Start focused tongue capture?",
+                _ => "Start full tongue capture?",
+            };
+            var estimate = kind == TongueDatasetKind.Full ? "about 60–120 minutes" : "about 15–30 minutes";
+            var purpose = kind switch
+            {
+                TongueDatasetKind.Quick => "Record tongue poses to refine the selected model for your face.",
+                TongueDatasetKind.Focused => "Record diagonal tongue poses and matching hidden and visible poses with facial hair. Keep your tongue visible in both camera views on each visible card.",
+                _ => "Record a broad set of tongue poses to train a new model independently of the current one.",
+            };
+            if (DataMessage($"Estimated capture time is {estimate}.\n\n{purpose}\n\nA guided camera window will open. Press Q to stop safely.",
+                title, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                return;
+
+            var recordPath = Path.GetFullPath(Path.Combine(_root, "captures",
+                $"questpro-{DateTime.UtcNow:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}.qpcap"));
+            bool steamLabels = _environment.SteamLinkSelected && DirectSelected;
+            bool succeeded;
+            try
+            {
+                if (!AcquireFaceExtras())
+                    throw new InvalidOperationException("Another Companion window is using face tracking, or the selected output changed. Stop its tracking before recording.");
+                if (BackupSelected && await BackupModuleProblemAsync(captureLabels: true) is { } backupProblem)
+                    throw new InvalidOperationException(backupProblem);
+                if (_closingInProgress || IsDisposed || Disposing) return;
+                if (!SelectedRouteStillCurrent) throw new InvalidOperationException("Face output changed in another Companion window. Check the selected route before recording.");
+                if (!BackupSelected && !EnsureDirectOwnership())
+                    throw new InvalidOperationException("Check the selected face output in First-time setup before recording.");
+                if (steamLabels) await SetNativeCaptureLabelsAsync(true);
+                captureAttempted = true;
+                succeeded = await RunDatasetWorkflowAsync(
+                    kind switch
+                    {
+                        TongueDatasetKind.Quick => "Quick refinement capture",
+                        TongueDatasetKind.Focused => "Focused tongue capture",
+                        _ => "Full tongue capture",
+                    },
+                    "build-and-run.ps1",
+                    [.. (DirectSelected ? new[] { "-DirectVrchat" } : Array.Empty<string>()), "-TrackingSource", _environment.TrackingSourceArgument, "-RecordPath", recordPath,
+                    kind switch
+                    {
+                        TongueDatasetKind.Quick => "-TongueRefinementCalibration",
+                        TongueDatasetKind.Focused => "-TongueArcCalibration",
+                        _ => "-TongueStillCalibration",
+                    }]);
+            }
+            finally
+            {
+                try { if (steamLabels) await SetNativeCaptureLabelsAsync(false); }
+                finally { ReleaseFaceExtras(); }
+            }
+            var dataset = ReadDataset(Path.ChangeExtension(recordPath, ".qpsession.json"), kind)?.Dataset;
+            if (!succeeded || dataset is null || dataset.SampleCount == 0) return;
             var proposed = dataset.DisplayName.StartsWith("Dataset ", StringComparison.Ordinal)
                 ? kind switch
                 {
@@ -285,71 +289,40 @@ internal sealed partial class HubForm
                 SetDatasetDisplayName(dataset.SessionPath, name);
                 AppendLog($"Dataset saved as “{name}”.");
             }
-            ReloadDatasetQueues();
         }
         catch (Exception error) { ShowWorkflowFailure("Capture result", error); }
-        finally { _datasetOperationBusy = false; UpdateControlState(); }
+        finally
+        {
+            _datasetOperationBusy = false;
+            if (!IsDisposed && !Disposing)
+            {
+                if (captureAttempted) ReloadDatasetQueues();
+                UpdateControlState();
+                RequestNativeIdleRefresh();
+            }
+        }
     }
 
     private async Task RunSetupStepAsync(string label, string script, string completed, string next, params string[] args)
     {
-        if (!TryBeginSetupProgress(label)) return;
+        if (!SetupCommandsAvailable || !TryBeginSetupProgress(label)) return;
         var succeeded = false;
-        try { succeeded = await RunUtilityAsync(label, script, args); }
+        try { succeeded = await RunSetupCommandAsync(label, script, args); }
         catch (Exception error) { ShowWorkflowFailure(label, error); }
         finally
         {
             if (script.Equals("Install-QproRocm.ps1", StringComparison.OrdinalIgnoreCase)) _rocmInstallRunning = false;
             FinishSetupProgress(succeeded, label);
         }
-        if (!succeeded) return;
+        if (!succeeded || _previewOnly) return;
         UpdateSetupStepStyles();
         PlaySfx("succeed.wav");
         MessageBox.Show(this, completed + "\n\n" + next, "Setup step complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
-    private async Task InstallQproModuleAsync(bool steamLink)
-    {
-        var sourceName = steamLink ? "Steam Link" : "Virtual Desktop";
-        if (VrcftModuleProcessRunning())
-        {
-            MessageBox.Show(this,
-                $"Close VRCFaceTracking and wait for its ModuleProcess helper to exit, then press Install {sourceName} module again. Qpro will not close them for you.",
-                "Close VRCFaceTracking", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
-        }
-
-        var label = $"Install {sourceName} module";
-        if (!TryBeginSetupProgress(label)) return;
-        var succeeded = false;
-        try
-        {
-            succeeded = await RunUtilityAsync(label, "install-vrcft-eye-bridge.ps1",
-                "-TrackingSource", steamLink ? "SteamLink" : "VirtualDesktop");
-            if (succeeded)
-            {
-                _environment.ReloadTrackingSource();
-                succeeded = _environment.SteamLinkSelected == steamLink && CurrentBridgeInstalled();
-                if (!succeeded)
-                    throw new InvalidOperationException("The module helper completed, but the selected source and installed module could not be verified. Retry with VRCFaceTracking closed.");
-                SyncTrackingSourceControls();
-                UpdateTrackingSourceNotes();
-            }
-        }
-        catch (Exception error) { succeeded = false; ShowWorkflowFailure(label, error); }
-        finally { FinishSetupProgress(succeeded, label); }
-        if (!succeeded) return;
-        UpdateSetupStepStyles();
-        await RefreshStatusAsync();
-        AppendLog($"The Qpro {sourceName} module is active on disk. Any replaced source modules have verified recovery copies; see Activity for their location. Restart VRCFaceTracking to load Qpro.");
-        PlaySfx("succeed.wav");
-        MessageBox.Show(this,
-            $"The Qpro {sourceName} module is installed. Any replaced source modules have verified backups; their location is in Activity. Restore stock VRCFT can restore saved modules later.\n\nReopen VRCFaceTracking and confirm expressions move in its preview. Choose your features on Facial tracking.\n\nUsing a Magisk independent-gaze module? Leave Independent Eye Gaze off in the Hub; Check gaze setup and Prepare gaze are not needed.",
-            "Setup step complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
-    }
-
     private async Task PrepareGazeAsync()
     {
+        if (_previewOnly || UtilityActionIsBusy()) return;
         if (HasActiveMagiskGaze)
         {
             UpdateGazeSetupStatus();
@@ -418,7 +391,7 @@ internal sealed partial class HubForm
             "Local gaze preparation",
             "prepare-eye-model.ps1",
             "Independent-gaze support is prepared.",
-            $"Start {(_environment.SteamLinkSelected ? "Steam Link" : "Virtual Desktop")}, SteamVR, and VRCFaceTracking. Enable Independent Eye Gaze only if you want the Hub method; Start tracking checks the prepared patch again.");
+            $"Start {(_environment.SteamLinkSelected ? "Steam Link" : "Virtual Desktop")}, SteamVR, and VRChat with OSC enabled. Enable Independent Eye Gaze only if you want the Hub method; Start tracking checks the prepared patch again.");
     }
 
     private bool TryBeginSetupProgress(string label)
@@ -436,7 +409,7 @@ internal sealed partial class HubForm
             ? "Installing and verifying the private PC runtime… This can take several minutes."
             : label + " is running… Please keep this window open.";
         _setupProgressStatus.ForeColor = Warning;
-        SetSetupButtonsEnabled(false);
+        UpdateControlState();
         return true;
     }
 
@@ -448,17 +421,15 @@ internal sealed partial class HubForm
         _setupProgress.Value = succeeded ? 100 : 0;
         _setupProgressStatus.Text = succeeded ? label + " completed successfully." : _actionTitle.Text + ". " + _actionNext.Text;
         _setupProgressStatus.ForeColor = succeeded ? Good : Bad;
-        SetSetupButtonsEnabled(true);
+        UpdateControlState();
     }
 
-    private void SetSetupButtonsEnabled(bool enabled, bool? runtimeReady = null, bool? bridgeUninstallAvailable = null)
+    private void SetSetupButtonsEnabled(bool enabled, bool? runtimeReady = null)
     {
         enabled &= !_closingInProgress && !_starting && !_stopping && !_trackingCleanupPending && !_gazeRecoveryRunning &&
             !_setupActionRunning && !_utilityActionRunning && !_datasetOperationBusy && !LiveTrackingRunning;
         _setupRuntimeButton.Enabled = enabled;
         UpdateRuntimeRecoveryButtons(enabled);
-        UpdateModuleInstallButtonState(enabled);
-        _uninstallBridgeButton.Enabled = enabled && (bridgeUninstallAvailable ?? BridgeUninstallAvailable());
         _setupGazeButton.Enabled = enabled && !HasActiveMagiskGaze;
         _recoverGazeButton.Enabled = enabled && !_gazeRecoveryRunning;
         _inspectGazeButton.Enabled = _recoverGazeButton.Enabled && !HasActiveMagiskGaze;
@@ -474,7 +445,7 @@ internal sealed partial class HubForm
 
     private async Task TrainTongueAsync(TongueDatasetKind kind)
     {
-        if (UtilityActionIsBusy()) return;
+        if (!DataActionsAvailable || UtilityActionIsBusy()) return;
         var queue = kind switch
         {
             TongueDatasetKind.Quick => _quickDatasets,
@@ -484,17 +455,29 @@ internal sealed partial class HubForm
         var dataset = (queue.SelectedItem as DatasetChoice)?.Dataset;
         if (dataset is null || dataset.SampleCount == 0 || !dataset.Completed)
         {
-            MessageBox.Show(
-                this,
-                "You did not capture any completed data yet! Capture first to train.",
-                "No training data",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            DataMessage("Record a completed dataset with native TongueOut labels before training.", "No training data");
             return;
         }
-        if (UtilityActionIsBusy()) return;
+        if (!File.Exists(dataset.SessionPath) || !File.Exists(dataset.CapturePath) || !HasDatasetLabels(dataset))
+        {
+            DataMessage("The selected session, recording, or native reference labels are missing. Restore its files or record another dataset.",
+                "Dataset files are missing");
+            ReloadDatasetQueues();
+            return;
+        }
         var refinementParent = kind == TongueDatasetKind.Full ? null : _tongueModels.SelectedItem as FileChoice;
         var parentVersion = refinementParent is null ? 0 : VersionFromPath(refinementParent.Primary);
+        if (kind != TongueDatasetKind.Full && (parentVersion <= 0 || !File.Exists(refinementParent!.Primary) ||
+            !File.Exists(refinementParent.Secondary)))
+        {
+            DataMessage("Select a paired tongue model on Facial tracking before training a refinement.", "Select a base model");
+            return;
+        }
+        if (!DataRuntimeReady())
+        {
+            DataMessage("Open First-time setup and set up the PC runtime, then retry training.", "Training runtime is missing");
+            return;
+        }
         var trainingArguments = new List<string> { "-SessionPath", dataset.SessionPath };
         if (parentVersion > 0)
         {
@@ -507,7 +490,7 @@ internal sealed partial class HubForm
         {
             BeginTrainingProgress(kind);
             var versionsBefore = TongueModelVersions().ToHashSet();
-            var succeeded = await RunUtilityAsync(
+            var succeeded = await RunDatasetWorkflowAsync(
                 kind switch
                 {
                     TongueDatasetKind.Quick => "Personal refinement training",
@@ -564,8 +547,7 @@ internal sealed partial class HubForm
             if (created > 0)
             {
                 PlaySfx("trainingComplete.wav");
-                MessageBox.Show(this, $"Training is complete. “{dataset.DisplayName}” is now available as tongue model v{created}.",
-                    "Tongue model ready", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                DataMessage($"“{dataset.DisplayName}” is available as tongue model v{created}.", "Tongue model ready");
             }
         }
         catch (Exception error)
@@ -588,18 +570,16 @@ internal sealed partial class HubForm
     private async Task<List<string>> TrackingPrerequisitesAsync()
     {
         var missing = new List<string>();
+        if (FaceAdjustmentsSelected && BackupSelected && await BackupModuleProblemAsync(checkSelectedFeatures: true) is { } backupProblem) missing.Add(backupProblem);
+        if (FaceAdjustmentsSelected && !BackupSelected && !EnsureDirectOwnership())
+            missing.Add("an available direct face output — check First-time setup");
         bool needsHeadsetRuntime = WorkerTrackingSelected;
         if (needsHeadsetRuntime && FindAdb() is null) missing.Add("the bundled Android tools — re-extract the complete release");
         else if (needsHeadsetRuntime && !await HasQuestAsync()) missing.Add(_environment.WirelessSelected
             ? "an authorized wireless Quest — use First-time setup to connect or pair it"
             : "an authorized Quest over USB — connect the cable and approve debugging");
         else if (needsHeadsetRuntime && await QuestIdentityProblemAsync() is { } identityProblem) missing.Add(identityProblem);
-        if (!Process.GetProcessesByName("vrserver").Any()) missing.Add("SteamVR");
-        bool faceFeatures = _gaze.Checked || _tongue.Checked || _pupil.Checked || NativeCheekAdjustmentsSelected;
-        if (faceFeatures && !Process.GetProcessesByName("VRCFaceTracking").Any()) missing.Add("VRCFaceTracking");
-        else if (faceFeatures && _environment.TrackingSourceRequiresVrcftRestart()) missing.Add("restart VRCFaceTracking after changing the face-tracking source");
-        if (faceFeatures && !BridgeInstalled()) missing.Add("the Qpro VRCFT module — use First-time setup: Install module");
-        else if (faceFeatures && !CurrentBridgeInstalled()) missing.Add("the module for this face-tracking source and Qpro build — close VRCFaceTracking, use First-time setup: Install module, then restart it");
+        if ((_environment.SteamLinkSelected || _hybridHands.Checked || _controllerTouchpad.Checked) && !HubProcessProbe.AnyRunning("vrserver")) missing.Add("SteamVR");
         if (needsHeadsetRuntime && !BackendReady()) missing.Add("the PC runtime — use First-time setup: Install runtime");
         if (_gaze.Checked && !EyeModelReady()) missing.Add("the locally prepared gaze patch — use First-time setup: Optional independent gaze");
         if (_gaze.Checked && _eyeProfiles.SelectedItem is null) missing.Add("an eye profile");
@@ -611,12 +591,16 @@ internal sealed partial class HubForm
 
     private async Task StartTrackingAsync()
     {
-        if (_starting || _stopping) return;
+        if (_starting || _stopping || _faceRouteChanging) return;
         if (UtilityActionIsBusy()) return;
         ApplyMagiskGazeControlGate(sessionEditable: !LiveTrackingRunning && !_trackingCleanupPending);
         _trackingProcesses.RemoveAll(p => p.HasExited);
         if (LiveTrackingRunning) { MessageBox.Show(this, "Tracking is already running."); return; }
-        if (!_gaze.Checked && !_tongue.Checked && !_pupil.Checked && !_hybridHands.Checked && !_controllerTouchpad.Checked && !NativeCheekAdjustmentsSelected) { MessageBox.Show(this, "Select at least one tracking feature."); return; }
+        if (!FaceAdjustmentsSelected && !_hybridHands.Checked && !_controllerTouchpad.Checked)
+        {
+            MessageBox.Show(this, "Select a tracking feature to start. Native face tracking runs while Companion is open.");
+            return;
+        }
         bool workerTrackingRequested = WorkerTrackingSelected;
         _trackingStopAlert.BeginSession();
         _starting = true;
@@ -629,6 +613,8 @@ internal sealed partial class HubForm
             var missing = await TrackingPrerequisitesAsync();
             startCancellation.Token.ThrowIfCancellationRequested();
             if (IsDisposed || Disposing) return;
+            if (missing.Count == 0 && FaceAdjustmentsSelected && !AcquireFaceExtras())
+                missing.Add("exclusive access to the selected face output — stop face adjustments in other Companion windows and check the output route");
             if (missing.Count > 0)
             {
                 SetActionFeedback("Tracking needs a few prerequisites", string.Join("; ", missing), "Complete the listed requirements, then retry Start tracking.", true);
@@ -640,14 +626,32 @@ internal sealed partial class HubForm
             AppendLog($"Face-tracking source for this session: {(_environment.SteamLinkSelected ? "Steam Link OSC (port 9015)" : "Virtual Desktop")}.");
             // Old calibration profiles remain on disk, but this UI's enabled
             // cheek toggles always select the native individual 1/0 mode.
-            HubCheekPuffPreference.Save(_individualCheekPuff.Checked, HubCheekPuffMode.Strong);
-            HubCheekSuckPreference.Save(_individualCheekSuck.Checked, true);
+            if (!_previewOnly)
+            {
+                HubCheekPuffPreference.Save(_individualCheekPuff.Checked, HubCheekPuffMode.Strong);
+                HubCheekSuckPreference.Save(_individualCheekSuck.Checked, true);
+            }
             _gazeFailureHandled = false;
             _gazeRecoveryConfirmed = false;
             File.Delete(_stopFile);
             _start.Enabled = false; _stop.Enabled = true;
             _runStatus.Text = "● Starting…"; _runStatus.ForeColor = Warning;
             BeginTrackingHealth();
+            var selectedFace = FaceSelection();
+            if (selectedFace.HasAdjustments && BackupSelected)
+            {
+                _cameraFaceWorkerExited = false;
+                _backupFaceSession = new BackupFaceAdjustments(_previewOnly ? @"Local\QproPreview." + Guid.NewGuid().ToString("N") : null);
+                UpdateDirectFaceAdjustments();
+                if (!WorkerTrackingSelected) SetStatus(_runStatus, StatusKind.Neutral, "Face adjustments enabled for VRCFaceTracking");
+            }
+            else if (selectedFace.HasAdjustments)
+            {
+                await SuspendNativeIdleAsync();
+                startCancellation.Token.ThrowIfCancellationRequested();
+                CancelVrchatCheck();
+                StartDirectTracking(selectedFace);
+            }
             SetStatus(_inferenceStatus, StatusKind.Warning, _tongue.Checked ? "Detecting…" : "Idle");
             SetStatus(_pupilStatus, StatusKind.Warning, _pupil.Checked ? "Starting…" : "Idle");
             if (_gaze.Checked)
@@ -661,7 +665,7 @@ internal sealed partial class HubForm
                     var eye = (FileChoice)_eyeProfiles.SelectedItem!;
                     _runStatus.Text = "● Checking independent gaze compatibility…";
                     AppendLog("Checking the prepared eye model against this headset before changing tracking. If compatible, Meta trackingservice restarts briefly during apply and restore.");
-                    var gazeArguments = new List<string> { "-RuntimePreview", "-VrcftOutput", "-CalibrationOutput", eye.Primary, "-StopFile", _stopFile };
+                    var gazeArguments = new List<string> { "-RuntimePreview", BackupSelected ? "-VrcftOutput" : "-DirectVrchat", "-CalibrationOutput", eye.Primary, "-StopFile", _stopFile };
                     if (!_cameraPreview.Checked) gazeArguments.Add("-NoWindow");
                     AppendLog(_cameraPreview.Checked ? "Independent gaze preview enabled; its display is limited to 20 FPS."
                         : "Independent gaze preview off; live gaze output continues without rendering a window.");
@@ -700,7 +704,7 @@ internal sealed partial class HubForm
             var cameraPlan = HubCameraTrackingLaunch.Create(new(
                 _environment.TrackingSourceArgument, _tongue.Checked, lowerFaceModel?.Primary, lowerFaceModel?.Secondary,
                 _fps.SelectedItem?.ToString() ?? "24", _smoothing.Value, VisibilityModeValue(),
-                _pupil.Checked, PupilSensitivityValue(), _cameraPreview.Checked, _stopFile, ProcessingProfileValue()));
+                _pupil.Checked, PupilSensitivityValue(), _cameraPreview.Checked, _stopFile, ProcessingProfileValue(), DirectSelected));
             Task<HubTrackingExitFeedback?>? cameraExitResult = null;
             if (cameraPlan.Required)
             {
@@ -719,8 +723,7 @@ internal sealed partial class HubForm
             StartControllerInput();
             startCancellation.Token.ThrowIfCancellationRequested();
             bool workersRunning = _trackingProcesses.Any(p => !p.HasExited);
-            _nativeCheekOnlySession = !workerTrackingRequested;
-            if (!workersRunning && !_nativeCheekOnlySession)
+            if (!workersRunning && workerTrackingRequested)
             {
                 // A short-lived worker can exit before its final stderr callback.
                 // Keep this startup's result until it is read, before automatic
@@ -733,12 +736,10 @@ internal sealed partial class HubForm
                 }
                 throw new InvalidOperationException("The selected tracking processes did not remain running. Check Activity before retrying.");
             }
-            _cheekTrackingSession = new CheekTrackingSession();
-            AppendLog("Cheek adjustments enabled for this tracking session. Stop tracking restores the streaming app's native cheek values.");
-            if (!_gazeFailureHandled)
+            if (!_gazeFailureHandled && workerTrackingRequested)
             {
                 _runStatus.Text = (_hybridHands.Checked || _controllerTouchpad.Checked)
-                    ? "● Waiting for valid controller input…" : cameraPlan.Required ? "● Waiting for camera output…" : "● Selected overrides active";
+                    ? "● Waiting for valid controller input…" : cameraPlan.Required ? "● Waiting for camera output…" : "● Independent gaze source ready";
                 _runStatus.ForeColor = (_hybridHands.Checked || _controllerTouchpad.Checked || cameraPlan.Required) ? Warning : Good;
             }
             UpdateControlState();
@@ -761,13 +762,16 @@ internal sealed partial class HubForm
         }
         finally
         {
-            if (startCancellation.IsCancellationRequested) EndCheekTrackingSession();
             _starting = false;
-            if (!_nativeCheekOnlySession && !_trackingProcesses.Any(p => !p.HasExited)) EndCheekTrackingSession();
-            if (!_trackingProcesses.Any(p => !p.HasExited)) StopTrackingHealth();
+            if (!LiveTrackingRunning)
+            {
+                StopTrackingHealth();
+                if (!_trackingCleanupPending) ReleaseFaceExtras();
+            }
             if (ReferenceEquals(_startCancellation, startCancellation)) _startCancellation = null;
             startCancellation.Dispose();
             UpdateControlState();
+            RequestNativeIdleRefresh();
         }
     }
 
@@ -776,9 +780,14 @@ internal sealed partial class HubForm
         await TryStopTrackingAsync();
     }
 
-    private async Task<bool> TryStopTrackingAsync()
+    private Task<bool> TryStopTrackingAsync()
     {
-        EndCheekTrackingSession();
+        if (_trackingStop is { IsCompleted: false }) return _trackingStop;
+        return _trackingStop = StopTrackingCoreAsync();
+    }
+
+    private async Task<bool> StopTrackingCoreAsync()
+    {
         if (_stopping) return false;
         _stopping = true;
         StopTrackingHealth();
@@ -786,8 +795,13 @@ internal sealed partial class HubForm
         bool stopRequestFailed = false;
         _startCancellation?.Cancel();
         _runStatus.Text = "● Stopping cleanly…"; _runStatus.ForeColor = Warning;
+        UpdateControlState();
         try
         {
+            _backupFaceSession?.Dispose();
+            _backupFaceSession = null;
+            await StopDirectTrackingAsync();
+            RequestNativeIdleRefresh();
             RequestTrackingStop();
             var deadline = DateTime.UtcNow.AddSeconds(18);
             while (_trackingProcesses.Any(p => !p.HasExited) && DateTime.UtcNow < deadline)
@@ -821,7 +835,7 @@ internal sealed partial class HubForm
                 if (gazeRestoreFailed)
                     AppendLog("Qpro live processes stopped, but eye-model recovery was not confirmed. Use Recover Qpro gaze in First-time setup and check Activity before starting gaze again.");
                 else if (!ControllerCleanupUnconfirmed)
-                    AppendLog("Qpro live overrides stopped; native cheek values restored. Saved eyebrow and smirk adjustments and any Magisk modules remain active.");
+                    AppendLog("Tracking stopped. The foreground session released its VRChat outputs.");
             }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
@@ -835,6 +849,7 @@ internal sealed partial class HubForm
         finally
         {
             if (!_trackingCleanupPending) _trackingProcesses.RemoveAll(p => p.HasExited);
+            if (!_trackingCleanupPending && _trackingProcesses.Count == 0) ReleaseFaceExtras();
             _stopping = false; _start.Enabled = true; _stop.Enabled = false;
             _runStatus.Text = stopRequestFailed ? "● Stop request failed — check Activity"
                 : _trackingCleanupPending || _trackingProcesses.Count != 0 ? "● Waiting for tracking cleanup"
@@ -844,6 +859,7 @@ internal sealed partial class HubForm
             _runStatus.ForeColor = _trackingProcesses.Count == 0 && !gazeRestoreFailed && !stopRequestFailed && !ControllerCleanupUnconfirmed ? Good : Warning;
             if (_trackingProcesses.Count == 0) ResetInferenceStatus();
             UpdateControlState();
+            RequestNativeIdleRefresh();
         }
         return !stopRequestFailed && !gazeRestoreFailed && !ControllerCleanupUnconfirmed && !TrackingShutdownPending;
     }
@@ -960,14 +976,17 @@ internal sealed partial class HubForm
                         _startCancellation?.IsCancellationRequested == true,
                         exitedDuringStartup || _starting) && _trackingStopSound.Checked)
                         PlaySfx("warning.wav");
-                    if ((label is "Camera tracking" or "Pupil tracking") && _trackingHealth.Running)
+                    if (label is "Camera tracking" or "Pupil tracking")
                     {
-                        _trackingHealth.CameraExited(exitCode != 0 && !stopWasRequested);
-                        _cameraInputReady = false;
-                        RefreshTrackingHealth();
+                        _cameraFaceWorkerExited = true;
+                        UpdateDirectFaceAdjustments();
+                        if (_trackingHealth.Running)
+                        {
+                            _trackingHealth.CameraExited(exitCode != 0 && !stopWasRequested);
+                            _cameraInputReady = false;
+                            RefreshTrackingHealth();
+                        }
                     }
-                    if (!_starting && !_nativeCheekOnlySession && !_trackingProcesses.Any(p => !p.HasExited))
-                        EndCheekTrackingSession();
                     if (controllerRestoration is not null)
                     {
                         CompleteControllerInputExit(process, controllerRestoration, stopWasRequested || _stopping || _closingInProgress);
@@ -1033,6 +1052,7 @@ internal sealed partial class HubForm
         _gazeRecoveryConfirmed = false;
         _gazeFailureHandled = true;
         _gaze.Checked = false;
+        UpdateDirectFaceAdjustments();
         AppendLog($"Independent Eye Gaze disabled automatically: {reason}");
         AppendLog("Tongue and pupil tracking will continue if selected. Checking that the temporary eye model was removed…");
         _runStatus.Text = "● Independent gaze disabled — checking stock eye model";
@@ -1082,7 +1102,7 @@ internal sealed partial class HubForm
 
     private async Task RecoverGazeAsync()
     {
-        if (UtilityActionIsBusy()) return;
+        if (_previewOnly || UtilityActionIsBusy()) return;
         _gazeRecoveryConfirmed = false;
         _gazeRecoveryRunning = true;
         UpdateControlState();
@@ -1098,7 +1118,7 @@ internal sealed partial class HubForm
 
     private async Task InspectGazeAsync()
     {
-        if (UtilityActionIsBusy()) return;
+        if (_previewOnly || UtilityActionIsBusy()) return;
         _gazeInspectionConfirmed = false;
         _gazeInspectionResult = null;
         var succeeded = await RunUtilityAsync("Gaze setup check", "native-eye-local-branch-test.ps1", "-InspectOnly");
@@ -1115,7 +1135,7 @@ internal sealed partial class HubForm
 
     private async Task ResetLegacyGazeAsync()
     {
-        if (UtilityActionIsBusy()) return;
+        if (_previewOnly || UtilityActionIsBusy()) return;
         if (MessageBox.Show(this,
             "Use this only for an older Qpro session without a recovery record. It chooses the normal, nonexperimental eye-model selection and briefly restarts headset tracking.\n\n" +
             "An active Magisk gaze module or an unverified model overlay blocks this reset. Disable the gaze module in Magisk and reboot first if you want ordinary headset tracking.\n\n" +
@@ -1313,7 +1333,7 @@ internal sealed partial class HubForm
                 AppendLog(detail);
                 SetActionFeedback("VRCFaceTracking module reset complete", detail, StockRestoreNext);
             }
-            else SetActionFeedback(label + " completed", "The helper exited successfully and its required result checks passed.", label.StartsWith("Install ", StringComparison.Ordinal) && label.Contains("module", StringComparison.Ordinal) ? "Reopen VRCFaceTracking to load the installed module." : "Continue setup or choose your features on Facial tracking.");
+            else SetActionFeedback(label + " completed", "The helper exited successfully and its required result checks passed.", "Continue setup or choose your features on Facial tracking.");
             return true;
         }
         catch (Exception error)

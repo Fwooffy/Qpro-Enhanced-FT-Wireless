@@ -126,9 +126,7 @@ internal static class MagiskGateTests
         Check(statusChanges == 0 && File.GetLastWriteTimeUtc(preference) == writtenAt,
             "Repeated refreshes flickered the status or rewrote the off preference.");
         Set(form, "_previewOnly", true);
-        var snapshot = new HubForm.HubStatusSnapshot(true, true,
-            new HubModuleInspection(HubModuleState.Current, "Fixture module", "Fixture current module", "fixture"),
-            false, true, false, null, false, false);
+        var snapshot = new HubForm.HubStatusSnapshot(true, true, null, false, false);
         Call(form, "UpdateControlStateFromSnapshot", snapshot);
         int availabilityChanges = 0;
         foreach (var control in new[] { gaze, Field<Control>(form, "_inspectGazeButton"), Field<Control>(form, "_setupGazeButton") })

@@ -15,7 +15,6 @@ namespace QproFaceTracking.Hub;
 
 internal sealed partial class HubForm
 {
-    private string? _lastModuleInspectionDetail;
     private string? _lastUsbFailureDetail;
     private string? _lastUsbStatusReason;
     private string? _lastWirelessStatusReason;
@@ -23,33 +22,25 @@ internal sealed partial class HubForm
     private sealed record GazeStatusObservation(HubCompatibilityReport? Compatibility, HubGazeInspection? Inspection,
         string? Target, bool Wireless);
     private GazeStatusObservation? _lastGazeStatusObservation;
-    internal sealed record HubStatusSnapshot(bool SteamRunning, bool VrcftRunning, HubModuleInspection Module,
-        bool ModuleNeedsRestart, bool RuntimeReady, bool BridgeUninstallAvailable,
+    internal sealed record HubStatusSnapshot(bool SteamRunning, bool RuntimeReady,
         string? RocmInstalledVersion, bool LegacyRocmReady, bool RocmEnvironmentExists);
-    private sealed record PreviewStatusRefreshDependencies(Func<Task<HubStatusSnapshot>> ReadSnapshot,
-        Func<bool, HubModuleInspection, Task> RefreshHeartbeat);
-    private PreviewStatusRefreshDependencies? _previewStatusRefreshDependencies;
+    private Func<Task<HubStatusSnapshot>>? _previewReadStatusSnapshot;
 
     // Exercise the production refresh order in an isolated preview fixture.
     // The transport/USB probe itself remains the production implementation.
-    internal void ConfigurePreviewStatusRefresh(Func<Task<HubStatusSnapshot>> readSnapshot,
-        Func<bool, HubModuleInspection, Task> refreshHeartbeat)
+    internal void ConfigurePreviewStatusRefresh(Func<Task<HubStatusSnapshot>> readSnapshot)
     {
         if (!_previewOnly || _statusRefreshBusy)
             throw new InvalidOperationException("Status fixture dependencies require an idle preview Hub.");
         ArgumentNullException.ThrowIfNull(readSnapshot);
-        ArgumentNullException.ThrowIfNull(refreshHeartbeat);
-        _previewStatusRefreshDependencies = new(readSnapshot, refreshHeartbeat);
+        _previewReadStatusSnapshot = readSnapshot;
     }
 
     private HubStatusSnapshot ReadStatusSnapshot(bool allowRuntimeReprobe)
     {
         var steam = HubProcessProbe.AnyRunning("vrserver");
-        var vrcft = HubProcessProbe.AnyRunning("VRCFaceTracking");
-        var module = _environment.InspectModuleInstallation();
-        var needsRestart = module.IsCurrent && vrcft && _environment.TrackingSourceRequiresVrcftRestart();
         var rocm = HubRocmRuntime.ReadStatus(_root, _amdGpuLatestTarget, _amdGpuLegacyEligible);
-        return new(steam, vrcft, module, needsRestart, _environment.BackendReady(allowRuntimeReprobe), module.IsCurrent || BridgeUninstallAvailable(),
+        return new(steam, _environment.BackendReady(allowRuntimeReprobe),
             rocm.LatestReadyVersion, rocm.LegacyReady, rocm.LatestEnvironmentExists);
     }
 
@@ -58,7 +49,7 @@ internal sealed partial class HubForm
 
     private async Task RefreshStatusAsync()
     {
-        if (_previewOnly && _previewStatusRefreshDependencies is null || _closingInProgress ||
+        if (_previewOnly && _previewReadStatusSnapshot is null || _closingInProgress ||
             _statusRefreshBusy || IsDisposed || Disposing) return;
         _statusRefreshBusy = true;
         try
@@ -72,39 +63,21 @@ internal sealed partial class HubForm
                 wireless && target != GetConfiguredAdbTarget();
             var quest = await HasQuestAsync();
             if (_closingInProgress || IsDisposed || Disposing || ContextChanged()) return;
-            // Publish the fresh transport result before unrelated module,
-            // runtime or heartbeat work can delay or fail this refresh.
+            // Publish the fresh transport result ahead of unrelated checks.
             PublishConnectionStatus(quest, wireless, target);
             await DetectMagiskGazeOnceAsync(quest);
             if (_closingInProgress || IsDisposed || Disposing || ContextChanged()) return;
-            var dependencies = _previewStatusRefreshDependencies;
             // Capture process-list/transition state on the UI thread. The
             // snapshot worker must not enumerate the mutable tracking list.
             var allowRuntimeReprobe = !TrackingShutdownPending;
-            var snapshot = await (dependencies?.ReadSnapshot() ?? Task.Run(() => ReadStatusSnapshot(allowRuntimeReprobe)));
-            if (_closingInProgress || IsDisposed || Disposing || ContextChanged()) return;
-            await (dependencies?.RefreshHeartbeat(snapshot.VrcftRunning, snapshot.Module) ??
-                RefreshModuleHeartbeatAsync(snapshot.VrcftRunning, snapshot.Module));
+            var snapshot = await (_previewReadStatusSnapshot?.Invoke() ?? Task.Run(() => ReadStatusSnapshot(allowRuntimeReprobe)));
             if (_closingInProgress || IsDisposed || Disposing || ContextChanged()) return;
             using var readiness = BeginReadinessUpdate();
-            SetStatus(_steamStatus, snapshot.SteamRunning ? StatusKind.Good : StatusKind.Bad, snapshot.SteamRunning ? "Running" : "Not running");
-            SetStatus(_vrcftStatus, snapshot.VrcftRunning ? StatusKind.Good : StatusKind.Bad, snapshot.VrcftRunning ? "Running" : "Not running");
-            var module = snapshot.Module;
-            var moduleNeedsRestart = snapshot.ModuleNeedsRestart;
-            var moduleDetail = moduleNeedsRestart
-                ? module.Detail + " Restart VRCFaceTracking to load the selected source; its process is still running from before the source changed."
-                : module.Detail;
-            SetStatus(_bridgeStatus, module.IsCurrent && !moduleNeedsRestart ? StatusKind.Good : StatusKind.Warning,
-                moduleNeedsRestart ? "Installed · restart VRCFT" : module.Status);
-            _bridgeStatus.AccessibleDescription = moduleDetail;
-            // Report only transitions so a failed card/hash check names its
-            // cause without filling Activity on every status refresh.
-            if (_lastModuleInspectionDetail != moduleDetail)
-            {
-                _lastModuleInspectionDetail = moduleDetail;
-                AppendLog("[Qpro module check] " + moduleDetail);
-            }
-            SetStatus(_runtimeStatus, snapshot.RuntimeReady ? StatusKind.Good : StatusKind.Warning, snapshot.RuntimeReady ? "Ready" : "Setup needed");
+            var steamRequired = source || _hybridHands.Checked || _controllerTouchpad.Checked;
+            SetStatus(_steamStatus, snapshot.SteamRunning ? StatusKind.Good : steamRequired ? StatusKind.Bad : StatusKind.Neutral,
+                snapshot.SteamRunning ? "Running" : steamRequired ? "Not running" : "Optional");
+            SetStatus(_runtimeStatus, snapshot.RuntimeReady ? StatusKind.Good : WorkerTrackingSelected ? StatusKind.Warning : StatusKind.Neutral,
+                snapshot.RuntimeReady ? "Ready" : WorkerTrackingSelected ? "Setup needed" : "Optional");
             UpdateSetupStepStylesFromSnapshot(snapshot);
             UpdateControlStateFromSnapshot(snapshot);
         }
@@ -115,6 +88,7 @@ internal sealed partial class HubForm
     private void PublishConnectionStatus(bool connected, bool wireless, string? target)
     {
         using var readiness = BeginReadinessUpdate();
+        var optional = !WorkerTrackingSelected;
         var missingWirelessTarget = wireless && string.IsNullOrWhiteSpace(target);
         var reason = wireless
             ? connected ? $"Wi-Fi ADB connected to the Quest at {target}."
@@ -122,12 +96,18 @@ internal sealed partial class HubForm
                     ? "Wireless ADB is selected and no Quest Wi-Fi address is saved. In First-time setup, enter the Quest's current Wi-Fi IP and press Connect to Quest. Select USB cable to use the cable connection."
                     : $"Wi-Fi ADB has not confirmed the Quest at {target}. Keep the headset awake on the same trusted network, check its current Wi-Fi IP, then press Connect to Quest in First-time setup."
             : _environment.UsbConnectionMessage;
-        SetStatus(_usbStatus, connected ? StatusKind.Good : StatusKind.Bad,
+        SetStatus(_usbStatus, connected ? StatusKind.Good : optional ? StatusKind.Neutral : StatusKind.Bad,
             connected ? wireless ? "Wi-Fi ADB connected" : "USB ADB connected"
-                : wireless ? missingWirelessTarget ? "Wi-Fi address needed" : "Wi-Fi not connected" : "USB not connected");
+                : optional ? "Optional" : wireless ? missingWirelessTarget ? "Wi-Fi address needed" : "Wi-Fi not connected" : "USB not connected");
         _connectionModeNote.Text = reason;
-        _connectionModeNote.ForeColor = connected ? Muted : Warning;
+        _connectionModeNote.ForeColor = connected || optional ? Muted : Warning;
         _usbStatus.AccessibleDescription = reason;
+        if (!connected && optional)
+        {
+            if (wireless) _lastWirelessStatusReason = null;
+            else _lastUsbStatusReason = _lastUsbFailureDetail = null;
+            return;
+        }
         if (wireless)
         {
             if (reason != _lastWirelessStatusReason)
@@ -152,18 +132,10 @@ internal sealed partial class HubForm
     private void UpdateSetupStepStylesFromSnapshot(HubStatusSnapshot? snapshot)
     {
         if (_previewOnly) return;
-        var module = snapshot?.Module ?? _environment.InspectModuleInstallation();
-        var ready = new[] { snapshot?.RuntimeReady ?? BackendReady(), module.IsCurrent };
-        var next = Array.FindIndex(ready, value => !value);
-        StyleSetupStep(_setupRuntimeButton, _setupRuntimeStatus, "Install runtime", ready[0], next == 0);
-        StyleSetupButton(_setupBridgeButton, "Install Virtual Desktop module",
-            ready[1] && !_environment.SteamLinkSelected, next == 1 && !_environment.SteamLinkSelected);
-        StyleSetupButton(_setupSteamLinkModuleButton, "Install Steam Link module",
-            ready[1] && _environment.SteamLinkSelected, next == 1 && _environment.SteamLinkSelected);
-        _setupBridgeStatus.Text = ready[1] ? "● Module files installed" : module.State == HubModuleState.SourceReplacement
-            ? "● Existing source will be backed up" : next == 1 ? "● Next step" : "○ Waiting";
-        _setupBridgeStatus.ForeColor = ready[1] ? Good : next == 1 || module.State == HubModuleState.SourceReplacement ? Warning : Muted;
-        _uninstallBridgeButton.Enabled = !_setupActionRunning && (snapshot?.BridgeUninstallAvailable ?? BridgeUninstallAvailable());
+        var runtimeReady = snapshot?.RuntimeReady ?? BackendReady();
+        var runtimeNeeded = WorkerTrackingSelected && !runtimeReady;
+        StyleSetupStep(_setupRuntimeButton, _setupRuntimeStatus, "Install runtime", runtimeReady, runtimeNeeded);
+        _setupRuntimeButton.VisualStyle = runtimeNeeded ? HubButtonStyle.Primary : HubButtonStyle.Secondary;
         UpdateGazeSetupStatus();
         var installedVersion = snapshot is not null ? snapshot.RocmInstalledVersion : LatestRocmInstalledVersion();
         var latestReady = installedVersion is not null;
@@ -183,8 +155,7 @@ internal sealed partial class HubForm
             latestReady || legacyReady ? $"Upgrade to ROCm {HubRocmRuntime.InstallVersion}" :
             latestEnvironmentExists ? $"Verify / repair ROCm {HubRocmRuntime.InstallVersion}" : $"Install ROCm {HubRocmRuntime.InstallVersion}";
         TrackSetupButtonBorder(_setupAmdButton, offeredVersionReady, AmdInstallEligible);
-        SetSetupButtonsEnabled(true, snapshot?.RuntimeReady, snapshot?.BridgeUninstallAvailable);
-        UpdateSetupNavigationReadiness(ready[0], ready[1]);
+        SetSetupButtonsEnabled(true, runtimeReady);
     }
 
     private void RememberGazeCompatibility(HubCompatibilityReport report)
@@ -270,7 +241,7 @@ internal sealed partial class HubForm
     private void StyleSetupStep(DarkButton button, Label status, string label, bool complete, bool attention)
     {
         StyleSetupButton(button, label, complete, attention);
-        status.Text = complete ? "● Complete" : attention ? "● Next step" : "○ Waiting";
+        status.Text = complete ? "● Complete" : attention ? "● Next step" : "○ Optional for your selected features";
         status.ForeColor = complete ? Good : attention ? Warning : Muted;
     }
 
@@ -289,7 +260,7 @@ internal sealed partial class HubForm
 
     private void ApplySetupButtonBorder(DarkButton button, bool complete, bool attention)
     {
-        var color = complete ? Good : attention && _setupPulseOn ? Accent : Border;
+        var color = complete ? Good : attention && _setupPulseOn ? Accent : ControlOutline;
         var width = complete || attention && _setupPulseOn ? 2 : 1;
         if (button.OutlineColor != color) button.OutlineColor = color;
         if (button.OutlineWidth != width) button.OutlineWidth = width;
@@ -297,19 +268,12 @@ internal sealed partial class HubForm
 
     private void PulseSetupAttention()
     {
-        // Animation uses the readiness snapshot. It performs no module hashes,
-        // runtime probes, ROCm inventory reads, status writes or layout changes.
+        // Animation uses the readiness snapshot and performs no status probes.
         var active = _setupButtonStyles.Where(item => !item.Value.Complete && item.Value.Attention &&
             item.Key.Visible && item.Key.Enabled).ToArray();
         if (active.Length == 0) { _setupPulseOn = false; return; }
         _setupPulseOn = !_setupPulseOn;
         foreach (var item in active) ApplySetupButtonBorder(item.Key, false, true);
-    }
-
-    private void UpdateModuleInstallButtonState(bool enabled)
-    {
-        _setupBridgeButton.Enabled = enabled && !_environment.SteamLinkSelected;
-        _setupSteamLinkModuleButton.Enabled = enabled && _environment.SteamLinkSelected;
     }
 
     private void PlaySfx(string fileName)
@@ -342,7 +306,6 @@ internal sealed partial class HubForm
     {
         return BridgeInstalled() || HubModuleInstallation.HasSavedBackups(Path.Combine(_root, "research"));
     }
-    private bool CurrentBridgeInstalled() => _environment.CurrentBridgeInstalled();
     private bool BackendReady() => !_previewOnly && _environment.BackendReady(!TrackingShutdownPending);
     private bool EyeModelReady() => _environment.EyeModelReady();
     private string VisibilityModeValue() => _visibilityMode.SelectedIndex switch { 1 => "camera", 2 => "native", 3 => "agreement", _ => "weighted" };
@@ -357,10 +320,14 @@ internal sealed partial class HubForm
         var running = _trackingCleanupPending || LiveTrackingRunning;
         // These values are passed once to the child process. Keep the controls
         // locked until Stop, rather than implying that a live model was reloaded.
-        var sessionEditable = !running && !_stopping && !_starting;
+        var sessionEditable = !running && !_stopping && !_starting && !_faceRouteChanging;
         ApplyMagiskGazeControlGate(sessionEditable);
         _tongue.Enabled = sessionEditable;
         _pupil.Enabled = sessionEditable;
+        var adjustmentsEditable = (sessionEditable || _directSession is not null || _backupFaceSession is not null) &&
+            !_starting && !_stopping && !_trackingCleanupPending && !_closingInProgress;
+        _individualCheekPuff.Enabled = _individualCheekSuck.Enabled = _eyebrowBoost.Enabled = adjustmentsEditable;
+        _eyebrowSensitivity.Enabled = adjustmentsEditable && _eyebrowBoost.Checked;
         // Model selection precedes the opt-in output switches. It must remain
         // usable when all camera features are off on a fresh Hub launch.
         _tongueModels.Enabled = sessionEditable;
@@ -380,16 +347,19 @@ internal sealed partial class HubForm
         _recoverGazeButton.Enabled = sessionEditable && !_setupActionRunning && !_utilityActionRunning && !_datasetOperationBusy && !_gazeRecoveryRunning;
         _inspectGazeButton.Enabled = _recoverGazeButton.Enabled && !HasActiveMagiskGaze;
         _resetLegacyGazeButton.Enabled = _recoverGazeButton.Enabled;
-        var canStart = !running && !_stopping && !_starting && !_setupActionRunning &&
+        var canStart = !running && !_stopping && !_starting && !_faceRouteChanging && !_gazeRecoveryRunning && !_closingInProgress && !_setupActionRunning &&
             !_utilityActionRunning && !_datasetOperationBusy;
         if (_checkCompatibility is not null) _checkCompatibility.Enabled = canStart && !_compatibilityChecking;
-        _start.Enabled = canStart && !ControllerRestartBlocked;
+        var faceRouteReady = !FaceAdjustmentsSelected || (BackupSelected ? _backupBundled : DirectRouteAvailable && _ownerProblem is null);
+        _start.Enabled = canStart && faceRouteReady && !ControllerRestartBlocked && (FaceAdjustmentsSelected || _hybridHands.Checked || _controllerTouchpad.Checked);
         _stop.Enabled = (running || _starting) && !_stopping;
         StyleRunButton(_start, _start.Enabled);
         StyleRunButton(_stop, (running || _starting) && !_stopping);
+        UpdateVrchatCheckButtons();
+        UpdateOutputRouteControls();
         UpdateControllerInputAvailabilityFromSnapshot(snapshot?.RuntimeReady);
         UpdateStreamerUpdaterAvailability();
-        SetSetupButtonsEnabled(true, snapshot?.RuntimeReady, snapshot?.BridgeUninstallAvailable);
+        SetSetupButtonsEnabled(true, snapshot?.RuntimeReady);
     }
 
     private bool TrackingShutdownPending => _starting || _stopping || _trackingCleanupPending || LiveTrackingRunning;
@@ -402,10 +372,12 @@ internal sealed partial class HubForm
         Enabled = false;
         try
         {
+            if (_steamVrStartupChange is { } startupChange) await startupChange;
+            await SuspendNativeIdleAsync();
             try { SaveLiveOptions(); }
             catch (Exception error) { AppendLog("Could not save Facial tracking choices: " + error.Message); }
             await _environment.SuspendAdbProbesAsync();
-            if (_starting || LiveTrackingRunning)
+            if (_starting || _stopping || LiveTrackingRunning)
                 await StopTrackingAsync();
             // Startup may still be returning from its canceled ADB check.
             // Do not stop ADB until the tracking scripts have restored headset overrides.
@@ -432,6 +404,7 @@ internal sealed partial class HubForm
                 _environment.ResumeAdbProbes();
                 Enabled = true;
                 UpdateControlState();
+                RequestNativeIdleRefresh();
             }
         }
     }
@@ -468,5 +441,5 @@ internal sealed partial class HubForm
         for (var i = 0; i < box.Items.Count; i++) if ((box.Items[i] as FileChoice)?.Primary == previous) { box.SelectedIndex = i; return; }
         if (box.Items.Count > 0) box.SelectedIndex = 0;
     }
-    private enum StatusKind { Good, Warning, Bad }
+    private enum StatusKind { Good, Warning, Bad, Neutral }
 }

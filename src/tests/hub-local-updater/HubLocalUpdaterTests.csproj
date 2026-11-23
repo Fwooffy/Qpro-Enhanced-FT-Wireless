@@ -15,4 +15,5 @@
     <Compile Include="../../qpro-hub/*.cs" Link="Hub/%(Filename)%(Extension)" />
     <Compile Include="../../shared/CheekTrackingSession.cs;../../shared/EyebrowPreference.cs;../../shared/CheekPuffCalibrationProfile.cs;../../shared/CheekPuffTelemetry.cs;../../shared/DeveloperCheekPuffBaseline.cs" Link="Shared/%(Filename)%(Extension)" />
   </ItemGroup>
+  <Import Project="../../qpro-hub/DirectVrchat.sources.props" />
 </Project>

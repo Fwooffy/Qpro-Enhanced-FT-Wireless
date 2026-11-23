@@ -32,6 +32,26 @@ internal static class HubModuleInstallation
     private static readonly string[] OtherSourceIds = ReplacementProfiles.Select(profile => profile.Id).Append(LegacyId).ToArray();
     private static readonly Regex OtherSourceName = new(@"steam[ ._-]*link|linkft|virtual[ ._-]*desktop", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
+    internal static string PackagedDll(string runtimeRoot) =>
+        Path.Combine(runtimeRoot, "vrcft-gaze-bridge", "bin", "Release", "net10.0", "Qpro.GazeBridge.dll");
+
+    internal static bool PackageIncludesBackup(string runtimeRoot)
+    {
+        // Older packages can carry a bridge solely for updater compatibility.
+        // Only a build with route ownership may provide the backup.
+        try
+        {
+            var manifest = new FileInfo(Path.Combine(runtimeRoot, "release-manifest.json"));
+            if (!manifest.Exists || manifest.Length is <= 0 or > 131072) return false;
+            using var stream = manifest.OpenRead();
+            using var document = JsonDocument.Parse(stream);
+            return document.RootElement.ValueKind == JsonValueKind.Object &&
+                document.RootElement.TryGetProperty("vrcftBackupBundled", out var value) && value.ValueKind == JsonValueKind.True &&
+                IsPackagedQproAssembly(PackagedDll(runtimeRoot));
+        }
+        catch (Exception error) when (IsInspectionError(error)) { return false; }
+    }
+
     internal static bool HasInstalled(string customLibs)
     {
         try { return FindQproDlls(customLibs).Count > 0; }
@@ -100,7 +120,7 @@ internal static class HubModuleInstallation
             return Result(HubModuleState.Conflict, "Face source conflict",
                 $"Another Virtual Desktop or Steam Link face module is installed at {string.Join("; ", paths)}. Remove {string.Join(" and ", names)} through VRCFaceTracking, close VRCFaceTracking, then retry. Qpro left those files unchanged.");
         }
-        var repair = $"Close VRCFaceTracking, install the Qpro {source} module in First-time setup, then reopen VRCFaceTracking.";
+        var repair = $"Close VRCFaceTracking. In First-time setup, select the VRCFaceTracking backup for {source} and click Install Qpro backup module. Then reopen VRCFaceTracking.";
         try
         {
             var installed = Path.Combine(folder, dllName);
@@ -168,7 +188,7 @@ internal static class HubModuleInstallation
                 return Result(HubModuleState.UpdateNeeded, "Module update needed", "The installed Qpro DLL differs from this app's module, even if both show the same version number. " + repair);
             return Result(HubModuleState.Current, "Installed · files verified",
                 $"The Qpro {source} module card and DLL match this app at {folder}. This verifies installed files, not live expressions. " +
-                "For live status, open Activity > Tracking health > Show tracking details > Module output. Confirm expressions move in VRCFaceTracking's preview.");
+                "Open VRCFaceTracking and confirm expressions move in VRCFaceTracking's preview, then check your avatar in VRChat.");
         }
         catch (Exception error) when (IsInspectionError(error))
         {

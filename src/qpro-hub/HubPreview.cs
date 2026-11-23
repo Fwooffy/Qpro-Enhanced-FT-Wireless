@@ -15,12 +15,13 @@ internal sealed partial class HubForm
         if (!_previewOnly) throw new InvalidOperationException("Sample scenarios require preview mode.");
         if (scenario is not ("ready" or "unsupported" or "runtime-error" or "magisk" or
             "hands-ready" or "hands-blocked" or "hands-unknown" or "hands-modes" or "hands-swipe" or "hands-driver-unknown" or
-            "streamer-paused" or "health-live" or "setup-connect" or "setup-runtime" or "setup-module" or "setup-source-switch" or "setup-complete"))
+            "streamer-paused" or "health-live" or "setup-connect" or "setup-runtime" or "setup-vrchat" or "setup-complete" or "setup-backup" or "direct-unavailable" or "steamvr-startup"))
             throw new ArgumentException("Unknown preview scenario: " + scenario);
         if (source is not ("VirtualDesktop" or "SteamLink"))
             throw new ArgumentException("Unknown preview source: " + source);
 
-        Text += " · Preview — sample data";
+        const string previewSuffix = " · Preview — sample data";
+        if (!Text.EndsWith(previewSuffix, StringComparison.Ordinal)) Text += previewSuffix;
         var sourceName = source == "SteamLink" ? "Steam Link" : "Virtual Desktop";
         _environment.SetPreviewTrackingSource(source == "SteamLink");
         _trackingSourceSelectionUpdating = true;
@@ -56,7 +57,7 @@ internal sealed partial class HubForm
             UpdateToggleStyle(toggle);
         _tongueModelNote.Text = "PREVIEW · SAMPLE DATA. " + DeveloperModelGuidance +
             " Stop tracking before changing models, then press Start tracking to load the selection.";
-        _trackingSourceLiveNote.Text = _trackingSourceSetupNote.Text = $"Preview · sample data. Face tracking source: {sourceName}.";
+        UpdateTrackingSourceNotes();
         bool updaterPaused = scenario == "streamer-paused";
         PresentStreamerUpdater(new(
             updaterPaused ? "PC Streamer updater paused · sample" : "PC Streamer updater available · sample",
@@ -79,32 +80,20 @@ internal sealed partial class HubForm
 
         SetStatus(_usbStatus, StatusKind.Good, "USB connected · sample");
         SetStatus(_steamStatus, StatusKind.Good, "Running · sample");
-        SetStatus(_vrcftStatus, StatusKind.Good, "Running · sample");
-        SetStatus(_bridgeStatus, StatusKind.Good, "Installed · files verified · sample");
-        // A preview must distinguish file verification from a simulated module
-        // observation, just as the real session does. It never reads live files.
-        _heartbeatSource = source;
-        _heartbeatHostRunning = _heartbeatModuleCurrent = true;
-        _moduleHeartbeat = new HubModuleHeartbeatObservation(new HubModuleHeartbeatSnapshot(
-            source, 0, 0, "00000000-0000-0000-0000-000000000001", 1, Environment.TickCount64,
-            "active", source == "SteamLink" ? "fresh" : "untimed", source == "SteamLink" ? 0 : -1,
-            true, true, [new("gaze-left", -1, 250, false), new("gaze-right", -1, 250, false),
-                new("tongue", -1, 300, false), new("pupil-left", -1, 350, false), new("pupil-right", -1, 350, false)]), "");
-        RefreshModuleHeartbeatDecoration();
+        SetStatus(_directVrchatStatus, StatusKind.Good, "OSCQuery connected · sample");
+        _directVrchatStatus.AccessibleDescription = "Sample OSCQuery response. No live VRChat connection was checked.";
         SetStatus(_runtimeStatus, StatusKind.Good, "Verified · sample");
         SetStatus(_gazeStatus, scenario == "magisk" ? StatusKind.Good : StatusKind.Warning,
             scenario == "magisk" ? "Magisk gaze detected · sample" : "Hub gaze off · optional");
         SetStatus(_inferenceStatus, StatusKind.Warning, "Stopped");
         SetStatus(_pupilStatus, StatusKind.Warning, "Stopped");
-        _setupRuntimeStatus.Text = _setupBridgeStatus.Text = "Complete · sample";
-        _setupRuntimeStatus.ForeColor = _setupBridgeStatus.ForeColor = Good;
+        _setupRuntimeStatus.Text = "Complete · sample";
+        _setupRuntimeStatus.ForeColor = Good;
         _setupGazeStatus.Text = scenario == "magisk" ? "Provided by Magisk · Skip Hub gaze setup · sample" : "Optional · skip for Magisk gaze";
         _setupGazeStatus.ForeColor = Muted;
         _setupProgressContainer.Visible = false;
         _gaze.Enabled = scenario != "magisk";
         _setupGazeButton.Enabled = _inspectGazeButton.Enabled = scenario != "magisk";
-        _setupBridgeButton.Enabled = source == "VirtualDesktop";
-        _setupSteamLinkModuleButton.Enabled = source == "SteamLink";
         _hybridHands.Enabled = _controllerTouchpad.Enabled = source == "VirtualDesktop";
         _checkHandsButton.Enabled = source == "VirtualDesktop";
         PresentControllerStatus(source == "SteamLink"
@@ -143,8 +132,8 @@ internal sealed partial class HubForm
         }
         else
         {
-            SetActionFeedback("Required setup complete · sample",
-                $"The sample Quest Pro, PC runtime and {sourceName} module are ready. " +
+            SetActionFeedback("Setup checks complete · sample",
+                $"The sample Quest Pro, PC runtime and {sourceName} source are ready. " +
                     (scenario == "magisk" ? "A Magisk gaze module is detected; skip Hub gaze setup." : "Optional features are checked separately."),
                 scenario == "magisk"
                     ? "Leave Independent Eye Gaze off in the Hub. Choose your other features on Facial tracking, then press Start tracking."
@@ -190,13 +179,22 @@ internal sealed partial class HubForm
         ResetActivityLog();
         AppendActivityText("PREVIEW · SAMPLE DATA — no live headset checks were run.\n\n" +
             "[Connection] Rooted Meta Quest Pro detected · sample.\n" +
-            $"[Face source] {sourceName} module selected · sample.\n" +
+            $"[Face source] {sourceName} selected · sample.\n" +
             (scenario == "runtime-error"
                 ? "[PC runtime] Final PyTorch import check failed · sample.\n[Next step] Repair the required Windows runtime and retry.\n"
                 : scenario == "unsupported"
                     ? "[Compatibility] Independent gaze engine not validated · sample.\n[Next step] Keep independent gaze off; other features are available.\n"
                     : "[PC runtime] Import and device checks passed · sample.\n[Next step] Select tracking features; optional headset features remain unverified.\n"), "12:00:00");
+        _outputRouteSetup.SelectedIndex = scenario == "setup-backup" ? 1 : 0;
         ApplySetupPreviewScenario(scenario);
+        _launchWithSteamVr.Checked = scenario == "steamvr-startup";
+        _steamVrStartupStatus.Text = _launchWithSteamVr.Checked
+            ? "On · Companion opens when SteamVR starts · sample"
+            : "Off · Companion opens manually · sample";
+        _offerBackup = false;
+        UpdateOutputRouteControls();
+        if (scenario == "direct-unavailable")
+            ShowVrchatStatus(new("VRChat discovery timed out. Check OSC in the Action Menu and retry · sample", false, true));
     }
 
     private static string PreviewCompatibilityJson(bool supported, bool magisk = false)

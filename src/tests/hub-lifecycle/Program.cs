@@ -9,17 +9,32 @@ internal static class LifecycleTests
     static void Main(string[] args)
     {
         if (ControllerLifecycleFixtures.TryRunWorker(args)) return;
-        try { Run(); }
-        catch (Exception error)
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+        // Keep one UI synchronization context alive across delayed process and discovery callbacks.
+        using var context = new ApplicationContext();
+        using var start = new System.Windows.Forms.Timer { Interval = 1 };
+        start.Tick += (_, _) =>
         {
-            Console.Error.WriteLine("FAIL: " + error);
-            Environment.ExitCode = 1;
-        }
+            start.Stop();
+            try
+            {
+                if (args.Contains("--tracking-buttons"))
+                {
+                    var fixture = Directory.CreateTempSubdirectory("qpro-button-check-");
+                    try { TrackingButtonFixtures.Run(fixture.FullName); }
+                    finally { fixture.Delete(recursive: true); }
+                }
+                else Run();
+            }
+            catch (Exception error) { Console.Error.WriteLine("FAIL: " + error); Environment.ExitCode = 1; }
+            finally { context.ExitThread(); }
+        };
+        start.Start();
+        Application.Run(context);
     }
 
     static void Run()
     {
-        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         TrackingHealthFixtures.Run();
         // Preview construction avoids ADB, runtime detection, timers and preference writes.
         string fixtureRoot = Path.Combine(Path.GetTempPath(), "qpro-lifecycle-" + Guid.NewGuid().ToString("N"));
@@ -171,13 +186,12 @@ internal static class LifecycleTests
         {
             Set(state, true);
             Call("UpdateControlState");
+            Check(!((Control)typeof(HubForm).GetField("_start", Private)!.GetValue(form)!).Enabled, state + " disables footer Start");
             foreach (var name in new[] { "_installHandsButton", "_removeHandsButton", "_checkHandsButton" })
                 Check(!((Control)typeof(HubForm).GetField(name, Private)!.GetValue(form)!).Enabled, state + " disables " + name);
             Set(state, false);
         }
 
-        string sessionName = @"Local\QproHubLifecycleRegression." + Guid.NewGuid().ToString("N");
-        Check(!CheekTrackingSession.IsActive(sessionName), "isolated cheek session starts inactive");
         string configRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "QproFaceTracking", "config");
         string[] preferenceNames = ["cheek-puff-mode.txt", "cheek-puff-last-style.txt", "cheek-suck-mode.txt", "cheek-suck-last-style.txt"];
         var beforePreferences = preferenceNames.ToDictionary(name => name, name => ReadPreference(Path.Combine(configRoot, name)));
@@ -185,32 +199,37 @@ internal static class LifecycleTests
         var suck = (CheckBox)typeof(HubForm).GetField("_individualCheekSuck", Private)!.GetValue(form)!;
         bool savedPuff = puff.Checked, savedSuck = suck.Checked;
 
-        using var session = new CheekTrackingSession(sessionName);
-        typeof(HubForm).GetField("_cheekTrackingSession", Private)!.SetValue(form, session);
-        Set("_nativeCheekOnlySession", true);
-        Check(Pending(), "cheek-only session counts as live tracking without child processes");
+        static VrchatFaceSession WaitingSession() => new(
+            () => new Dictionary<string, float>(), new MemoryStream(),
+            _ => { },
+            _ => Task.FromResult<VrchatOscTarget?>(null), (_, _) => Task.FromResult<VrchatOscTarget?>(null), TimeSpan.FromSeconds(1));
+        var session = WaitingSession();
+        typeof(HubForm).GetField("_directSession", Private)!.SetValue(form, session);
+        Check(Pending(), "direct face session counts as live tracking without child processes");
         Call("UpdateControlState");
-        Check(((Control)typeof(HubForm).GetField("_stop", Private)!.GetValue(form)!).Enabled, "cheek-only session enables Stop");
+        Check(((Control)typeof(HubForm).GetField("_stop", Private)!.GetValue(form)!).Enabled, "direct face session enables Stop");
         foreach (string field in new[] { "_start", "_connectionMode", "_trackingSourceSetup", "_trackingSourceLive", "_setupRuntimeButton", "_reconnectUsbButton", "_forgetUsbButton" })
-            Check(!((Control)typeof(HubForm).GetField(field, Private)!.GetValue(form)!).Enabled, "cheek-only session disables " + field);
+            Check(!((Control)typeof(HubForm).GetField(field, Private)!.GetValue(form)!).Enabled, "direct face session disables " + field);
 
         var stopped = (Task)Call("StopTrackingAsync")!;
-        Check(!CheekTrackingSession.IsActive(sessionName), "Stop releases cheek permission before asynchronous cleanup");
-        Check(stopped.IsCompletedSuccessfully, "cheek-only Stop completes without a worker or headset action");
-        Check(!Pending(), "cheek-only Stop clears live tracking state");
-        Check(((Control)typeof(HubForm).GetField("_start", Private)!.GetValue(form)!).Enabled, "Start is enabled after cheek-only Stop");
-        Check(!((Control)typeof(HubForm).GetField("_stop", Private)!.GetValue(form)!).Enabled, "Stop is disabled after cheek-only Stop");
+        var deadline = DateTime.UtcNow.AddSeconds(3);
+        while (!stopped.IsCompleted && DateTime.UtcNow < deadline) { Application.DoEvents(); Thread.Sleep(5); }
+        Check(stopped.IsCompletedSuccessfully && session.Completion.IsCompletedSuccessfully, "Stop joins the direct session");
+        Check(!Pending(), "direct face Stop clears live tracking state");
+        Check(((Control)typeof(HubForm).GetField("_start", Private)!.GetValue(form)!).Enabled, "Start is enabled after direct face Stop");
+        Check(!((Control)typeof(HubForm).GetField("_stop", Private)!.GetValue(form)!).Enabled, "Stop is disabled after direct face Stop");
         Check(puff.Checked == savedPuff && suck.Checked == savedSuck, "Stop retains selected cheek options");
         foreach (string name in preferenceNames)
             Check(ReadPreference(Path.Combine(configRoot, name)) == beforePreferences[name], "Stop does not rewrite " + name);
 
-        string closingName = @"Local\QproHubLifecycleRegression." + Guid.NewGuid().ToString("N");
-        using var closingSession = new CheekTrackingSession(closingName);
-        typeof(HubForm).GetField("_cheekTrackingSession", Private)!.SetValue(form, closingSession);
+        DirectStatusFixtures.Run(form);
+        TrackingButtonFixtures.Run(fixtureRoot);
+        var closingSession = WaitingSession();
+        typeof(HubForm).GetField("_directSession", Private)!.SetValue(form, closingSession);
         form.Dispose();
-        Check(!CheekTrackingSession.IsActive(closingName), "disposing the Hub releases its cheek session");
+        Check(closingSession.Completion.Wait(TimeSpan.FromSeconds(3)), "disposing the Hub stops the direct receiver");
         ControllerLifecycleFixtures.Run(fixtureRoot);
-        Console.WriteLine("PASS: Hub lifecycle, cheek session and isolated controller-worker checks completed without headset actions.");
+        Console.WriteLine("PASS: Hub lifecycle, direct face session and isolated controller-worker checks completed without headset actions.");
     }
 
     static string? ReadPreference(string path) => File.Exists(path) ? Convert.ToBase64String(File.ReadAllBytes(path)) : null;

@@ -54,10 +54,12 @@ internal static class PageLayoutTests
         Pump(form);
         var controls = Descendants(form).ToArray();
         var productName = controls.OfType<Label>().Single(label => label.AccessibleName == "Product name");
-        Check(form.Text.StartsWith("Qpro Companion V3.0.0", StringComparison.Ordinal) &&
+        var productVersion = typeof(HubForm).Assembly.GetName().Version!.ToString(3);
+        var productHeading = $"Qpro Companion V{productVersion}";
+        Check(form.Text.StartsWith(productHeading, StringComparison.Ordinal) &&
             productName.Text == "Qpro Companion", "Window or sidebar did not use the public product name.");
         Check(((string)typeof(HubForm).GetMethod("DiagnosticText", Private)!.Invoke(form, null)!)
-            .StartsWith("Qpro Companion V3.0.0", StringComparison.Ordinal), "Copied diagnostics kept the old product name.");
+            .StartsWith(productHeading, StringComparison.Ordinal), "Copied diagnostics kept the old product name.");
         var navigation = controls.OfType<Button>().Where(button => Equals(button.Tag, "workflow-tab"))
             .OrderBy(button => ((TableLayoutPanel)button.Parent!).GetRow(button)).ToArray();
         Check(navigation.Select(button => button.Text).SequenceEqual(new[] { "First-time setup", "Facial tracking", "Controllers", "Personalize", "Model manager", "Activity" }),
@@ -237,8 +239,8 @@ internal static class PageLayoutTests
         touchpad.Checked = true;
         mode.SelectedIndex = 0;
         side.SelectedIndex = 2;
-        controls.OfType<Button>().Single(button => button.Text == "Open Facial tracking").PerformClick(); Pump(form);
-        Check(PageOf(tongue).Visible && !PageOf(hands).Visible, "Open Facial tracking did not return to the source settings.");
+        navigation.Single(button => button.Text == "Facial tracking").PerformClick(); Pump(form);
+        Check(PageOf(tongue).Visible && !PageOf(hands).Visible, "Sidebar navigation did not return to the source settings.");
         Field<HubEnvironment>(form, "_environment").SetPreviewTrackingSource(true);
         source.SelectedIndex = 1; Call(form, "UpdateTrackingSourceNotes"); Pump(form);
         var summary = controls.OfType<Label>().Single(label => label.AccessibleName == "Controller streaming app");

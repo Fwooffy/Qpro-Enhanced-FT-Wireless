@@ -8,14 +8,15 @@ internal sealed partial class HubForm
 {
     private readonly CheckBox _hybridHands = FeatureToggle("Experimental hands + controllers", false);
     private readonly CheckBox _controllerTouchpad = FeatureToggle("Experimental Touch Pro thumb-rest input", false);
-    private readonly ComboBox _touchpadMode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
-    private readonly ComboBox _touchpadSide = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+    private readonly ComboBox _touchpadMode = new HubDropDown() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+    private readonly ComboBox _touchpadSide = new HubDropDown() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly DarkSlider _swipeSensitivity = new() { Minimum = 25, Maximum = 200, SmallChange = 25, Value = 100, Height = 32, Dock = DockStyle.Fill };
     private readonly Label _swipeSensitivityValue = new() { AutoSize = true, Text = "100%", Anchor = AnchorStyles.Right, TextAlign = ContentAlignment.MiddleRight };
     private const int DefaultSwipeSensitivityPercent = 100;
     private const decimal SwipeGainAt100Percent = 0.22m;
     private readonly Label _controllerModeHint = Info("");
     private readonly DarkButton _controllerBindingGuide = SecondaryButton("SteamVR binding instructions");
+    private readonly Action<string, string> _presentBindingGuide;
     private readonly Label _handsStatus = new() { AutoSize = true, ForeColor = Warning,
         Font = new Font(UiFontName, 10F, FontStyle.Bold), Tag = "responsive-info" };
     private readonly Label _handsStatusDetail = Info("");
@@ -139,9 +140,7 @@ internal sealed partial class HubForm
         _swipeSensitivityValue.AccessibleName = "Swipe sensitivity percentage";
         _touchpadMode.SelectedIndexChanged += (_, _) => UpdateControllerModeHint();
         _controllerBindingGuide.Enabled = true;
-        _controllerBindingGuide.Click += (_, _) => MessageBox.Show(this,
-            ControllerBindingInstructions,
-            "Assign the extra thumb-rest inputs", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        _controllerBindingGuide.Click += (_, _) => _presentBindingGuide("Assign the extra thumb-rest inputs", ControllerBindingInstructions);
         UpdateControllerModeHint();
         _hybridHands.CheckedChanged += (_, _) => { UpdateToggleStyle(_hybridHands); UpdateControllerInputAvailability(); };
         _controllerTouchpad.CheckedChanged += (_, _) => { UpdateToggleStyle(_controllerTouchpad); UpdateControllerInputAvailability(); };
@@ -149,6 +148,7 @@ internal sealed partial class HubForm
         UpdateToggleStyle(_controllerTouchpad);
         _installHandsButton.Click += async (_, _) =>
         {
+            if (_previewOnly) return;
             if (Process.GetProcessesByName("vrserver").Length != 0)
             {
                 MessageBox.Show(this, "Close SteamVR before installing these optional components, then reopen SteamVR when setup finishes.",
@@ -160,6 +160,7 @@ internal sealed partial class HubForm
         };
         _removeHandsButton.Click += async (_, _) =>
         {
+            if (_previewOnly) return;
             if (Process.GetProcessesByName("vrserver").Length != 0)
             {
                 MessageBox.Show(this, "Close SteamVR before uninstalling the controller add-on. Reopen SteamVR afterward to reload the normal controller profile.",

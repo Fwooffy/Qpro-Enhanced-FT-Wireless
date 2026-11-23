@@ -46,11 +46,20 @@ internal static class StartupTests
                 var beforeOptions = captureOptions.Invoke(form, null);
                 foreach (var tab in tabs)
                 {
-                    tab.PerformClick();
-                    Application.DoEvents();
-                    type.GetMethod("FlushPreviewLayout", flags)!.Invoke(form, null);
-                    Check(pages.Count(page => page.Visible) == 1 && pages.Any(page => page.Visible && page.ClientSize.Width > 0),
-                        "A navigation page failed after startup: " + tab.Text);
+                    // Start on a different page for each activation so a dead
+                    // button cannot pass by leaving the same page visible.
+                    var other = tabs.First(button => button != tab);
+                    foreach (Action activate in new Action[] { tab.PerformClick, tab.AccessibilityObject.DoDefaultAction })
+                    {
+                        other.PerformClick();
+                        Application.DoEvents();
+                        activate();
+                        Application.DoEvents();
+                        type.GetMethod("FlushPreviewLayout", flags)!.Invoke(form, null);
+                        var visible = pages.Where(page => page.Visible).ToArray();
+                        Check(visible.Length == 1 && visible[0].AccessibleName == tab.Text &&
+                            visible[0].ClientSize.Width > 0, "Navigation did not open " + tab.Text);
+                    }
                 }
                 setup.PerformClick();
                 Application.DoEvents();

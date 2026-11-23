@@ -13,6 +13,105 @@ using System.Text.RegularExpressions;
 
 namespace QproFaceTracking.Hub;
 
+// The checked native radio exposes the active output to keyboard and accessibility clients.
+internal sealed class HubOutputRouteSwitch : TableLayoutPanel
+{
+    private readonly RadioButton[] _choices;
+    private int _selectedIndex = -1;
+    private bool _syncing;
+
+    internal HubOutputRouteSwitch()
+    {
+        AccessibleName = "Output route";
+        AccessibleRole = AccessibleRole.Grouping;
+        Dock = DockStyle.Top;
+        AutoSize = false;
+        BackColor = HubForm.Border;
+        Padding = new Padding(1);
+        Height = 40;
+        RowCount = 1;
+        ColumnCount = 2;
+        RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _choices = [new Segment("Direct to VRChat"), new Segment("VRCFaceTracking backup")];
+        for (int index = 0; index < _choices.Length; index++)
+        {
+            var radio = _choices[index];
+            int choice = index;
+            radio.Margin = new Padding(index, 0, 0, 0);
+            radio.TabIndex = index;
+            radio.TabStop = index == 0;
+            radio.CheckedChanged += (_, _) =>
+            {
+                if (!_syncing && radio.Checked) SelectedIndex = choice;
+            };
+            ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            Controls.Add(radio, index, 0);
+        }
+    }
+
+    internal event EventHandler? SelectedIndexChanged;
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal int SelectedIndex
+    {
+        get => _selectedIndex;
+        set
+        {
+            if (value < -1 || value >= _choices.Length) throw new ArgumentOutOfRangeException(nameof(value));
+            if (_selectedIndex == value) return;
+            _selectedIndex = value;
+            _syncing = true;
+            try
+            {
+                for (int index = 0; index < _choices.Length; index++)
+                {
+                    bool active = index == value;
+                    var radio = _choices[index];
+                    radio.Checked = active;
+                    radio.TabStop = active || (value == -1 && index == 0);
+                    radio.BackColor = active ? HubForm.Accent : HubForm.Inset;
+                    radio.ForeColor = active ? HubForm.Inset : HubForm.TextPrimary;
+                }
+            }
+            finally { _syncing = false; }
+            SelectedIndexChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    internal void FocusSelectedChoice()
+    {
+        if (SelectedIndex >= 0 && Enabled && Visible) _choices[SelectedIndex].Focus();
+    }
+
+    private sealed class Segment : RadioButton
+    {
+        internal Segment(string name)
+        {
+            Text = AccessibleName = name;
+            AccessibleRole = AccessibleRole.RadioButton;
+            Dock = DockStyle.Fill;
+            AutoSize = false;
+            FlatStyle = FlatStyle.Flat;
+            UseVisualStyleBackColor = false;
+            BackColor = HubForm.Inset;
+            ForeColor = HubForm.TextPrimary;
+            Padding = new Padding(12, 0, 6, 0);
+        }
+
+        protected override bool ProcessDialogKey(Keys keyData)
+        {
+            if (keyData is Keys.Left or Keys.Right or Keys.Up or Keys.Down && Parent is HubOutputRouteSwitch group)
+            {
+                var next = group._choices[1 - TabIndex];
+                next.PerformClick();
+                group.FocusSelectedChoice();
+                return true;
+            }
+            return base.ProcessDialogKey(keyData);
+        }
+    }
+}
+
 // Buffer backgrounds locally. A scrollable viewport must also dirty native
 // descendants: ScrollWindowEx copies pixels from a partially clipped child,
 // which can leave old control fragments after the tall page scrolls.
@@ -135,7 +234,7 @@ internal sealed class DarkFeatureToggle : CheckBox
         var track = new Rectangle(Width - Px(50), (Height - Px(24)) / 2, Px(44), Px(24));
         var caption = new Rectangle(Px(2), 0, Math.Max(1, track.Left - Px(14)), Height);
         TextRenderer.DrawText(e.Graphics, Text, Font, caption,
-            Enabled ? Color.White : HubForm.DisabledText,
+            Enabled ? HubForm.TextPrimary : HubForm.DisabledText,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak |
             TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         using var divider = new Pen(Color.FromArgb(100, HubForm.Border));
@@ -290,40 +389,60 @@ internal sealed class DarkButton : Button
         var quiet = !navigation && VisualStyle == HubButtonStyle.Disclosure;
         var destructive = !navigation && VisualStyle == HubButtonStyle.Destructive;
         var fillColor = quiet ? Parent?.BackColor ?? BackColor : BackColor;
-        if (primary && Enabled) fillColor = _pressed ? Color.FromArgb(81, 181, 174)
-            : _hovered ? Color.FromArgb(138, 224, 215) : HubForm.Accent;
+#if QPRO_REMOTE_CLICKER
+        if (navigation && !Emphasized) fillColor = HubForm.Panel;
+        if (quiet) fillColor = HubForm.Raised;
+        if (!Enabled) fillColor = HubForm.Inset;
+#endif
+        if (primary && Enabled) fillColor = _pressed ? HubForm.PrimaryPressed
+            : _hovered ? HubForm.PrimaryHover : HubForm.PrimaryFill;
         else if (_pressed) fillColor = HubForm.Accent;
-        else if (_hovered && Enabled) fillColor = destructive ? Color.FromArgb(68, 43, 47) : HubForm.RaisedHover;
+        else if (_hovered && Enabled) fillColor = destructive ? HubForm.DestructiveHover : HubForm.RaisedHover;
         e.Graphics.Clear(fillColor);
         var borderColor = OutlineColor.IsEmpty ? (primary && Enabled || Emphasized ? HubForm.Accent
-            : destructive && Enabled ? HubForm.Bad : HubForm.Border) : OutlineColor;
+            : destructive && Enabled ? HubForm.Bad : HubForm.ControlOutline) : OutlineColor;
         var borderWidth = Emphasized ? Math.Max(2, OutlineWidth) : OutlineWidth;
-        if (navigation)
+        var drawBorder = !navigation && !quiet;
+#if QPRO_REMOTE_CLICKER
+        drawBorder = true;
+        if (!Enabled)
         {
-            if (Emphasized)
-            {
-                using var marker = new SolidBrush(HubForm.Accent);
-                var markerWidth = Math.Max(2, (int)Math.Ceiling(3F * DeviceDpi / 96F));
-                e.Graphics.FillRectangle(marker, 0, 0, markerWidth, Height);
-            }
+            borderColor = HubForm.Border;
+            borderWidth = 1;
         }
-        else if (!quiet)
+        else if (Emphasized && BackColor == HubForm.Selected) borderColor = HubForm.NavigationAccent;
+        else if (_hovered && OutlineColor.IsEmpty && !destructive) borderColor = HubForm.FocusRing;
+        borderWidth = LogicalToDeviceUnits(borderWidth);
+#endif
+        if (drawBorder && Width > borderWidth && Height > borderWidth)
         {
+#if QPRO_REMOTE_CLICKER
+            using var border = new Pen(borderColor, borderWidth) { Alignment = PenAlignment.Inset };
+            e.Graphics.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
+#else
             using var border = new Pen(borderColor, borderWidth);
             var inset = borderWidth > 1 ? 1 : 0;
             e.Graphics.DrawRectangle(border, inset, inset, Width - (inset * 2 + 1), Height - (inset * 2 + 1));
+#endif
         }
-        var textColor = !Enabled ? HubForm.DisabledText : primary ? HubForm.Inset
-            : _pressed ? HubForm.Background : destructive ? HubForm.Bad : quiet ? HubForm.Accent : Color.White;
+        if (navigation && Emphasized)
+        {
+            using var marker = new SolidBrush(HubForm.NavigationAccent);
+            var markerWidth = Math.Max(2, (int)Math.Ceiling(3F * DeviceDpi / 96F));
+            e.Graphics.FillRectangle(marker, 0, 0, markerWidth, Height);
+        }
+        var textColor = !Enabled ? HubForm.DisabledText : primary ? HubForm.PrimaryText
+            : _pressed ? HubForm.Background : destructive ? HubForm.Bad : quiet ? HubForm.LinkText : HubForm.TextPrimary;
         var textBounds = ClientRectangle;
         var textAlignment = TextFormatFlags.HorizontalCenter;
         if (Icon != HubIcon.None)
         {
             var scale = DeviceDpi / 96F;
             var iconSize = 18 * scale;
+            var selectedIcon = navigation ? HubForm.NavigationAccent : HubForm.Accent;
             HubIcons.Draw(e.Graphics, Icon,
                 new RectangleF(12 * scale, (Height - iconSize) / 2, iconSize, iconSize),
-                !Enabled || _pressed ? textColor : Emphasized ? HubForm.Accent : HubForm.Muted);
+                !Enabled || _pressed ? textColor : Emphasized ? selectedIcon : HubForm.Muted);
             var textLeft = (int)Math.Ceiling(40 * scale);
             textBounds = new Rectangle(textLeft, 0, Math.Max(0, Width - textLeft - (int)Math.Ceiling(10 * scale)), Height);
             textAlignment = TextFormatFlags.Left;
@@ -348,7 +467,20 @@ internal sealed class DarkButton : Button
             (UseMnemonic ? TextFormatFlags.Default : TextFormatFlags.NoPrefix));
         // User-painted buttons must draw their own keyboard focus cue.
         if (Focused && ShowFocusCues && Width > 12 && Height > 12)
+        {
+#if QPRO_REMOTE_CLICKER
+            var inset = LogicalToDeviceUnits(4);
+            var bounds = Rectangle.Inflate(ClientRectangle, -inset, -inset);
+            if (bounds.Width > 0 && bounds.Height > 0)
+            {
+                using var focus = new Pen(_pressed && !primary ? HubForm.ShellSurface : HubForm.FocusRing,
+                    LogicalToDeviceUnits(2)) { Alignment = PenAlignment.Inset };
+                e.Graphics.DrawRectangle(focus, bounds);
+            }
+#else
             ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -5, -5), textColor, fillColor);
+#endif
+        }
     }
 }
 
@@ -364,24 +496,25 @@ internal sealed class TextPromptDialog : Form
         MinimumSize = new Size(440, 220);
         StartPosition = FormStartPosition.CenterParent;
         BackColor = background;
-        ForeColor = Color.White;
+        ForeColor = HubForm.TextPrimary;
         Font = new Font(fontName, 10F);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
 
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, Padding = new Padding(20), BackColor = panel };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.Controls.Add(new Label { Text = prompt, AutoSize = true, MaximumSize = new Size(450, 0), ForeColor = Color.White, Margin = new Padding(0, 0, 0, 12) }, 0, 0);
-        _input = new TextBox { Text = initial, Dock = DockStyle.Top, BackColor = raised, ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle, MaxLength = 80, Margin = Padding.Empty };
+        layout.Controls.Add(new Label { Text = prompt, AutoSize = true, Dock = DockStyle.Fill, ForeColor = HubForm.TextPrimary, Margin = new Padding(0, 0, 0, 12) }, 0, 0);
+        _input = new TextBox { Text = initial, Dock = DockStyle.Top, BackColor = raised, ForeColor = HubForm.TextPrimary, BorderStyle = BorderStyle.FixedSingle, MaxLength = 80, Margin = Padding.Empty, TabIndex = 0 };
         layout.Controls.Add(_input, 0, 1);
-        var actions = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, FlowDirection = FlowDirection.RightToLeft, Margin = new Padding(0, 16, 0, 0) };
-        var save = new DarkButton { Text = "Save name", DialogResult = DialogResult.OK, AutoSize = true, Enabled = true, Emphasized = true, BackColor = raised, ForeColor = Color.White, Padding = new Padding(14, 7, 14, 7), Margin = new Padding(8, 0, 0, 0) };
-        var cancel = new DarkButton { Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true, Enabled = true, BackColor = raised, ForeColor = Color.White, Padding = new Padding(14, 7, 14, 7), Margin = new Padding(8, 0, 0, 0) };
-        actions.Controls.Add(save);
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, FlowDirection = FlowDirection.RightToLeft, Margin = new Padding(0, 16, 0, 0), TabIndex = 1 };
+        var save = new DarkButton { Text = "Save name", DialogResult = DialogResult.OK, AutoSize = true, TabIndex = 0, Emphasized = true, BackColor = raised, ForeColor = HubForm.TextPrimary, Padding = new Padding(14, 7, 14, 7), Margin = Padding.Empty };
+        var cancel = new DarkButton { Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true, TabIndex = 1, BackColor = raised, ForeColor = HubForm.TextPrimary, Padding = new Padding(14, 7, 14, 7), Margin = new Padding(8, 0, 0, 0) };
         actions.Controls.Add(cancel);
+        actions.Controls.Add(save);
         layout.Controls.Add(actions, 0, 2);
         Controls.Add(layout);
         AcceptButton = save;
@@ -460,7 +593,7 @@ internal sealed class DarkSlider : Control
         using var active = new Pen(HubForm.Accent, Px(4)) { StartCap = LineCap.Round, EndCap = LineCap.Round };
         e.Graphics.DrawLine(track, left, center, right, center);
         e.Graphics.DrawLine(active, left, center, thumbX, center);
-        using var thumb = new SolidBrush(Enabled ? Color.White : HubForm.DisabledText);
+        using var thumb = new SolidBrush(Enabled ? HubForm.TextPrimary : HubForm.DisabledText);
         e.Graphics.FillEllipse(thumb, thumbX - Px(7), center - Px(7), Px(14), Px(14));
         if (Focused && ShowFocusCues && Width > 12 && Height > 12)
             ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -3, -3),

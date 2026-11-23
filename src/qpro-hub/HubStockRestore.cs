@@ -4,6 +4,7 @@ internal sealed partial class HubForm
 {
     private const string StockRestoreTitle = "Restore stock VRCFT";
     private const string StockRestoreNext = "Reopen VRCFaceTracking. If your usual source is missing, install or enable its source module in VRCFaceTracking.";
+    private Func<IWin32Window, string, string, MessageBoxButtons, MessageBoxIcon, MessageBoxDefaultButton, DialogResult> _confirmStockRestore = MessageBox.Show;
 
     internal static string StockRestoreSummary(int removed, int restored)
         => (removed == 0 ? "No installed Qpro module was found." : $"Removed {removed} Qpro module {(removed == 1 ? "entry" : "entries")}.") + " " +
@@ -29,7 +30,7 @@ internal sealed partial class HubForm
         }
 
         bool stopRequired = LiveTrackingRunning || _trackingProcesses.Count != 0;
-        if (MessageBox.Show(this,
+        if (_confirmStockRestore(this,
                 (stopRequired ? "First, stop this Hub's live tracking overrides. " : "") +
                 "Remove the Qpro tracking modules from VRCFaceTracking on this PC? Verified source-module backups will be restored when their original locations are free. Close VRCFaceTracking and its module helper before continuing.\n\n" +
                 "Your VRCFaceTracking settings, other modules, personal models and captures are kept. This does not disable headset Magisk modules.",

@@ -4,9 +4,10 @@ namespace QproFaceTracking.Hub;
 
 internal sealed partial class HubForm
 {
+    private const string VrchatOscGuidance = "Enable face and eye sharing in your streaming app. In VRChat, open the Action Menu and turn on OSC to test your avatar.";
     private readonly Label _actionTitle = SectionTitle("Nothing running yet");
     private readonly Label _actionDetail = Info("Setup and tracking results appear here. Your full Activity log stays below.");
-    private readonly Label _actionNext = Info("Next: complete First-time setup, then choose features on Facial tracking.");
+    private readonly Label _actionNext = Info("Next, see VRChat output in First-time setup. Use Facial tracking to choose optional face features.");
     private readonly Label _compatibilityIdentity = Info("Headset not checked. An ADB connection alone does not verify a Quest Pro or its firmware.");
     private readonly Label _compatibilitySummary = Info("Feature support has not been checked.");
     private readonly Label _compatibilityGaze = Info("Independent gaze: not checked");
@@ -44,7 +45,7 @@ internal sealed partial class HubForm
         if (!_controllerInputStopped && _hybridHands.Checked && !_handsReady) missing.Add("optical fingers");
         if (!_controllerInputStopped && _controllerTouchpad.Checked && !_touchpadReady) missing.Add("thumb-rest input");
         _runStatus.Text = missing.Count > 0 ? "● Waiting for " + string.Join(" and ", missing) + "…"
-            : cameras ? "● Camera input received · check tracking in VRCFaceTracking" : "● Selected tracking features active";
+            : cameras ? "● Camera input received" : "● Selected tracking features active";
         _runStatus.ForeColor = missing.Count > 0 ? Warning : Good;
         if (ControllerCleanupUnconfirmed)
         {
@@ -81,9 +82,26 @@ internal sealed partial class HubForm
         card.Controls.Add(_actionNext);
         var actions = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = true, Margin = Padding.Empty };
         actions.Controls.Add(ActionButton("Copy diagnostics", (_, _) => CopyDiagnostics()));
-        actions.Controls.Add(ActionButton(StockRestoreTitle, async (_, _) => await RestoreStockVrcftAsync()));
         actions.Controls.Add(ActionButton("Save log…", (_, _) => SaveDiagnostics()));
+        _activityExportHint = Info("");
+        _activityExportHint.Visible = false;
+        _activityExportHint.Margin = new Padding(8, 14, 12, 4);
+        actions.Controls.Add(_activityExportHint);
+        var restoreLegacy = ActionButton(StockRestoreTitle, async (sender, _) =>
+        {
+            await RestoreStockVrcftAsync();
+            if (!IsDisposed && !Disposing && sender is Button button)
+                button.Visible = BridgeUninstallAvailable();
+        });
+        restoreLegacy.AccessibleDescription = "Remove a legacy Qpro face module and recover saved source modules.";
+        restoreLegacy.Visible = false;
+        actions.Controls.Add(restoreLegacy);
         card.Controls.Add(actions);
+        card.VisibleChanged += (_, _) =>
+        {
+            if (card.Visible && !_previewOnly)
+                restoreLegacy.Visible = BridgeUninstallAvailable();
+        };
         return card;
     }
 
@@ -148,28 +166,56 @@ internal sealed partial class HubForm
 
     private string DiagnosticText()
     {
-        var moduleOutput = ModuleHeartbeatView();
+        var selection = FaceSelection();
+        var outputs = new (string Name, bool Selected)[] {
+            ("independent gaze", selection.Gaze),
+            ("tongue", selection.Tongue), ("pupils", selection.Pupils), ("eyebrow adjustment", selection.Brows),
+            ("individual cheek puff", selection.CheekPuff), ("individual cheek suck", selection.CheekSuck),
+        }.Where(output => output.Selected).Select(output => output.Name).ToArray();
+        var vrchatState = _directVrchatStatus.Text.TrimStart('○', '●', ' ');
+        var vrchatDetail = _directVrchatStatus.AccessibleDescription;
+        if (!string.IsNullOrWhiteSpace(vrchatDetail) && vrchatDetail != vrchatState) vrchatState += "\n" + vrchatDetail;
         var text = $"{ProductDisplayName} V{AppVersion}\nWindows build: {Environment.OSVersion.Version.Build}\n" +
             $"Face source: {_trackingSourceLive.Text}\n\n{_actionSeverity.Text}: {_actionTitle.Text}\n{_actionDetail.Text}\n{_actionNext.Text}\n\n" +
             _compatibilityDiagnostic + "\n\nTRACKING HEALTH\n" + _trackingHealth.DiagnosticText() +
-            "\n\nMODULE OUTPUT\n" + moduleOutput.Summary + "\n" + moduleOutput.Detail +
+            "\n\nVRCHAT OSC\n" + vrchatState + "\nNative face and eyes are automatic.\nSelected face adjustments: " +
+            (outputs.Length == 0 ? "none" : string.Join(", ", outputs)) +
             "\n\nSHARING\nCommon personal paths and connection identifiers are hidden. Review the log before posting.\n\nACTIVITY\n" + ActivityDiagnosticText();
         return HubDiagnosticPrivacy.Sanitize(text, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             GetConfiguredAdbTarget(), _environment.GetSavedWirelessTarget());
     }
 
+    private Action<string> _writeDiagnosticClipboard = Clipboard.SetText;
+    private Func<SaveFileDialog, IWin32Window, DialogResult> _chooseDiagnosticFile = static (dialog, owner) => dialog.ShowDialog(owner);
+
     private void CopyDiagnostics()
     {
-        try { Clipboard.SetText(DiagnosticText()); }
-        catch (Exception error) { AppendLog("Could not copy diagnostics: " + error.Message); }
+        try
+        {
+            _writeDiagnosticClipboard(DiagnosticText());
+            UpdateActivityDisplayTools("Diagnostics copied.");
+        }
+        catch (Exception error)
+        {
+            AppendLog("Could not copy diagnostics: " + error.Message);
+            UpdateActivityDisplayTools("Could not copy diagnostics. Try Save log.", failed: true);
+        }
     }
 
     private void SaveDiagnostics()
     {
-        using var dialog = new SaveFileDialog { Filter = "Text log (*.txt)|*.txt", FileName = "Qpro-diagnostics.txt", OverwritePrompt = true };
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        try { File.WriteAllText(dialog.FileName, DiagnosticText()); }
-        catch (Exception error) { MessageBox.Show(this, error.Message, "Log could not be saved", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+        using var dialog = new SaveFileDialog { Title = "Save diagnostics", Filter = "Text log (*.txt)|*.txt", FileName = "Qpro-diagnostics.txt", OverwritePrompt = true, RestoreDirectory = true };
+        try
+        {
+            if (_chooseDiagnosticFile(dialog, this) != DialogResult.OK) return;
+            File.WriteAllText(dialog.FileName, DiagnosticText());
+            UpdateActivityDisplayTools("Diagnostics saved.");
+        }
+        catch (Exception error)
+        {
+            AppendLog("Could not save diagnostics: " + error.Message);
+            UpdateActivityDisplayTools("Could not save diagnostics. Try another file.", failed: true);
+        }
     }
 
     private async Task CheckHeadsetCompatibilityAsync()

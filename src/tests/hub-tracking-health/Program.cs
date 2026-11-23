@@ -156,25 +156,23 @@ internal static class TrackingHealthTests
         var all = Descendants(form).ToArray();
         var faceTab = all.OfType<Button>().Single(button => Equals(button.Tag, "workflow-tab") && button.Text == "Facial tracking");
         faceTab.PerformClick();
-        var moduleInput = all.OfType<Button>().Single(button => button.Text == "View module input");
+        var checkVrchat = all.OfType<Button>().Single(button => button.Text == "Check VRChat connection" && button.Visible);
         var beforeFeatures = new[] { Field<CheckBox>(form, "_tongue").Checked, Field<CheckBox>(form, "_pupil").Checked };
         var beforeRunStatus = Field<Label>(form, "_runStatus").Text;
         for (var attempt = 0; attempt < 2; attempt++)
         {
-            faceTab.PerformClick();
-            moduleInput.PerformClick();
+            checkVrchat.PerformClick();
             Pump(100);
-            Check(Field<TableLayoutPanel>(form, "_trackingHealthCard").Visible && Field<Label>(form, "_healthModuleDetail").Visible &&
-                all.OfType<Button>().Single(button => button.Text == "Hide tracking details").Visible,
-                "View module input did not navigate to Activity with live module details expanded.");
+            Check(checkVrchat.Visible && !Field<TableLayoutPanel>(form, "_trackingHealthCard").Visible,
+                "Checking the connection changed the selected page.");
         }
         Check(!Field<HubTrackingHealth>(form, "_trackingHealth").Running && !Field<bool>(form, "_cameraInputReady") &&
             Field<Label>(form, "_runStatus").Text == beforeRunStatus &&
             beforeFeatures.SequenceEqual(new[] { Field<CheckBox>(form, "_tongue").Checked, Field<CheckBox>(form, "_pupil").Checked }),
-            "Viewing module input started tracking or changed saved feature selections.");
-        all.OfType<Button>().Single(button => button.Text == "Hide tracking details").PerformClick();
-        Console.WriteLine("PASS module input shortcut opens Activity details without starting tracking or changing feature selections");
-        ModuleUiTests(form);
+            "Checking the connection started tracking or changed saved feature selections.");
+        all.OfType<Button>().Single(button => Equals(button.Tag, "workflow-tab") && button.Text == "Activity").PerformClick();
+        Check(Field<TableLayoutPanel>(form, "_trackingHealthCard").Visible, "Activity did not show tracking health.");
+        VrchatStatusTests(form);
         form.ApplyTrackingHealthPreview();
         Pump(250);
         var card = Field<TableLayoutPanel>(form, "_trackingHealthCard");
@@ -285,44 +283,25 @@ internal static class TrackingHealthTests
         form.Close();
     }
 
-    private static void ModuleUiTests(HubForm form)
+    private static void VrchatStatusTests(HubForm form)
     {
-        var environment = Field<HubEnvironment>(form, "_environment");
-        environment.SetPreviewTrackingSource(true);
-        SetField(form, "_heartbeatSource", "SteamLink");
-        SetField(form, "_heartbeatHostRunning", true);
-        SetField(form, "_heartbeatModuleCurrent", true);
-        var observation = new HubModuleHeartbeatSnapshot("SteamLink", 123, 456, Guid.NewGuid().ToString("D"), 1,
-            Environment.TickCount64, "active", "fresh", 0, true, true, []);
-        SetField(form, "_moduleHeartbeat", new HubModuleHeartbeatObservation(observation, ""));
-        Call(form, "RefreshModuleHeartbeatDecoration");
-        var label = Field<Label>(form, "_healthModule");
-        Check(label.Text == "Module receiving: Steam Link" && label.AccessibleDescription!.Contains("local VRCFT slots"),
-            "Module UI did not distinguish local received output from avatar delivery.");
-        var prior = label.Text;
-        SetField(form, "_interactiveResize", true);
-        SetField(form, "_moduleHeartbeat", new HubModuleHeartbeatObservation(observation with { CapturedTickMs = Environment.TickCount64 - 3501 }, ""));
-        Call(form, "RefreshModuleHeartbeatDecoration");
-        Check(label.Text == prior, "Heartbeat decoration changed during interactive resize.");
-        Call(form, "OnResizeEnd", EventArgs.Empty);
-        Check(label.Text.Contains("heartbeat stale"), "ResizeEnd failed to flush stale module heartbeat decoration.");
-        environment.SetPreviewTrackingSource(false);
-        Call(form, "RefreshModuleHeartbeatDecoration");
-        Check(label.Text.Contains("source changed"), "Changed streaming source retained a received-output claim.");
-        SetField(form, "_heartbeatSource", "VirtualDesktop");
-        SetField(form, "_moduleHeartbeat", new HubModuleHeartbeatObservation(observation with
-            { Source = "VirtualDesktop", CapturedTickMs = Environment.TickCount64, NativeState = "untimed", NativeAgeMs = -1 }, ""));
-        Call(form, "RefreshModuleHeartbeatDecoration");
-        Check(label.Text == "Module active: Virtual Desktop source available" && label.AccessibleDescription!.Contains("no producer timestamp") &&
-            label.AccessibleDescription.Contains("normal for Virtual Desktop"), "Native VD UI implied timestamped freshness or hid the normal timestamp limitation.");
-        Check(label.ForeColor == HubForm.Muted, "Normal untimed Virtual Desktop input was presented as a warning.");
-        SetField(form, "_moduleHeartbeat", new HubModuleHeartbeatObservation(observation with
-            { Source = "VirtualDesktop", CapturedTickMs = Environment.TickCount64, State = "failed", NativeState = "unavailable", NativeAgeMs = -1 }, ""));
-        Call(form, "RefreshModuleHeartbeatDecoration");
-        Check(label.ForeColor == HubForm.Bad && label.AccessibleDescription!.Contains("VRCFaceTracking's log"), "Failed module lacked error styling and a concrete next step.");
-        SetField(form, "_heartbeatHostRunning", false);
-        Call(form, "RefreshModuleHeartbeatDecoration");
-        Check(label.Text.Contains("VRCFaceTracking closed"), "Closed VRCFT retained a cached received-output claim.");
-        Console.WriteLine("PASS native module health display, source changes, closed host, untimed VD and deferred resize expiry");
+        var liveStatus = Field<Label>(form, "_directVrchatStatus");
+        var healthStatus = Field<Label>(form, "_healthVrchat");
+        Check(healthStatus.Visible && healthStatus.AccessibleName == "VRChat OSC" &&
+            healthStatus.Text == liveStatus.Text && healthStatus.ForeColor == liveStatus.ForeColor,
+            "Activity did not display the same VRChat connection state.");
+        form.ApplyPreviewScenario("setup-vrchat", "SteamLink");
+        Check(healthStatus.Text.Contains("Waiting for VRChat") && healthStatus.ForeColor == HubForm.Warning &&
+            healthStatus.Text == liveStatus.Text && healthStatus.AccessibleDescription == "Waiting for VRChat · sample",
+            "Activity retained an old connection claim instead of showing the pending state.");
+        form.ApplyPreviewScenario("setup-complete", "VirtualDesktop");
+        Check(healthStatus.Text.Contains("OSCQuery connected") && healthStatus.Text.Contains("sample") &&
+            healthStatus.ForeColor == HubForm.Good, "Activity omitted the sample connection response.");
+        var diagnostics = (string)typeof(HubForm).GetMethod("DiagnosticText", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(form, null)!;
+        Check(diagnostics.Contains("VRCHAT OSC\nOSCQuery connected · sample\nSample OSCQuery response.") &&
+            diagnostics.Contains("Native face and eyes are automatic.\nSelected face adjustments:"),
+            "Copied diagnostics did not distinguish the observed connection from selected face outputs.");
+        form.ApplyPreviewScenario("magisk", "VirtualDesktop");
+        Console.WriteLine("PASS VRChat connection action and Activity status");
     }
 }

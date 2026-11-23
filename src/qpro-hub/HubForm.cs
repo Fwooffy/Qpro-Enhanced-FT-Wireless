@@ -1,3 +1,9 @@
+#if QPRO_REMOTE_CLICKER
+global using HubDropDown = QproFaceTracking.Hub.KilobyteComboBox;
+#else
+global using HubDropDown = System.Windows.Forms.ComboBox;
+#endif
+
 using System.Diagnostics;
 using System.ComponentModel;
 using System.Drawing.Imaging;
@@ -16,7 +22,12 @@ namespace QproFaceTracking.Hub;
 
 internal sealed partial class HubForm : Form
 {
+#if QPRO_REMOTE_CLICKER
+    internal const string EditionName = "Kilobyte Edition";
+    internal const string ProductDisplayName = "Qpro Companion · " + EditionName;
+#else
     internal const string ProductDisplayName = "Qpro Companion";
+#endif
     private readonly string _root;
     private readonly HubEnvironment _environment;
     private readonly HubScriptFactory _scripts;
@@ -29,18 +40,18 @@ internal sealed partial class HubForm : Form
     private readonly CheckBox _individualCheekPuff = FeatureToggle("Individual cheek puff (1/0)", true);
     private readonly CheckBox _individualCheekSuck = FeatureToggle("Individual cheek suck (1/0)", true);
     private readonly CheckBox _eyebrowBoost = FeatureToggle("Adjust eyebrow movement", false);
-    private readonly ComboBox _trackingSourceSetup = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
-    private readonly ComboBox _trackingSourceLive = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+    private readonly ComboBox _trackingSourceSetup = new HubDropDown() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+    private readonly ComboBox _trackingSourceLive = new HubDropDown() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly Label _trackingSourceSetupNote = new() { AutoSize = true, ForeColor = Muted, Tag = "responsive-info" };
     private readonly Label _trackingSourceLiveNote = new() { AutoSize = true, ForeColor = Muted, Tag = "responsive-info" };
-    private readonly ComboBox _eyeProfiles = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
-    private readonly ComboBox _tongueModels = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
-    private readonly ComboBox _quickDatasets = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
-    private readonly ComboBox _focusedDatasets = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
-    private readonly ComboBox _fullDatasets = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
-    private readonly ComboBox _quickRecordedDatasets = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
-    private readonly ComboBox _focusedRecordedDatasets = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
-    private readonly ComboBox _fullRecordedDatasets = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
+    private readonly ComboBox _eyeProfiles = new HubDropDown() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+    private readonly ComboBox _tongueModels = new HubDropDown() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+    private readonly ComboBox _quickDatasets = new HubDropDown() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
+    private readonly ComboBox _focusedDatasets = new HubDropDown() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
+    private readonly ComboBox _fullDatasets = new HubDropDown() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
+    private readonly ComboBox _quickRecordedDatasets = new HubDropDown() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
+    private readonly ComboBox _focusedRecordedDatasets = new HubDropDown() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
+    private readonly ComboBox _fullRecordedDatasets = new HubDropDown() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
     private readonly Label _quickQueueStatus = new() { AutoSize = true, ForeColor = Muted };
     private readonly Label _focusedQueueStatus = new() { AutoSize = true, ForeColor = Muted };
     private readonly Label _fullQueueStatus = new() { AutoSize = true, ForeColor = Muted };
@@ -50,28 +61,23 @@ internal sealed partial class HubForm : Form
     private readonly ListBox _modelList = new() { Dock = DockStyle.Fill, BorderStyle = BorderStyle.None, IntegralHeight = false };
     private readonly Label _modelEmpty = new() { Text = "No paired tongue models found. Extract the complete release or import a .qptonguemodel package.", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Muted, Padding = new Padding(24) };
     private readonly Label _tongueModelNote = new() { AutoSize = true, MaximumSize = new Size(650, 0), ForeColor = Muted, Margin = new Padding(24, 2, 0, 4), Tag = "responsive-info" };
-    private readonly ComboBox _fps = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 76 };
-    private readonly ComboBox _processingProfile = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill, Enabled = false };
+    private readonly ComboBox _fps = new HubDropDown() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 76 };
+    private readonly ComboBox _processingProfile = new HubDropDown() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill, Enabled = false };
     private readonly Label _processingProfileNote = new() { AutoSize = true, ForeColor = Muted, Tag = "responsive-info" };
-    private readonly ComboBox _pupilSensitivity = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
+    private readonly ComboBox _pupilSensitivity = new HubDropDown() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
     private readonly DarkSlider _smoothing = new() { Minimum = 0, Maximum = 100, Value = 55, Width = 180, Height = 30 };
-    private readonly ComboBox _visibilityMode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 265 };
-    private readonly ComboBox _eyebrowSensitivity = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
+    private readonly ComboBox _visibilityMode = new HubDropDown() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 265 };
+    private readonly ComboBox _eyebrowSensitivity = new HubDropDown() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
     private readonly Label _usbStatus = StatusLabel();
     private readonly Label _steamStatus = StatusLabel();
-    private readonly Label _vrcftStatus = StatusLabel();
-    private readonly Label _bridgeStatus = StatusLabel();
+    private readonly Label _directVrchatStatus = StatusLabel();
     private readonly Label _runtimeStatus = StatusLabel();
     private readonly Label _gazeStatus = StatusLabel();
     private readonly Label _inferenceStatus = StatusLabel();
     private readonly Label _pupilStatus = StatusLabel();
     private readonly Label _setupRuntimeStatus = SetupStatusLabel();
-    private readonly Label _setupBridgeStatus = SetupStatusLabel();
     private readonly Label _setupGazeStatus = SetupStatusLabel();
     private readonly DarkButton _setupRuntimeButton = SetupButton("Install runtime");
-    private readonly DarkButton _setupBridgeButton = SetupButton("Install Virtual Desktop module");
-    private readonly DarkButton _setupSteamLinkModuleButton = SetupButton("Install Steam Link module");
-    private readonly DarkButton _uninstallBridgeButton = SetupButton("Uninstall Qpro module");
     private readonly DarkButton _setupGazeButton = SetupButton("Prepare gaze");
     private readonly DarkButton _recoverGazeButton = SetupButton("Recover Qpro gaze");
     private readonly DarkButton _inspectGazeButton = SetupButton("Check gaze setup");
@@ -79,8 +85,8 @@ internal sealed partial class HubForm : Form
     private readonly DarkProgressBar _setupProgress = new() { Dock = DockStyle.Fill, Height = 18, Margin = new Padding(4, 5, 4, 2) };
     private readonly Label _setupProgressStatus = new() { Text = "Setup idle.", AutoSize = true, ForeColor = Muted, Margin = new Padding(4, 2, 4, 3), Tag = "responsive-info" };
     private readonly TableLayoutPanel _setupProgressContainer = new();
-    private readonly Label _runStatus = new() { Text = "● Idle — Qpro live overrides off", AutoSize = true, ForeColor = Good };
-    private readonly RichTextBox _log = new() { ReadOnly = true, BackColor = Inset, ForeColor = Color.WhiteSmoke, BorderStyle = BorderStyle.None, Dock = DockStyle.Fill, ScrollBars = RichTextBoxScrollBars.Vertical, HideSelection = false };
+    private readonly Label _runStatus = new() { Text = "○ Optional tracking stopped", AutoSize = true, ForeColor = Muted };
+    private readonly RichTextBox _log = new() { ReadOnly = true, DetectUrls = false, BackColor = Inset, ForeColor = TextBody, BorderStyle = BorderStyle.None, Dock = DockStyle.Fill, ScrollBars = RichTextBoxScrollBars.Vertical, HideSelection = false };
     private readonly Button _start = PrimaryButton("Start tracking");
     private readonly Button _stop = SecondaryButton("Stop tracking");
     private readonly List<Process> _trackingProcesses = [];
@@ -106,6 +112,34 @@ internal sealed partial class HubForm : Form
     private int _trainingStage;
     private int _trainingStageCount = 2;
 
+#if QPRO_REMOTE_CLICKER
+    // Dark evergreen surfaces and controls are paired with sandstone navigation accents.
+    internal static readonly Color ShellSurface = Color.FromArgb(0x07, 0x1D, 0x10);
+    internal static readonly Color Background = Color.FromArgb(0x0B, 0x26, 0x15);
+    internal static readonly Color Panel = Color.FromArgb(0x10, 0x37, 0x1C);
+    internal static readonly Color Inset = Color.FromArgb(0x07, 0x1D, 0x0D);
+    internal static readonly Color Raised = Color.FromArgb(0x19, 0x42, 0x29);
+    internal static readonly Color Selected = Color.FromArgb(0x14, 0x4D, 0x26);
+    internal static readonly Color RaisedHover = Color.FromArgb(0x25, 0x53, 0x34);
+    internal static readonly Color Border = Color.FromArgb(0x61, 0x89, 0x6A);
+    internal static readonly Color ControlOutline = Color.FromArgb(0x95, 0xAD, 0x98);
+    internal static readonly Color FocusRing = Color.FromArgb(0xF3, 0xD2, 0x96);
+    internal static readonly Color Accent = Color.FromArgb(0x86, 0xBC, 0x8B);
+    internal static readonly Color PrimaryFill = Color.FromArgb(0x04, 0x61, 0x28);
+    internal static readonly Color PrimaryHover = Color.FromArgb(0x10, 0x6D, 0x32);
+    internal static readonly Color PrimaryPressed = Color.FromArgb(0x00, 0x4E, 0x1D);
+    internal static readonly Color TextPrimary = Color.FromArgb(0xF0, 0xE4, 0xCC);
+    internal static readonly Color PrimaryText = TextPrimary;
+    internal static readonly Color TextBody = Color.FromArgb(0xE6, 0xE6, 0xD6);
+    internal static readonly Color Muted = Color.FromArgb(0xB6, 0xC6, 0xB7);
+    internal static readonly Color DisabledText = Color.FromArgb(0xA0, 0xB0, 0xA0);
+    internal static readonly Color Good = Color.FromArgb(0xAC, 0xDC, 0x83);
+    internal static readonly Color Warning = Color.FromArgb(0xF1, 0xC1, 0x75);
+    internal static readonly Color Bad = Color.FromArgb(0xFF, 0xAD, 0x98);
+    internal static readonly Color DestructiveHover = Color.FromArgb(0x50, 0x36, 0x30);
+    internal static readonly Color LinkText = Color.FromArgb(0xA2, 0xD2, 0xA4);
+    internal static readonly Color NavigationAccent = Color.FromArgb(0xB0, 0x8A, 0x5D);
+#else
     internal static readonly Color Background = Color.FromArgb(33, 57, 66);      // #213942
     internal static readonly Color Panel = Color.FromArgb(25, 47, 55);           // #192F37
     internal static readonly Color Inset = Color.FromArgb(17, 35, 42);
@@ -113,12 +147,24 @@ internal sealed partial class HubForm : Form
     internal static readonly Color Selected = Color.FromArgb(52, 92, 101);       // #345C65
     internal static readonly Color RaisedHover = Color.FromArgb(59, 98, 108);    // #3B626C
     internal static readonly Color Border = Color.FromArgb(82, 124, 132);        // #527C84
+    internal static readonly Color ControlOutline = Border;
     internal static readonly Color Accent = Color.FromArgb(114, 208, 198);       // #72D0C6
     internal static readonly Color Muted = Color.FromArgb(201, 220, 222);        // #C9DCDE
     internal static readonly Color DisabledText = Color.FromArgb(167, 189, 195);
     internal static readonly Color Good = Color.FromArgb(145, 228, 184);         // #91E4B8
     internal static readonly Color Warning = Color.FromArgb(240, 208, 138);      // #F0D08A
     internal static readonly Color Bad = Color.FromArgb(243, 141, 133);          // #F38D85
+    internal static readonly Color TextPrimary = Color.White;
+    internal static readonly Color PrimaryFill = Accent;
+    internal static readonly Color PrimaryText = Inset;
+    internal static readonly Color TextBody = Color.WhiteSmoke;
+    internal static readonly Color PrimaryHover = Color.FromArgb(138, 224, 215);
+    internal static readonly Color PrimaryPressed = Color.FromArgb(81, 181, 174);
+    internal static readonly Color DestructiveHover = Color.FromArgb(68, 43, 47);
+    internal static readonly Color LinkText = Accent;
+    internal static readonly Color ShellSurface = Panel;
+    internal static readonly Color NavigationAccent = Accent;
+#endif
     private static readonly string UiFontName = ResolveUiFontName();
 
     private static string ResolveUiFontName()
@@ -238,10 +284,24 @@ internal sealed partial class HubForm : Form
     }
 
     public HubForm(string root, bool rememberLaunch = true, bool previewOnly = false)
+        : this(root, rememberLaunch, previewOnly, null) { }
+
+    internal HubForm(string root, bool rememberLaunch, bool previewOnly,
+        Func<bool, Action<VrchatFaceStatus>, NativeIdleFeed>? nativeIdleFactory,
+        Func<bool, VrchatFaceSelection, Action<VrchatFaceStatus>, VrchatFaceSession>? directSessionFactory = null,
+        Action<string, string>? presentBindingGuide = null, string? faceOutputConfigDirectory = null,
+        Func<bool>? competingFaceHost = null, Func<bool>? packageProvidesBackup = null)
     {
+        _nativeIdleFactory = nativeIdleFactory ?? NativeIdleFeed.Open;
+        _openDirectSession = directSessionFactory ?? OpenDirectSession;
+        _presentBindingGuide = presentBindingGuide ?? ((title, instructions) =>
+            MessageBox.Show(this, instructions, title, MessageBoxButtons.OK, MessageBoxIcon.Information));
         _previewOnly = previewOnly;
         _root = root;
-        _environment = new HubEnvironment(root);
+        _faceOutputConfigDirectory = faceOutputConfigDirectory;
+        _competingFaceHost = competingFaceHost ?? BackupModuleHostRunning;
+        _packageProvidesBackup = packageProvidesBackup ?? (() => MemoryOnlyRoute || HubModuleInstallation.PackageIncludesBackup(_root));
+        _environment = new HubEnvironment(root, loadUserSource: !previewOnly);
         _cameraPreview.Checked = _environment.CameraPreviewEnabled;
         _gaze.Checked = _environment.IndependentGazeEnabled;
         _scripts = new HubScriptFactory(root, _environment);
@@ -253,7 +313,7 @@ internal sealed partial class HubForm : Form
         AutoScaleDimensions = new SizeF(96F, 96F);
         DoubleBuffered = true;
         BackColor = Background;
-        ForeColor = Color.WhiteSmoke;
+        ForeColor = TextBody;
         Font = new Font(UiFontName, 10F);
         StartPosition = FormStartPosition.CenterScreen;
         HandleCreated += (_, _) => EnableDarkTitleBar(Handle);
@@ -263,12 +323,16 @@ internal sealed partial class HubForm : Form
             if (Width <= workArea.Width && Height <= workArea.Height) return;
             MinimumSize = new Size(Math.Min(MinimumSize.Width, workArea.Width), Math.Min(MinimumSize.Height, workArea.Height));
             Size = new Size(Math.Min(Width, workArea.Width), Math.Min(Height, workArea.Height));
-            Location = new Point(workArea.Left + (workArea.Width - Width) / 2, workArea.Top + (workArea.Height - Height) / 2);
+            if (!_previewOnly || StartPosition != FormStartPosition.Manual)
+                Location = new Point(workArea.Left + (workArea.Width - Width) / 2, workArea.Top + (workArea.Height - Height) / 2);
         };
 
+        SetStatus(_directVrchatStatus, StatusKind.Neutral, "VRChat connection not checked");
         using (new HubLayoutConstructionScope()) Controls.Add(BuildLayout());
         InitializeTrackingHealthUi();
         InitializeTrackingSourceUi();
+        ConfigureOutputRouteControls();
+        ConfigureSteamVrStartup();
         InitializeControllerInputUi();
         InitializeStreamerUpdaterUi();
         if (rememberLaunch && !previewOnly)
@@ -277,9 +341,12 @@ internal sealed partial class HubForm : Form
                 try { _environment.MarkOpened(); }
                 catch (Exception error) { AppendLog("Could not save first-launch state: " + error.Message); }
             };
+        if (!previewOnly || nativeIdleFactory is not null) Shown += (_, _) => BeginNativeIdle();
         InitializeIntegratedSetup();
         _start.Click += async (_, _) => await StartTrackingAsync();
         _stop.Click += async (_, _) => await StopTrackingAsync();
+        _hybridHands.CheckedChanged += (_, _) => UpdateControlState();
+        _controllerTouchpad.CheckedChanged += (_, _) => UpdateControlState();
         _gaze.CheckedChanged += (_, _) =>
         {
             if (_previewOnly || _updatingMagiskGazeSelection) return;
@@ -323,37 +390,39 @@ internal sealed partial class HubForm : Form
             catch (Exception error) when (error is IOException or UnauthorizedAccessException)
             { AppendLog("Tracking sound preference could not be saved: " + error.Message); }
         };
-        _individualCheekPuff.Checked = HubCheekPuffPreference.LoadMode() != HubCheekPuffMode.Off;
+        _individualCheekPuff.Checked = previewOnly || HubCheekPuffPreference.LoadMode() != HubCheekPuffMode.Off;
         void SaveCheekPuffChoice()
         {
-            if (_previewOnly) return;
+            if (_previewOnly) { UpdateDirectFaceAdjustments(); return; }
             try
             {
                 HubCheekPuffPreference.Save(_individualCheekPuff.Checked, HubCheekPuffMode.Strong);
+                UpdateDirectFaceAdjustments();
                 UpdateToggleStyle(_individualCheekPuff);
                 AppendLog(_individualCheekPuff.Checked
-                    ? "Individual cheek puff (1/0) selected. Applies while Qpro tracking runs; Stop restores native cheeks."
-                    : "Individual cheek puff off: using the streaming app's original cheek values.");
+                    ? "Individual cheek puff (1/0) selected for face tracking."
+                    : "Individual cheek puff adjustment off.");
             }
             catch (Exception error) { AppendLog("Could not save cheek puff choice: " + error.Message); }
         }
-        _individualCheekPuff.CheckedChanged += (_, _) => SaveCheekPuffChoice();
-        _individualCheekSuck.Checked = HubCheekSuckPreference.LoadMode() != HubCheekSuckMode.Off;
+        _individualCheekPuff.CheckedChanged += (_, _) => { SaveCheekPuffChoice(); UpdateControlState(); };
+        _individualCheekSuck.Checked = previewOnly || HubCheekSuckPreference.LoadMode() != HubCheekSuckMode.Off;
         void SaveCheekSuckChoice()
         {
-            if (_previewOnly) return;
+            if (_previewOnly) { UpdateDirectFaceAdjustments(); return; }
             try
             {
                 HubCheekSuckPreference.Save(_individualCheekSuck.Checked, true);
+                UpdateDirectFaceAdjustments();
                 UpdateToggleStyle(_individualCheekSuck);
                 AppendLog(_individualCheekSuck.Checked
-                    ? "Individual cheek suck (1/0) selected. Applies while Qpro tracking runs; Stop restores native cheeks."
-                    : "Individual cheek suck off: using the streaming app's original cheek values.");
+                    ? "Individual cheek suck (1/0) selected for face tracking."
+                    : "Individual cheek suck adjustment off.");
             }
             catch (Exception error) { AppendLog("Could not save cheek suck choice: " + error.Message); }
         }
-        _individualCheekSuck.CheckedChanged += (_, _) => SaveCheekSuckChoice();
-        EyebrowSettings eyebrowSettings = EyebrowPreference.Load();
+        _individualCheekSuck.CheckedChanged += (_, _) => { SaveCheekSuckChoice(); UpdateControlState(); };
+        EyebrowSettings eyebrowSettings = previewOnly ? EyebrowPreference.Default : EyebrowPreference.Load();
         _eyebrowSensitivity.Items.AddRange(Enumerable.Range(0, 11)
             .Select(index => $"{0.5 + index * 0.25:0.00}×" + (index == 2 ? " (Native)" : ""))
             .ToArray());
@@ -363,20 +432,21 @@ internal sealed partial class HubForm : Form
         _eyebrowSensitivity.Enabled = _eyebrowBoost.Checked;
         void SaveEyebrowChoice()
         {
-            if (_previewOnly) return;
+            if (_previewOnly) { UpdateDirectFaceAdjustments(); return; }
             try
             {
                 float sensitivity = 0.5f + _eyebrowSensitivity.SelectedIndex * 0.25f;
                 EyebrowPreference.Save(new EyebrowSettings(_eyebrowBoost.Checked, sensitivity));
+                UpdateDirectFaceAdjustments();
                 _eyebrowSensitivity.Enabled = _eyebrowBoost.Checked;
                 UpdateToggleStyle(_eyebrowBoost);
                 AppendLog(_eyebrowBoost.Checked
-                    ? $"Eyebrow response on: {sensitivity:0.00}×. The Qpro module updates while tracking is running."
-                    : "Eyebrow adjustment off: using the streaming app's original brow values. The Qpro module updates while tracking is running.");
+                    ? $"Eyebrow response on: {sensitivity:0.00}× during face tracking."
+                    : "Eyebrow adjustment off: using the streaming app's original brow values.");
             }
             catch (Exception error) { AppendLog("Could not save eyebrow choice: " + error.Message); }
         }
-        _eyebrowBoost.CheckedChanged += (_, _) => SaveEyebrowChoice();
+        _eyebrowBoost.CheckedChanged += (_, _) => { SaveEyebrowChoice(); UpdateControlState(); };
         _eyebrowSensitivity.SelectedIndexChanged += (_, _) => SaveEyebrowChoice();
         ConfigureDropDown(_eyeProfiles);
         ConfigureDropDown(_tongueModels);
@@ -431,7 +501,7 @@ internal sealed partial class HubForm : Form
         };
         FormClosed += (_, _) =>
         {
-            EndCheekTrackingSession();
+            EndFaceOutput();
             timer.Stop(); pulseTimer.Stop(); _setupProgressTimer.Stop();
         };
         Disposed += (_, _) =>
@@ -439,13 +509,14 @@ internal sealed partial class HubForm : Form
             // Dispose also covers a form abandoned before it was shown, where
             // FormClosed never fires. Native timers must not retain that form.
             _uiComponents.Dispose();
-            EndCheekTrackingSession();
+            EndFaceOutput();
             _soundPlayer?.Dispose();
             foreach (var process in _trackingProcesses) process.Dispose();
         };
         RestoreLiveOptions();
         WireUpdates();
-        AppendLog("Hub ready. Cheek adjustments and Qpro live overrides start when you press Start tracking. Eyebrow and smirk adjustments can already apply through the installed module.");
+        AppendLog(BackupSelected ? "Companion ready. VRCFaceTracking is the selected face output. Use First-time setup to check the backup module."
+            : "Companion ready. Native face and eyes connect automatically when the streaming app shares tracking data and VRChat OSC is enabled. Use Start tracking for optional features.");
     }
 
     private void InitializeTrackingSourceUi()
@@ -462,8 +533,8 @@ internal sealed partial class HubForm : Form
 
     private void SelectTrackingSource(bool steamLink)
     {
-        if (_previewOnly || _trackingSourceSelectionUpdating || steamLink == _environment.SteamLinkSelected) return;
-        if (_setupActionRunning || _utilityActionRunning || _datasetOperationBusy ||
+        if ((_previewOnly && !_nativeIdleShown) || _trackingSourceSelectionUpdating || steamLink == _environment.SteamLinkSelected) return;
+        if (_faceRouteChanging || _setupActionRunning || _utilityActionRunning || _datasetOperationBusy ||
             _starting || _stopping || LiveTrackingRunning)
         {
             SyncTrackingSourceControls();
@@ -471,24 +542,14 @@ internal sealed partial class HubForm : Form
         }
         try
         {
-            _environment.SelectTrackingSource(steamLink);
+            if (_previewOnly) _environment.SetPreviewTrackingSource(steamLink);
+            else _environment.SelectTrackingSource(steamLink);
             SyncTrackingSourceControls();
             UpdateTrackingSourceNotes();
             var selectedName = steamLink ? "Steam Link" : "Virtual Desktop";
             AppendLog($"Face-tracking source selected: {selectedName}.");
-            if (!CurrentBridgeInstalled())
-            {
-                AppendLog("Close VRCFaceTracking, install the selected Qpro module, then restart it to load the face-tracking source.");
-                MessageBox.Show(this,
-                    $"Close VRCFaceTracking, use First-time setup to install the Qpro {selectedName} module, then reopen VRCFaceTracking before tracking or tongue capture.",
-                    "Install selected module", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            }
-            else if (_environment.TrackingSourceRequiresVrcftRestart())
-            {
-                AppendLog("Restart VRCFaceTracking so the Qpro module loads the selected face-tracking source.");
-                MessageBox.Show(this, "Close and reopen VRCFaceTracking before tracking or tongue capture.",
-                    "Restart VRCFaceTracking", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            }
+            if (BackupSelected) { CancelVrchatCheck(); ShowOutputRouteState(); }
+            RequestNativeIdleRefresh();
         }
         catch (Exception error)
         {
@@ -512,11 +573,11 @@ internal sealed partial class HubForm : Form
     private void UpdateTrackingSourceNotes()
     {
         var note = _environment.SteamLinkSelected
-            ? "In SteamVR > Settings > Steam Link, show Advanced Settings, enable OSC, share eye and face tracking, and set Steam Link OSC output to 9015 (ALT). Keep VRCFaceTracking's VRChat OSC ports at 9000/9001."
-            : "Start Virtual Desktop with eye and face tracking forwarded to the PC. Keep VRCFaceTracking's VRChat OSC ports at their defaults.";
+            ? "In SteamVR > Settings > Steam Link, show Advanced Settings, enable OSC, share eye and face tracking, and set Steam Link OSC output to 9015 (ALT). " +
+              (BackupSelected ? "The Qpro module in VRCFaceTracking listens on this port." : "Companion listens on this port for Steam Link face data.")
+            : "Enable eye and face tracking on the Quest and grant Virtual Desktop permission. In Virtual Desktop > Streaming, turn on Forward tracking data to PC.";
         _trackingSourceSetupNote.Text = note;
         _trackingSourceLiveNote.Text = note;
-        UpdateModuleInstallButtonState(!_setupActionRunning);
         UpdateControllerInputAvailability();
     }
 }

@@ -152,6 +152,20 @@ internal static class HubModuleHeartbeat
         { return false; }
     }
 
+    internal static string? BackupInputProblem(HubModuleHeartbeatObservation observation, long now, bool requiresEyes, bool requiresFace)
+    {
+        var data = observation.Snapshot;
+        if (data is null || data.State != "active" || data.CapturedTickMs > now || now - data.CapturedTickMs > LeaseMs)
+            return Describe(observation, now, hostRunning: true, moduleCurrent: true).Detail;
+        if (!data.OwnsEyes && !data.OwnsFace)
+            return "The Qpro module has no active face or eye inputs. Enable the selected source in VRCFaceTracking.";
+        if (requiresEyes && !data.OwnsEyes)
+            return "Enable eye tracking for the Qpro module in VRCFaceTracking to use eye features.";
+        if (requiresFace && !data.OwnsFace)
+            return "Enable expression tracking for the Qpro module in VRCFaceTracking to use facial expressions.";
+        return null;
+    }
+
     internal static HubModuleHeartbeatView Describe(HubModuleHeartbeatObservation observation, long now,
         bool hostRunning, bool moduleCurrent)
     {

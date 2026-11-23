@@ -125,7 +125,7 @@ internal static class SetupNavigationTests
                 context + ": controls overlap: " + leaves[left].Text + " / " + leaves[right].Text);
         }
         var steps = Descendants(page).OfType<Button>().Where(button =>
-            button.AccessibleName?.StartsWith("Setup step ", StringComparison.Ordinal) == true).ToArray();
+            button.AccessibleName?.StartsWith("Setup section: ", StringComparison.Ordinal) == true).ToArray();
         Check(steps.Length == 3 && steps.All(button => button.Width > 60 && button.Height >= 32),
             context + ": compact step navigation is missing or compressed.");
     }
@@ -155,11 +155,173 @@ internal static class SetupNavigationTests
         }
     }
 
+    private static void CheckSteamVrStartupClicks()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "qpro-startup-clicks-" + Guid.NewGuid().ToString("N"));
+        using var form = new HubForm(root, rememberLaunch: false, previewOnly: true)
+        {
+            StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000),
+            ShowInTaskbar = false, MinimumSize = Size.Empty, Size = new Size(780, 580),
+        };
+        var toggle = Field<CheckBox>(form, "_launchWithSteamVr");
+        var status = Field<Label>(form, "_steamVrStartupStatus");
+        var log = Field<RichTextBox>(form, "_log");
+        var writes = new System.Collections.Concurrent.ConcurrentQueue<bool>();
+        using var allowFirstWrite = new ManualResetEventSlim();
+        const string failure = "SteamVR registration unavailable in this fixture.";
+        int saved = 0;
+        SteamVrLaunchStatus Read()
+        {
+            return Volatile.Read(ref saved) == 1 ? new(true, true, "On in fixture", true) : new(false, true, "Off in fixture", true);
+        }
+        form.BindSteamVrStartup(Read, enabled =>
+        {
+            writes.Enqueue(enabled);
+            if (writes.Count == 1 && !allowFirstWrite.Wait(TimeSpan.FromSeconds(8)))
+                throw new TimeoutException("The fixture did not release the first write.");
+            if (writes.Count == 3) throw new IOException(failure);
+            Volatile.Write(ref saved, enabled ? 1 : 0);
+            return Read();
+        });
+
+        void WaitFor(Func<bool> complete, string context)
+        {
+            var until = Environment.TickCount64 + 8000;
+            while (!complete() && Environment.TickCount64 < until) Pump(form);
+            Check(complete(), $"{context} Status={status.Text}, checked={toggle.Checked}, enabled={toggle.Enabled}.");
+        }
+        form.Show();
+        WaitFor(() => toggle.Enabled && status.Text == "Off in fixture", "SteamVR startup read never settled.");
+        Check(!toggle.Checked && writes.IsEmpty, "Reading the initial SteamVR preference changed it.");
+        PageOf(toggle).ScrollControlIntoView(toggle);
+        toggle.AccessibilityObject.DoDefaultAction();
+        try
+        {
+            WaitFor(() => !writes.IsEmpty, "The startup checkbox did not dispatch the enable action.");
+            Check(!toggle.Enabled && toggle.Checked, "A pending SteamVR registration allowed another click.");
+        }
+        finally { allowFirstWrite.Set(); }
+        WaitFor(() => toggle.Enabled && status.Text == "On in fixture", "Enabling SteamVR startup did not settle.");
+        Check(toggle.Checked, "The SteamVR startup toggle lost its applied on state.");
+        toggle.AccessibilityObject.DoDefaultAction();
+        WaitFor(() => toggle.Enabled && status.Text == "Off in fixture", "Disabling SteamVR startup did not settle.");
+        Check(!toggle.Checked, "The SteamVR startup toggle lost its applied off state.");
+        toggle.AccessibilityObject.DoDefaultAction();
+        WaitFor(() => toggle.Enabled && status.Text == failure, "The startup registration error did not reach setup.");
+        Check(!toggle.Checked && status.Visible && status.ForeColor == HubForm.Warning && log.Text.Contains(failure),
+            "The failed change did not restore the prior startup choice and report why.");
+        Check(writes.SequenceEqual(new[] { true, false, true }),
+            "Refreshing or rolling back the SteamVR checkbox triggered an extra write.");
+        Console.WriteLine("PASS SteamVR startup checkbox: initial read, enable, disable, busy gating and failure rollback.");
+    }
+
+    private static void CheckSetupActionRouting()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "qpro-setup-actions-" + Guid.NewGuid().ToString("N"));
+        var config = Directory.CreateDirectory(Path.Combine(root, "config"));
+        var mode = Path.Combine(config.FullName, "connection-mode.txt");
+        File.WriteAllText(mode, "wireless");
+        using var form = new HubForm(root, rememberLaunch: false, previewOnly: true)
+        {
+            StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000),
+            ShowInTaskbar = false, MinimumSize = Size.Empty, Size = new Size(780, 580),
+        };
+        form.Show(); Pump(form);
+        var runtime = Field<Button>(form, "_setupRuntimeButton");
+        var page = PageOf(runtime);
+        var progress = Field<Control>(form, "_setupProgressContainer");
+        var progressStatus = Field<Label>(form, "_setupProgressStatus");
+        var connectionMode = Field<ComboBox>(form, "_connectionMode");
+        var nextCalls = new List<(string Label, string Script, string[] Arguments)>();
+
+        form.SelectSetupStepForPreview(1);
+        var address = Field<TextBox>(form, "_wirelessAddress");
+        var endpoint = Field<TextBox>(form, "_pairingEndpoint");
+        var code = Field<TextBox>(form, "_pairingCode");
+        Disclosure(form, "Show wireless setup options").PerformClick(); Pump(form);
+        Disclosure(form, "Show pairing options").PerformClick(); Pump(form);
+        CheckOptionalButtons(form, page, Field<Control>(form, "_wirelessSetup"), "Compact Wi-Fi actions");
+        var wirelessActions = new[] { "_enableWirelessButton", "_connectWirelessButton", "_pairWirelessButton", "_disableWirelessButton" }
+            .Select(name => Field<Button>(form, name)).ToArray();
+        var untouched = OperationState(form);
+        foreach (var action in wirelessActions)
+        {
+            Check(action.Visible && action.Enabled, "The Wi-Fi action is unreachable in the compact setup fixture: " + action.Text);
+            action.PerformClick(); Pump(form);
+            Check(OperationState(form) == untouched, "A plain preview dispatched a Wi-Fi command: " + action.Text);
+        }
+        form.SelectSetupStepForPreview(2); Pump(form);
+        runtime.PerformClick(); Pump(form);
+        Check(OperationState(form) == untouched, "A plain preview dispatched a runtime installation.");
+
+        var install = new TaskCompletionSource<bool>();
+        form.ConfigurePreviewSetupCommands((label, script, arguments) =>
+        {
+            nextCalls.Add((label, script, arguments));
+            return script == "setup-runtime.ps1" ? install.Task : Task.FromResult(script != "Pair-QproWireless.ps1");
+        });
+        runtime.PerformClick(); Pump(form);
+        Check(nextCalls.Count == 1 && nextCalls[0] is { Label: "PC runtime setup", Script: "setup-runtime.ps1", Arguments.Length: 0 },
+            "Install runtime did not dispatch the bundled installation route.");
+        Check(progress.Visible && Field<bool>(form, "_setupActionRunning") && !runtime.Enabled &&
+            !connectionMode.Enabled && !Field<ComboBox>(form, "_trackingSourceSetup").Enabled,
+            "A pending setup command did not block conflicting setup controls.");
+        var viewActivity = Descendants(page).OfType<Button>().Single(button => button.Text == "View setup activity");
+        viewActivity.PerformClick(); Pump(form);
+        Check(!page.Visible && PageOf(Field<RichTextBox>(form, "_log")).Visible,
+            "View setup activity did not open the Activity page during a running action.");
+        install.SetResult(true); Pump(form);
+        NamedButton(form, "First-time setup").PerformClick(); Pump(form);
+        Check(!Field<bool>(form, "_setupActionRunning") && runtime.Enabled && connectionMode.Enabled &&
+            Field<ComboBox>(form, "_trackingSourceSetup").Enabled && progressStatus.Text.Contains("completed successfully"),
+            $"Setup completion left controls disabled until a later status probe. Busy={Field<bool>(form, "_setupActionRunning")}; " +
+            $"Runtime={runtime.Enabled}; transport={connectionMode.Enabled}; source={Field<ComboBox>(form, "_trackingSourceSetup").Enabled}; " +
+            $"progress={progressStatus.Text}; form={form.Enabled}; page={page.Enabled}/{page.Visible}; " +
+            $"closing={Field<bool>(form, "_closingInProgress")}; recovery={Field<bool>(form, "_gazeRecoveryRunning")}; {OperationState(form)}");
+
+        form.SelectSetupStepForPreview(1); Pump(form);
+        address.Text = " 192.0.2.15 ";
+        endpoint.Text = "192.0.2.15:37123";
+        code.Text = "012345";
+        foreach (var action in wirelessActions) { action.PerformClick(); Pump(form); }
+        Check(nextCalls.Count == 5 && nextCalls[1].Script == "Enable-QproWireless.ps1" && nextCalls[1].Arguments.Length == 0,
+            "Enable from USB did not dispatch its Wi-Fi setup helper.");
+        Check(nextCalls[2].Script == "Connect-QproWireless.ps1" && nextCalls[2].Arguments.SequenceEqual(new[] { "-AdbTarget", "192.0.2.15:5555" }),
+            "Connect to Quest did not normalize and pass the target.");
+        Check(nextCalls[3].Script == "Pair-QproWireless.ps1" && nextCalls[3].Arguments.SequenceEqual(new[] {
+            "-PairingEndpoint", "192.0.2.15:37123", "-AdbTarget", "192.0.2.15:5555", "-PairingCode", "012345" }),
+            "Pair and connect did not route the separate pairing endpoint and target.");
+        Check(nextCalls[4].Script == "Disable-QproWireless.ps1" && nextCalls[4].Arguments.Length == 0 &&
+            code.Text.Length == 0 && address.Text.Length == 0 && connectionMode.SelectedIndex == 0,
+            "Disable Wi-Fi ADB did not route its helper or clear input; pairing did not clear the synthetic code on failure.");
+        Check(File.ReadAllText(mode) == "wireless" && Directory.EnumerateFiles(config.FullName).Count() == 1,
+            "Setup command fixtures modified the isolated connection preferences.");
+        Console.WriteLine("PASS setup button dispatch: PC runtime, Activity navigation, and four Wi-Fi actions with isolated commands.");
+    }
+
     [STAThread]
     private static int Main(string[] args)
     {
-        try { Run(args); return 0; }
-        catch (Exception error) { Console.Error.WriteLine(error); return 1; }
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+        Application.EnableVisualStyles();
+        Application.SetColorMode(SystemColorMode.Dark);
+        using var loop = new ApplicationContext();
+        using var dispatcher = new Control();
+        _ = dispatcher.Handle;
+        int result = 0;
+        dispatcher.BeginInvoke(() =>
+        {
+            try
+            {
+                if (args is ["--startup-clicks"]) CheckSteamVrStartupClicks();
+                else Run(args);
+            }
+            catch (Exception error) { Console.Error.WriteLine(error); result = 1; }
+            finally { loop.ExitThread(); }
+        });
+        Application.Run(loop);
+        return result;
     }
 
     private static void Run(string[] args)
@@ -171,10 +333,8 @@ internal static class SetupNavigationTests
             else throw new ArgumentException("Use --offscreen and/or --captures <directory>.");
         }
         if (_captures is not null) Directory.CreateDirectory(_captures);
-        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
-        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
-        Application.EnableVisualStyles();
-        Application.SetColorMode(SystemColorMode.Dark);
+        CheckSteamVrStartupClicks();
+        CheckSetupActionRouting();
         var root = Path.Combine(Path.GetTempPath(), "qpro-setup-navigation-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         var beforePreferences = PreferenceFingerprint(root);
@@ -187,20 +347,44 @@ internal static class SetupNavigationTests
             var setupTab = NamedButton(form, "First-time setup");
             var page = PageOf(Field<Button>(form, "_setupRuntimeButton"));
             var livePage = PageOf(Field<CheckBox>(form, "_tongue"));
-            var stepButtons = new[] { "Setup step 1: Connect", "Setup step 2: PC runtime", "Setup step 3: VRCFT module" }
+            var stepButtons = new[] { "Setup section: VRChat output", "Setup section: Headset", "Setup section: PC runtime" }
                 .Select(name => NamedButton(form, name)).ToArray();
-            var back = NamedButton(form, "Previous setup step");
-            var next = NamedButton(form, "Next setup step");
+            var features = NamedButton(form, "Choose tracking features");
+            var checkVrchat = NamedButton(form, "Check VRChat connection in setup");
+            var vrchatSetupStatus = Descendants(form).OfType<Label>().Single(label => label.AccessibleName == "VRChat OSC setup status");
             var fieldNames = new[] { "_connectionMode", "_wirelessAddress", "_pairingEndpoint", "_pairingCode",
                 "_reconnectUsbButton", "_forgetUsbButton", "_connectWirelessButton", "_enableWirelessButton",
-                "_setupRuntimeButton", "_trackingSourceSetup", "_trackingSourceLive", "_setupBridgeButton",
-                "_setupSteamLinkModuleButton", "_setupRuntimeStatus", "_setupBridgeStatus", "_tongueModels",
+                "_setupRuntimeButton", "_trackingSourceSetup", "_trackingSourceLive", "_setupRuntimeStatus",
+                "_directVrchatStatus", "_tongueModels", "_launchWithSteamVr", "_steamVrStartupStatus",
                 "_setupGazeButton", "_inspectGazeButton", "_start", "_stop" };
             var original = fieldNames.ToDictionary(name => name, name => Field<Control>(form, name));
             var handles = original.ToDictionary(item => item.Key, item => item.Value.Handle);
             var noWork = OperationState(form);
             var startClicks = 0;
             Field<Button>(form, "_start").Click += (_, _) => startClicks++;
+            var checkUsb = Field<Button>(form, "_reconnectUsbButton");
+            var forgetUsb = Field<Button>(form, "_forgetUsbButton");
+            var route = Field<HubOutputRouteSwitch>(form, "_outputRouteSetup");
+            var installBackup = Field<Button>(form, "_installBackupModuleButton");
+            var direct = route.Controls.OfType<RadioButton>().Single(radio => radio.AccessibleName == "Direct to VRChat");
+            var backup = route.Controls.OfType<RadioButton>().Single(radio => radio.AccessibleName == "VRCFaceTracking backup");
+            Check(route.Visible && direct.Checked && !backup.Checked && route.SelectedIndex == 0 && checkVrchat.Visible &&
+                !installBackup.Visible && !checkUsb.Visible && direct.TabStop && !backup.TabStop &&
+                direct.AccessibilityObject.Role == AccessibleRole.RadioButton && backup.AccessibilityObject.Role == AccessibleRole.RadioButton,
+                "Fresh setup did not expose Direct as the selected accessible output choice.");
+            var startup = Field<CheckBox>(form, "_launchWithSteamVr");
+            var startupStatus = Field<Label>(form, "_steamVrStartupStatus");
+            Check(startup.Visible && startupStatus.Visible && PageOf(startup) == page &&
+                  startupStatus.Parent == startup.Parent && !string.IsNullOrWhiteSpace(startupStatus.Text),
+                "First-time setup did not expose the SteamVR startup preference and its status.");
+            stepButtons[1].PerformClick(); Pump(form);
+            Check(checkUsb.Visible && checkUsb.Enabled && forgetUsb.Visible && !forgetUsb.Enabled,
+                "An empty USB setup must allow checking and disable Forget until it has a remembered headset.");
+            foreach (var action in new[] { checkUsb, forgetUsb })
+            {
+                action.PerformClick(); Pump(form);
+                Check(OperationState(form) == noWork, "A USB action broke preview isolation: " + action.Text);
+            }
 
             void AssertNoWork(string context)
             {
@@ -213,22 +397,18 @@ internal static class SetupNavigationTests
             {
                 Check(page.Visible && !livePage.Visible && Field<int>(form, "_selectedSetupStep") == step,
                     context + ": wrong setup step/page selected.");
-                Check(Field<ComboBox>(form, "_connectionMode").Visible == (step == 0) &&
-                    Field<Button>(form, "_reconnectUsbButton").Visible == (step == 0 && !wireless) &&
-                    Field<Button>(form, "_connectWirelessButton").Visible == (step == 0 && wireless),
+                Check(Field<ComboBox>(form, "_connectionMode").Visible == (step == 1) &&
+                    Field<Button>(form, "_reconnectUsbButton").Visible == (step == 1 && !wireless) &&
+                    Field<Button>(form, "_connectWirelessButton").Visible == (step == 1 && wireless),
                     context + ": connection controls leaked into another step or wrong transport.");
-                Check(Field<Button>(form, "_setupRuntimeButton").Visible == (step == 1) &&
-                    Field<Label>(form, "_setupRuntimeStatus").Visible == (step == 1),
+                Check(Field<Button>(form, "_setupRuntimeButton").Visible == (step == 2) &&
+                    Field<Label>(form, "_setupRuntimeStatus").Visible == (step == 2),
                     context + ": runtime controls are missing or leaked into another step.");
-                var steamLink = Field<ComboBox>(form, "_trackingSourceSetup").SelectedIndex == 1;
-                Check(Field<ComboBox>(form, "_trackingSourceSetup").Visible == (step == 2) &&
-                    Field<Button>(form, "_setupBridgeButton").Visible == (step == 2 && !steamLink) &&
-                    Field<Button>(form, "_setupSteamLinkModuleButton").Visible == (step == 2 && steamLink) &&
-                    Field<Label>(form, "_setupBridgeStatus").Visible == (step == 2),
-                    context + ": selected module action/status is missing or another action leaked.");
-                Check(back.Enabled == (step > 0) && next.Text == (step == 2 ? "Open Facial tracking" : "Next step"),
-                    context + ": navigation state/copy does not match the step.");
-                Check(stepButtons.Count(button => button.AccessibleDescription?.StartsWith("Current setup step.", StringComparison.Ordinal) == true) == 1,
+                Check(Field<ComboBox>(form, "_trackingSourceSetup").Visible == (step == 0) &&
+                    checkVrchat.Visible == (step == 0) && vrchatSetupStatus.Visible == (step == 0),
+                    context + ": VRChat setup action/status is missing or another action leaked.");
+                Check(features.Visible && features.Enabled, context + ": tracking features are unreachable from setup.");
+                Check(stepButtons.Count(button => button.AccessibleDescription?.StartsWith("Current setup section.", StringComparison.Ordinal) == true) == 1,
                     context + ": selected step is not exposed accessibly.");
                 foreach (var item in original)
                     Check(ReferenceEquals(Field<Control>(form, item.Key), item.Value) && item.Value.Handle == handles[item.Key],
@@ -243,41 +423,60 @@ internal static class SetupNavigationTests
                 CheckGeometry(form, page, "USB step " + (step + 1));
                 Capture(form, "setup-usb-step-" + (step + 1));
             }
-            back.PerformClick(); Pump(form); AssertStep(1, false, "Back to runtime");
-            back.PerformClick(); Pump(form); AssertStep(0, false, "Back to connect");
-            next.PerformClick(); Pump(form); AssertStep(1, false, "Continue to runtime");
-            next.PerformClick(); Pump(form); AssertStep(2, false, "Continue to module");
-            next.PerformClick(); Pump(form);
+            stepButtons[0].PerformClick(); Pump(form);
+            AssertStep(0, false, "Return to output");
+            Check(Field<Label>(form, "_setupRuntimeStatus").Text.Contains("Optional for native face and eyes"),
+                "Native face setup implied an unavailable PC runtime was required.");
+            features.PerformClick(); Pump(form);
             Check(livePage.Visible && !page.Visible, "Final navigation did not open Facial tracking.");
+            Check(Descendants(livePage).OfType<Label>().Any(label => label.Visible &&
+                label.Text.Contains("Native face and eyes connect automatically")) &&
+                !Descendants(livePage).OfType<CheckBox>().Any(toggle => toggle.Text.Contains("Stream native face and eyes")),
+                "Facial tracking did not explain automatic native output or kept the old switch.");
+            Capture(form, "facial-tracking-automatic-native");
             AssertNoWork("Open Facial tracking");
-            setupTab.PerformClick(); Pump(form); AssertStep(2, false, "Return to setup");
+            var connectionDetails = Disclosure(form, "Show connection and camera settings");
+            connectionDetails.PerformClick(); Pump(form);
+            Descendants(livePage).OfType<Button>().Single(button => button.Text == "Open setup").PerformClick(); Pump(form);
+            AssertStep(0, false, "Open setup from Facial tracking");
 
-            // These are the three observed-state labels used by production.
-            // Assert actual text/color event propagation, including a restart
-            // warning. This does not invoke the live device/status pipeline.
-            var sources = new[] { "_usbStatus", "_runtimeStatus", "_bridgeStatus" }.Select(name => Field<Label>(form, name)).ToArray();
+            var sources = new[] { "_directVrchatStatus", "_usbStatus" }.Select(name => Field<Label>(form, name)).ToArray();
+            var headsetSetupStatus = Descendants(page).OfType<Label>().Single(label => label.AccessibleName == "Headset setup status");
+            var mirrors = new[] { vrchatSetupStatus, headsetSetupStatus };
             for (var index = 0; index < sources.Length; index++)
             {
                 var source = sources[index];
-                var mirror = stepButtons[index].Parent!.Controls.OfType<Label>().Single();
+                var mirror = mirrors[index];
                 Check(PageOf(source) == livePage && !ReferenceEquals(source, mirror), "Setup moved an original live status label.");
-                source.Text = index == 2 ? "Installed · restart VRCFT" : "Checking · isolated fixture " + index;
+                source.Text = index == 0 ? "Waiting for VRChat · sample" : "Checking · isolated fixture";
                 source.ForeColor = HubForm.Warning; Pump(form);
-                Check(mirror.Text == source.Text && mirror.ForeColor == source.ForeColor,
-                    "Setup overview did not mirror warning text/color for check " + index);
-                if (index == 2)
-                    Check(mirror.Text.Contains("restart VRCFT", StringComparison.Ordinal) &&
-                        !mirror.Text.Contains("Complete", StringComparison.OrdinalIgnoreCase),
-                        "Overview upgraded a module restart warning to completed setup.");
+                Check(mirror.Text == source.Text && mirror.ForeColor == source.ForeColor && mirror.AccessibleDescription == source.Text,
+                    "Setup card did not mirror current status and accessible description.");
                 source.ForeColor = HubForm.Bad; Pump(form);
                 Check(mirror.ForeColor == HubForm.Bad && mirror.Text == source.Text, "A color-only observed-state update was lost.");
                 source.Text += " · changed"; Pump(form);
                 Check(mirror.Text == source.Text && mirror.ForeColor == HubForm.Bad, "A text-only observed-state update was lost.");
             }
-            Capture(form, "setup-module-restart-warning");
+            Capture(form, "setup-vrchat-pending");
+
+            form.Size = new Size(780, 580);
+            sources[0].Text = "VRChat discovery timed out. Open the game, enable OSC in its Action Menu and check your connection again.";
+            Pump(form);
+            CheckGeometry(form, page, "Compact VRChat setup with long status");
+            var facialTab = NamedButton(form, "Facial tracking");
+            facialTab.PerformClick(); Pump(form);
+            var liveViewport = livePage.RectangleToScreen(livePage.ClientRectangle);
+            var liveStatusBounds = sources[0].RectangleToScreen(sources[0].ClientRectangle);
+            var checkVrchatLive = Descendants(livePage).OfType<Button>().Single(button => button.Text == "Check VRChat connection");
+            Check(liveViewport.Contains(liveStatusBounds) && liveStatusBounds.Height > sources[0].Font.Height &&
+                checkVrchatLive.Visible && !livePage.HorizontalScroll.Visible,
+                "The compact live page clipped the long VRChat status or hid its action.");
+            setupTab.PerformClick();
+            form.Size = new Size(1280, 900);
+            Pump(form);
 
             foreach (var source in new[] { "VirtualDesktop", "SteamLink" })
-            foreach (var scenario in new[] { "setup-connect", "setup-runtime", "setup-module", "setup-complete" })
+            foreach (var scenario in new[] { "setup-connect", "setup-runtime", "setup-vrchat", "setup-complete" })
             {
                 form.ApplyPreviewScenario(scenario, source); Pump(form);
                 noWork = OperationState(form);
@@ -330,7 +529,7 @@ internal static class SetupNavigationTests
                 !Field<CheckBox>(form, "_gaze").Checked && !Field<CheckBox>(form, "_gaze").Enabled,
                 "Opening optional tools bypassed the Magisk gaze gate.");
             Check(Descendants(page).OfType<Label>().Any(label => label.Visible &&
-                label.Text.Contains("Magisk gaze users: skip gaze setup", StringComparison.Ordinal)),
+                label.Text.Contains("Magisk gaze", StringComparison.OrdinalIgnoreCase)),
                 "Magisk skip guidance is missing from setup.");
             AssertNoWork("Open optional Magisk gaze");
             CheckGeometry(form, page, "Expanded optional Magisk gaze");
@@ -340,10 +539,10 @@ internal static class SetupNavigationTests
             {
                 ("Optional features", new[] { "gaze setup", "hands setup and uninstall", "AMD setup" }),
                 ("Checks & Updates", new[] { "headset compatibility", "Windows Streamer updates" }),
-                ("Recovery", new[] { "PC runtime repair and recovery", "VRCFaceTracking module maintenance", "gaze recovery tools" }),
+                ("Recovery", new[] { "PC runtime repair and recovery", "gaze recovery tools" }),
             };
             var actionFields = new[] { "_setupGazeButton", "_inspectGazeButton", "_installHandsButton", "_removeHandsButton",
-                "_setupAmdButton", "_uninstallBridgeButton", "_recoverGazeButton", "_resetLegacyGazeButton",
+                "_setupAmdButton", "_recoverGazeButton", "_resetLegacyGazeButton",
                 "_checkStreamerUpdater", "_pauseStreamerUpdater", "_restoreStreamerUpdater", "_checkCompatibility",
                 "_repairRuntimeButton", "_checkRuntimeRecoveryButton", "_restoreRuntimeButton" };
             var preservedActions = actionFields.ToDictionary(name => name, name => Field<Control>(form, name));
@@ -380,7 +579,6 @@ internal static class SetupNavigationTests
                         var expectedButtons = tool switch
                         {
                             "Windows Streamer updates" or "PC runtime repair and recovery" => 3,
-                            "VRCFaceTracking module maintenance" => 1,
                             _ => 2,
                         };
                         Check(Descendants(bodies[0]).OfType<Button>().Count(button => button.Visible) == expectedButtons,
@@ -403,6 +601,18 @@ internal static class SetupNavigationTests
                             CheckOptionalButtons(form, page, bodies[0], size.Width + "px " + tool + " enabled=" + enabled);
                         }
                         foreach (var action in visualActions) action.Key.Enabled = action.Value;
+                        if (size.Width == 780)
+                        {
+                            foreach (var action in visualActions.Keys.Where(button => button.Visible &&
+                                button is not DarkButton { VisualStyle: HubButtonStyle.Disclosure }))
+                            {
+                                // Exercise the click guard even where a sample prerequisite disables it.
+                                action.Enabled = true;
+                                action.PerformClick(); Pump(form);
+                                AssertNoWork("Preview click: " + action.Text);
+                                action.Enabled = visualActions[action];
+                            }
+                        }
                         if (tool == "AMD setup")
                         {
                             var amdAction = Field<Button>(form, "_setupAmdButton");
@@ -473,6 +683,72 @@ internal static class SetupNavigationTests
             Check(!Descendants(page).Any(control => control.Visible && Equals(control.Tag, "optional-tool-body")),
                 "Closing optional tools left a tool body visible.");
             AssertNoWork("Close optional tools");
+
+            form.ApplyPreviewScenario("steamvr-startup", "VirtualDesktop"); Pump(form);
+            Check(startup.Checked && startupStatus.Text.Contains("On") && startupStatus.Text.Contains("sample"),
+                "The startup preview does not show the opted-in SteamVR state.");
+            form.Size = new Size(780, 580);
+            startup.Enabled = false;
+            startupStatus.Text = "Open Companion from its extracted app folder to set up SteamVR launch.";
+            Pump(form);
+            var startupTop = page.PointToClient(startup.Parent!.PointToScreen(Point.Empty)).Y - page.AutoScrollPosition.Y;
+            page.AutoScrollPosition = new Point(0, Math.Max(0, startupTop - 12));
+            Pump(form);
+            var compactViewport = page.RectangleToScreen(page.ClientRectangle);
+            Check(compactViewport.Contains(startup.RectangleToScreen(startup.ClientRectangle)) &&
+                compactViewport.Contains(startupStatus.RectangleToScreen(startupStatus.ClientRectangle)) &&
+                !page.HorizontalScroll.Visible, $"Compact setup clipped the disabled startup control or its explanation. View={compactViewport}, toggle={startup.RectangleToScreen(startup.ClientRectangle)}, status={startupStatus.RectangleToScreen(startupStatus.ClientRectangle)}.");
+            startup.Enabled = true;
+            stepButtons[2].PerformClick();
+            facialTab.PerformClick();
+            form.ApplyPreviewScenario("direct-unavailable", "VirtualDesktop"); Pump(form);
+            var offerBackup = Field<Button>(form, "_useBackupOutputButton");
+            Check(offerBackup.Visible && offerBackup.Enabled && route.SelectedIndex == 0,
+                "A direct connection failure did not offer an explicit switch to backup.");
+            offerBackup.PerformClick(); Pump(form);
+            Check(page.Visible && route.Visible && route.SelectedIndex == 1 && installBackup.Visible,
+                "The backup action did not open the selected output route.");
+            direct.PerformClick(); Pump(form);
+            form.ApplyPreviewScenario("direct-unavailable", "VirtualDesktop"); Pump(form);
+            Check(direct.Checked && !backup.Checked && backup.Visible && backup.Enabled && route.SelectedIndex == 0,
+                "A failed direct check hid the available backup choice or switched automatically.");
+            backup.PerformClick(); Pump(form);
+            Check(!direct.Checked && backup.Checked && route.SelectedIndex == 1 && installBackup.Visible,
+                "Clicking the backup segment did not select the backup route.");
+            void PressArrow(RadioButton current, Keys key, RadioButton expected)
+            {
+                current.Focus();
+                var message = Message.Create(current.Handle, 0x0100, (IntPtr)key, IntPtr.Zero);
+                bool handled = current.PreProcessMessage(ref message);
+                Pump(form);
+                Check(handled && expected.Focused && expected.Checked && expected.TabStop && !current.Checked && !current.TabStop,
+                    $"The {key} arrow did not move the keyboard focus and active route together.");
+            }
+            PressArrow(backup, Keys.Left, direct);
+            PressArrow(direct, Keys.Right, backup);
+            foreach (var size in new[] { new Size(1280, 900), new Size(780, 580) })
+            {
+                form.Size = size;
+                form.ApplyPreviewScenario("setup-backup", "VirtualDesktop"); Pump(form);
+                page.AutoScrollPosition = Point.Empty; Pump(form);
+                Check(route.SelectedIndex == 1 && installBackup.Visible && backup.Checked && !direct.Checked &&
+                    checkVrchat.Visible && checkVrchat.Text == "Check backup connection" &&
+                    vrchatSetupStatus.Text.Contains("Backup module"), "Backup setup exposed the wrong route actions.");
+                var viewport = page.RectangleToScreen(page.ClientRectangle);
+                Check(viewport.Contains(installBackup.RectangleToScreen(installBackup.ClientRectangle)),
+                    $"{size.Width}px setup hides the backup installer. View={viewport}, button={installBackup.RectangleToScreen(installBackup.ClientRectangle)}, scroll={page.AutoScrollPosition}.");
+                var installBounds = installBackup.RectangleToScreen(installBackup.ClientRectangle);
+                var checkBounds = checkVrchat.RectangleToScreen(checkVrchat.ClientRectangle);
+                Check(viewport.Contains(checkBounds) && installBounds.Y == checkBounds.Y && installBounds.Right < checkBounds.Left,
+                    size.Width + "px setup separated the backup install and connection check.");
+                CheckGeometry(form, page, size.Width + "px backup output");
+                Capture(form, "backup-" + size.Width);
+                direct.PerformClick(); Pump(form);
+                Check(route.SelectedIndex == 0 && direct.Checked && !backup.Checked && !installBackup.Visible &&
+                    checkVrchat.Visible && checkVrchat.Text == "Check VRChat connection",
+                    "Returning to direct output failed to restore direct-only actions.");
+                CheckGeometry(form, page, size.Width + "px direct output");
+            }
         }
         Check(PreferenceFingerprint(root) == beforePreferences,
             "Preview navigation changed preferences or installed VRCFaceTracking module files.");

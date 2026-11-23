@@ -151,5 +151,5 @@ $remaining = @(Get-QproModuleInventory $customLibs).Count
 Write-Host ("QPRO_MODULE_UNINSTALL " + (@{ removed = $inventory.Count; restored = $restored; remainingQpro = $remaining; recoveryIssues = @($recoveryIssues) } | ConvertTo-Json -Compress))
 if ($remaining -ne 0) { throw "Qpro modules appeared during recovery. Keep VRCFaceTracking closed, then retry uninstallation." }
 if ($recoveryIssues.Count -gt 0) { throw "Qpro modules were removed, but saved-module recovery needs attention. $($recoveryIssues -join ' ')" }
-Write-Host "Qpro module uninstall finished. Restart VRCFaceTracking. Personal lower-face models and captures were not changed."
+Write-Host "Qpro module uninstall finished. Reopen VRCFaceTracking if you plan to use the restored modules."
 Write-Host "If face tracking is missing, install the official module for your chosen source. Unrelated modules and their metadata were left untouched."

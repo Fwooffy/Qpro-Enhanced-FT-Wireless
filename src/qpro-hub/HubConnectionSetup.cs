@@ -6,7 +6,7 @@ namespace QproFaceTracking.Hub;
 
 internal sealed partial class HubForm
 {
-    private readonly ComboBox _connectionMode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+    private readonly ComboBox _connectionMode = new HubDropDown() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly Label _connectionModeNote = new() { AutoSize = true, ForeColor = Muted, Tag = "responsive-info" };
     private readonly FlowLayoutPanel _usbActions = new() { Dock = DockStyle.Top, AutoSize = true, WrapContents = true };
     private readonly DarkButton _reconnectUsbButton = SetupButton("Reconnect USB");
@@ -92,20 +92,25 @@ internal sealed partial class HubForm
         _enableWirelessButton.Click += async (_, _) => { await RunConnectionStepAsync("Enable wireless ADB from USB", "Enable-QproWireless.ps1"); };
         _connectWirelessButton.Click += async (_, _) =>
         {
+            if (!SetupCommandsAvailable) return;
             var target = NormalizeQuestAddress(_wirelessAddress.Text);
             if (target is null) return;
             _wirelessAddress.Text = target;
-            if (await RunConnectionStepAsync("Connect wireless Quest", "Connect-QproWireless.ps1", "-AdbTarget", target))
+            if (await RunConnectionStepAsync("Connect wireless Quest", "Connect-QproWireless.ps1", "-AdbTarget", target) && !_previewOnly)
                 MessageBox.Show(this,
                     $"Connected to your Quest at {target}.\n\nWireless ADB and Magisk root are ready. Continue with the next setup card; pairing is not needed.",
                     "Quest connected", MessageBoxButtons.OK, MessageBoxIcon.Information);
         };
         _pairWirelessButton.Click += async (_, _) =>
         {
-            var target = NormalizeQuestAddress(_wirelessAddress.Text);
+            if (!SetupCommandsAvailable) return;
+            var address = _wirelessAddress.Text;
+            var target = NormalizeQuestAddress(address);
             if (target is null) return;
-            if (string.Equals(target, _environment.GetSavedWirelessTarget(), StringComparison.OrdinalIgnoreCase)
-                && await HasQuestAsync())
+            bool alreadyConnected = !_previewOnly && string.Equals(target, _environment.GetSavedWirelessTarget(), StringComparison.OrdinalIgnoreCase)
+                && await HasQuestAsync();
+            if (IsDisposed || Disposing || _closingInProgress || !_environment.WirelessSelected || _wirelessAddress.Text != address) return;
+            if (alreadyConnected)
             {
                 AppendLog("Wireless Quest is already connected. Pairing is unnecessary; verifying ADB and Magisk root instead.");
                 await RunConnectionStepAsync("Connect wireless Quest", "Connect-QproWireless.ps1", "-AdbTarget", target);
@@ -136,6 +141,7 @@ internal sealed partial class HubForm
         _disableWirelessButton.Click += async (_, _) => { await RunConnectionStepAsync("Disable wireless ADB", "Disable-QproWireless.ps1"); };
         _setupAmdButton.Click += async (_, _) =>
         {
+            if (_previewOnly || UtilityActionIsBusy()) return;
             if (!BackendReady())
             {
                 MessageBox.Show(this, "Install the PC runtime first, then install AMD ROCm.", "PC runtime needed");
@@ -174,6 +180,7 @@ internal sealed partial class HubForm
             }
         };
         UpdateConnectionModeUi();
+        SetSetupButtonsEnabled(true);
         if (!_previewOnly) _ = DetectAmdGpuAsync();
     }
 
@@ -216,7 +223,6 @@ internal sealed partial class HubForm
             if (!_closingInProgress && !IsDisposed)
             {
                 FinishSetupProgress(connected, "Reconnect USB headset");
-                UpdateControlState();
                 await RefreshStatusAsync();
             }
         }
@@ -242,9 +248,11 @@ internal sealed partial class HubForm
 
     private async Task<bool> RunConnectionStepAsync(string label, string script, params string[] args)
     {
-        if (!TryBeginSetupProgress(label)) return false;
-        var succeeded = await RunUtilityAsync(label, script, args);
-        FinishSetupProgress(succeeded, label);
+        if (!SetupCommandsAvailable || !_environment.WirelessSelected || !TryBeginSetupProgress(label)) return false;
+        var succeeded = false;
+        try { succeeded = await RunSetupCommandAsync(label, script, args); }
+        catch (Exception error) { ShowWorkflowFailure(label, error); }
+        finally { FinishSetupProgress(succeeded, label); }
         if (!succeeded) return false;
         if (script.Equals("Disable-QproWireless.ps1", StringComparison.OrdinalIgnoreCase))
         {

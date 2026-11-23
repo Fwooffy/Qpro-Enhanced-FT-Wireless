@@ -58,6 +58,8 @@ internal static class Program
             Check(!Directory.Exists(root), "Preview wrote to its isolated source folder.");
             return;
         }
+        Check(!log.DetectUrls, "The read-only Activity log styled URLs as links without a link action.");
+        ActivityExportFixtures.Run(form, Controls(form).OfType<Button>().ToArray(), log, Add, () => reset.Invoke(form, null));
         reset.Invoke(form, null);
         Add("[Worker] Completed successfully. No errors.");
         Add("[Worker] WARNING: GPU fallback is active.");

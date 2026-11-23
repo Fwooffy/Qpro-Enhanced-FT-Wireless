@@ -12,7 +12,8 @@ internal sealed record HubCameraTrackingSelection(
     string PupilSensitivity,
     bool ShowPreview,
     string StopFile,
-    string TrackingProfile = "responsive");
+    string TrackingProfile = "responsive",
+    bool DirectVrchat = true);
 
 internal sealed record HubCameraTrackingPlan(string[] Arguments, string OutputDescription)
 {
@@ -38,8 +39,9 @@ internal static class HubCameraTrackingLaunch
         if (selection.TrackingProfile is not ("responsive" or "balanced" or "low-cpu"))
             throw new ArgumentException("Choose Responsive, Balanced or Low CPU before starting camera tracking.");
 
-        var arguments = new List<string> { "-TrackingSource", selection.TrackingSource,
-            "-TrackingProfile", selection.TrackingProfile };
+        var arguments = new List<string>();
+        if (selection.DirectVrchat) arguments.Add("-DirectVrchat");
+        arguments.AddRange(["-TrackingSource", selection.TrackingSource, "-TrackingProfile", selection.TrackingProfile]);
         if (selection.TongueEnabled)
         {
             arguments.AddRange(["-TonguePreview", "-MaxFps", selection.MaxFps,

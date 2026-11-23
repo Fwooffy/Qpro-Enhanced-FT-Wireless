@@ -19,6 +19,8 @@ internal static class Program
     private static int Main(string[] args)
     {
         var previewRequested = args.Any(value => value.Equals("--render-preview", StringComparison.OrdinalIgnoreCase));
+        bool steamVrLaunch = args.Contains(HubSteamVrLaunch.Argument, StringComparer.OrdinalIgnoreCase);
+        bool unattendedStart = steamVrLaunch;
         try
         {
             if (args.Length == 2 && args[0] == "--apply-update")
@@ -35,6 +37,8 @@ internal static class Program
                     : File.Exists(Path.Combine(executableRoot, "release-manifest.json"))
                         ? executableRoot
                         : Directory.GetCurrentDirectory();
+            if (steamVrLaunch && (args.Length != 1 || !HubUpdateRunner.IsPackagedInstall(root) ||
+                Environment.ProcessPath is not { } exe || !HubSteamVrLaunch.IsAuthorizedLaunch(exe))) return 0;
             var selfTestArgument = Array.FindIndex(args, value => value.Equals("--self-test", StringComparison.OrdinalIgnoreCase));
             if (selfTestArgument >= 0)
             {
@@ -165,15 +169,24 @@ internal static class Program
                 form.Close();
                 return 0;
             }
-            if (HubUpdateRunner.StartRecoveryIfNeeded(root)) return 0;
+            // An automatic launch during an update must not start another recovery
+            // or interrupt the VR session with a dialog. Manual launch handles recovery.
+            if (steamVrLaunch && (AnotherCompanionWindowIsOpen() || HubUpdateApply.RequiresRecovery(root))) return 0;
+            if (!steamVrLaunch && HubUpdateRunner.StartRecoveryIfNeeded(root)) return 0;
             IDisposable? installUseLock;
             try { installUseLock = HubUpdateRunner.AcquireInstallUseLock(root); }
             catch (IOException error)
             {
+                if (steamVrLaunch) return 0;
                 MessageBox.Show(error.Message, HubForm.ProductDisplayName + " is in use", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return 2;
             }
-            using (installUseLock) Application.Run(new HubForm(root));
+            using (installUseLock)
+            using (var form = new HubForm(root))
+            {
+                unattendedStart = false;
+                Application.Run(form);
+            }
             return 0;
         }
         catch (Exception error)
@@ -198,10 +211,23 @@ internal static class Program
                 // Show the original startup failure even on a read-only install.
                 log = null;
             }
+            if (unattendedStart) return 1;
             MessageBox.Show(error.Message + "\n\n" + (log is null ? error.ToString() : "Details: " + log),
                 HubForm.ProductDisplayName + " could not start", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }
+    }
+
+    private static bool AnotherCompanionWindowIsOpen()
+    {
+        // The install mutex covers this folder, including simultaneous launches.
+        // Also leave a manually opened window from another extracted copy in place.
+        using var current = Process.GetCurrentProcess();
+        return HubProcessProbe.Any(Process.GetProcessesByName(current.ProcessName), process =>
+        {
+            try { return process.Id != current.Id && process.SessionId == current.SessionId && process.MainWindowHandle != IntPtr.Zero; }
+            catch (Exception error) when (error is InvalidOperationException or Win32Exception) { return false; }
+        });
     }
 
     private static Control? FindControl(Control root, Func<Control, bool> predicate)
@@ -229,7 +255,9 @@ internal static class Program
         var requiredFiles = new[]
         {
             "build-and-run.ps1", "camera-transport-recovery.ps1", "native-eye-local-branch-test.ps1", "prepare-eye-model.ps1", "prepare_eye_model.py", "research\\patch_seacliff_independent_axes.py", "native_raw_eye_probe.py", "install-vrcft-eye-bridge.ps1", "uninstall-vrcft-eye-bridge.ps1", "vrcft-module-installation.ps1", "runtime-python.ps1", "runtime-recovery.ps1", "tracking_budget.py",
-            "virtual-desktop-updater.ps1",
+            "Connect-QproWireless.ps1", "Pair-QproWireless.ps1", "Enable-QproWireless.ps1", "Disable-QproWireless.ps1",
+            "setup-runtime.ps1", "Install-QproRocm.ps1", "virtual-desktop-updater.ps1",
+            "train-latest-tongue-refinement.ps1", "train-latest-tongue-stills.ps1", "controller-input.ps1",
             "hybrid\\controller.py", "hybrid\\driver_layout.py",
             "platform-tools\\adb.exe", "platform-tools\\AdbWinApi.dll", "platform-tools\\AdbWinUsbApi.dll",
             "python-runtime\\python.3.12.10.nupkg", "python-runtime\\LICENSE.txt", "python-runtime\\README.txt",
@@ -238,7 +266,6 @@ internal static class Program
             "tongue_visibility_calibration.py", "model_checkpoint.py", "model_preview.py", "hybrid_preview.py", "train_model.py",
             "libquestpro-camera-streamer-v8.so", "questpro-camera-relay-v8", "questpro-camera-injector",
             "vd-label-bridge\\bin\\Release\\net10.0\\Qpro.VirtualDesktopLabelBridge.exe",
-            "vrcft-gaze-bridge\\bin\\Release\\net10.0\\Qpro.GazeBridge.dll"
         };
         var result = new
         {

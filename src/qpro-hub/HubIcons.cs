@@ -4,7 +4,7 @@ namespace QproFaceTracking.Hub;
 
 internal enum HubIcon
 {
-    None, Setup, Headset, Sliders, Models, Activity, Eyes, LowerFace, Controller, Desktop, Module,
+    None, Setup, Headset, Sliders, Models, Activity, Eyes, LowerFace, Controller, Desktop, Module, Speaker,
 }
 
 // Small decorative cues share a 24-unit grid. Drawing at the destination size
@@ -57,6 +57,11 @@ internal static class HubIcons
                     break;
                 case HubIcon.Activity:
                     Lines(new(2, 12), new(6, 12), new(9, 5), new(13, 19), new(17, 9), new(19, 12), new(22, 12));
+                    break;
+                case HubIcon.Speaker:
+                    Lines(new(3, 9), new(7, 9), new(12, 5), new(12, 19), new(7, 15), new(3, 15), new(3, 9));
+                    graphics.DrawArc(pen, 10, 7, 7, 10, -55, 110);
+                    graphics.DrawArc(pen, 10, 4, 11, 16, -55, 110);
                     break;
                 case HubIcon.Eyes:
                     using (var path = new GraphicsPath())

@@ -41,7 +41,7 @@ internal sealed class HubEnvironment
     internal bool IndependentGazeEnabled { get; private set; }
     internal bool HasOpenedBefore => File.Exists(Path.Combine(_root, "config", "hub-opened.txt"));
 
-    internal HubEnvironment(string root)
+    internal HubEnvironment(string root, bool loadUserSource = true)
     {
         _root = root;
         _usbConnection = new HubUsbConnection(Path.Combine(root, "config", "usb-headset.json"),
@@ -62,7 +62,7 @@ internal sealed class HubEnvironment
         {
             WirelessSelected = File.Exists(Path.Combine(_root, "config", "wireless-headset.json"));
         }
-        ReloadTrackingSource();
+        if (loadUserSource) ReloadTrackingSource();
         var previewPath = Path.Combine(_root, "config", "camera-preview.txt");
         if (File.Exists(previewPath))
         {
@@ -125,13 +125,6 @@ internal sealed class HubEnvironment
                 File.ReadAllText(TrackingSourcePath).Trim().Equals("steam-link", StringComparison.OrdinalIgnoreCase);
         }
         catch { SteamLinkSelected = false; }
-    }
-
-    internal bool TrackingSourceRequiresVrcftRestart()
-    {
-        if (!File.Exists(TrackingSourcePath)) return false;
-        var selectedAt = File.GetLastWriteTimeUtc(TrackingSourcePath);
-        return HubProcessProbe.StartedBefore("VRCFaceTracking", selectedAt);
     }
 
     internal string? GetConfiguredAdbTarget()
@@ -217,14 +210,6 @@ internal sealed class HubEnvironment
 
     private static string CustomLibsPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "VRCFaceTracking", "CustomLibs");
     internal bool BridgeInstalled() => HubModuleInstallation.HasInstalled(CustomLibsPath);
-    internal HubModuleInspection InspectModuleInstallation() => HubModuleInstallation.Inspect(CustomLibsPath,
-        Path.Combine(_root, "vrcft-gaze-bridge", "bin", "Release", "net10.0", "Qpro.GazeBridge.dll"), SteamLinkSelected);
-
-    internal bool CurrentBridgeInstalled()
-    {
-        var supplied = Path.Combine(_root, "vrcft-gaze-bridge", "bin", "Release", "net10.0", "Qpro.GazeBridge.dll");
-        return HubModuleInstallation.IsCurrent(CustomLibsPath, supplied, SteamLinkSelected);
-    }
     internal bool BackendReady(bool allowPeriodicReprobe = true) => FindPythonRuntime(allowPeriodicReprobe) is not null;
     internal bool EyeModelReady()
     {

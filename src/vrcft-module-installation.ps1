@@ -324,7 +324,7 @@ function Assert-QproInstalledModule(
     $identity = Get-QproModuleIdentity $TrackingSource
     $folder = Join-Path $CustomLibs $identity.Id
     $installed = Join-Path $folder $identity.Dll
-    $repair = "Close VRCFaceTracking, install the Qpro $($identity.Name) module in First-time setup, then reopen VRCFaceTracking."
+    $repair = "Close VRCFaceTracking, run install-vrcft-eye-bridge.ps1 with -TrackingSource $TrackingSource, then reopen VRCFaceTracking."
     Assert-QproPathWithoutLinks $CustomLibs
     Assert-QproPathWithoutLinks $installed
     if (-not (Test-Path -LiteralPath $folder -PathType Container) -or

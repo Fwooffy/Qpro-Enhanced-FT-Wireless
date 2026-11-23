@@ -65,6 +65,19 @@ var supplied = Path.Combine(fixture, "packaged", "Qpro.GazeBridge.dll");
 Directory.CreateDirectory(Path.GetDirectoryName(supplied)!);
 File.Copy(args[0], supplied);
 
+var packageManifest = Path.Combine(fixture, "release-manifest.json");
+File.WriteAllText(packageManifest, "{\"vrcftBackupBundled\":true}");
+Check(!HubModuleInstallation.PackageIncludesBackup(fixture), "An incomplete package offered the backup.");
+var backupDll = HubModuleInstallation.PackagedDll(fixture);
+Directory.CreateDirectory(Path.GetDirectoryName(backupDll)!);
+File.Copy(supplied, backupDll);
+Check(HubModuleInstallation.PackageIncludesBackup(fixture), "The backup-capable package was not recognized.");
+foreach (var manifestText in new[] { "{}", "{\"vrcftBackupBundled\":false}", "{broken" })
+{
+    File.WriteAllText(packageManifest, manifestText);
+    Check(!HubModuleInstallation.PackageIncludesBackup(fixture), "An unmarked or malformed package offered the backup.");
+}
+
 static string InstallFixture(string customLibs, string supplied, bool steamLink, string? moduleId = null, string? dllName = null, string? hash = null, string? displayName = null)
 {
     var id = moduleId ?? (steamLink ? HubModuleInstallation.SteamLinkId : HubModuleInstallation.VirtualDesktopId);
@@ -269,7 +282,7 @@ Check(HubModuleInstallation.HasInstalled(customLibs) && HubModuleInstallation.Is
 var current = HubModuleInstallation.Inspect(customLibs, supplied, false);
 Check(current.State == HubModuleState.Current && current.Detail.Contains(vd) && current.Status == "Installed · files verified" &&
     current.Detail.Contains("not live expressions"), "Disk readiness was mistaken for a proven live connection.");
-Check(current.Detail.Contains("Activity > Tracking health > Show tracking details > Module output") &&
+Check(current.Detail.Contains("check your avatar in VRChat") &&
     current.Detail.Contains("VRCFaceTracking's preview"), "Installed files had no visible path to check actual expressions.");
 Check(HubModuleInstallation.Inspect(Path.Combine(customLibs, "..", "CustomLibs"), supplied, false).IsCurrent,
     "Path normalization caused the installed Qpro source to conflict with itself.");

@@ -54,9 +54,7 @@ internal static class ConnectionStatusTests
         Check(log.SelectionColor.ToArgb() == expected.ToArgb(), "The Activity severity color did not match its connection state.");
         log.Select(log.TextLength, 0);
     }
-    private static HubForm.HubStatusSnapshot Snapshot() => new(true, false,
-        new(HubModuleState.Missing, "Fixture module", "Fixture module not installed", "fixture-module"),
-        false, false, false, null, false, false);
+    private static HubForm.HubStatusSnapshot Snapshot(bool steamRunning = true) => new(steamRunning, false, null, false, false);
 
     private sealed class AdbFixture
     {
@@ -104,7 +102,7 @@ internal static class ConnectionStatusTests
         Set(environment, "_adbSession", new HubAdbSession(adb.Run));
         Field<Label>(form, "_usbStatus").Text = "previous connection status";
         Field<Label>(form, "_steamStatus").Text = "previous Steam status";
-        form.ConfigurePreviewStatusRefresh(() => Task.FromResult(Snapshot()), (_, _) => Task.CompletedTask);
+        form.ConfigurePreviewStatusRefresh(() => Task.FromResult(Snapshot()));
         return (form, environment, adb, root);
     }
 
@@ -123,32 +121,18 @@ internal static class ConnectionStatusTests
 
     private static void AsyncBoundaryTests()
     {
-        foreach (var heartbeat in new[] { false, true })
         foreach (var fault in new[] { false, true })
         {
-            var fixture = Create("pending-" + heartbeat + "-" + fault);
+            var fixture = Create("pending-" + fault);
             var pendingSnapshot = Pending<HubForm.HubStatusSnapshot>();
-            var pendingHeartbeat = Pending<bool>();
-            var heartbeatStarted = false;
-            fixture.Form.ConfigurePreviewStatusRefresh(
-                () => heartbeat ? Task.FromResult(Snapshot()) : pendingSnapshot.Task,
-                (_, _) => { heartbeatStarted = true; return heartbeat ? pendingHeartbeat.Task : Task.CompletedTask; });
+            fixture.Form.ConfigurePreviewStatusRefresh(() => pendingSnapshot.Task);
             var refresh = Refresh(fixture.Form);
             Wait(() => Field<Label>(fixture.Form, "_usbStatus").Text.Contains("USB ADB connected"));
-            if (heartbeat) Wait(() => heartbeatStarted);
             FreshConnection(fixture.Form);
             Check(!refresh.IsCompleted, "Fixture dependency did not remain pending for the ordering check.");
             Check(Field<Label>(fixture.Form, "_steamStatus").Text == "previous Steam status", "Unrelated status was published before its dependencies completed.");
-            if (heartbeat)
-            {
-                if (fault) pendingHeartbeat.SetException(new IOException("fixture heartbeat failed"));
-                else pendingHeartbeat.SetResult(true);
-            }
-            else
-            {
-                if (fault) pendingSnapshot.SetException(new IOException("fixture module/runtime snapshot failed"));
-                else pendingSnapshot.SetResult(Snapshot());
-            }
+            if (fault) pendingSnapshot.SetException(new IOException("fixture runtime snapshot failed"));
+            else pendingSnapshot.SetResult(Snapshot());
             Complete(refresh);
             FreshConnection(fixture.Form);
             Check(!Field<bool>(fixture.Form, "_statusRefreshBusy"), "A delayed/faulted unrelated dependency latched the refresh gate.");
@@ -171,7 +155,7 @@ internal static class ConnectionStatusTests
                 ? DelayProbe() : null;
             Task<(bool, int, string)> DelayProbe() { started = true; return pendingProbe.Task; }
             var snapshotCalls = 0;
-            fixture.Form.ConfigurePreviewStatusRefresh(() => { snapshotCalls++; return Task.FromResult(Snapshot()); }, (_, _) => Task.CompletedTask);
+            fixture.Form.ConfigurePreviewStatusRefresh(() => { snapshotCalls++; return Task.FromResult(Snapshot()); });
             var refresh = Refresh(fixture.Form);
             Wait(() => started);
             if (change == "disposed") fixture.Form.Dispose();
@@ -189,8 +173,7 @@ internal static class ConnectionStatusTests
         {
             var fixture = Create("snapshot-context-" + change);
             var pending = Pending<HubForm.HubStatusSnapshot>();
-            var heartbeatCalls = 0;
-            fixture.Form.ConfigurePreviewStatusRefresh(() => pending.Task, (_, _) => { heartbeatCalls++; return Task.CompletedTask; });
+            fixture.Form.ConfigurePreviewStatusRefresh(() => pending.Task);
             var refresh = Refresh(fixture.Form);
             Wait(() => Field<Label>(fixture.Form, "_usbStatus").Text.Contains("USB ADB connected"));
             FreshConnection(fixture.Form);
@@ -199,7 +182,6 @@ internal static class ConnectionStatusTests
             else fixture.Environment.SetPreviewTrackingSource(!fixture.Environment.SteamLinkSelected);
             pending.SetResult(Snapshot());
             Complete(refresh);
-            Check(heartbeatCalls == 0, "Obsolete snapshot work ran heartbeat after disposal/context change.");
             if (change != "disposed") Check(Field<Label>(fixture.Form, "_steamStatus").Text == "previous Steam status",
                 "A late snapshot published obsolete unrelated status.");
         }
@@ -210,6 +192,7 @@ internal static class ConnectionStatusTests
         foreach (var state in new[] { "unauthorized", "offline", "empty" })
         {
             var fixture = Create("state-" + state);
+            Field<CheckBox>(fixture.Form, "_tongue").Checked = true;
             fixture.Adb.State = state;
             fixture.Adb.Empty = state == "empty";
             Complete(Refresh(fixture.Form));
@@ -226,6 +209,7 @@ internal static class ConnectionStatusTests
             Check(fixture.Adb.Commands.All(command => !command.Contains("reconnect")), "Read-only status changed an unusable transport.");
         }
         var wireless = Create("missing-wireless", wireless: true);
+        Field<CheckBox>(wireless.Form, "_tongue").Checked = true;
         Complete(Refresh(wireless.Form));
         var wirelessLabel = Field<Label>(wireless.Form, "_usbStatus");
         Check(wirelessLabel.Text.Contains("Wi-Fi address needed"), "Missing wireless setup was reported as an unexplained transport failure.");
@@ -262,6 +246,37 @@ internal static class ConnectionStatusTests
         Set(combo.Form, "_previewOnly", true);
     }
 
+    private static void OptionalDependenciesTests()
+    {
+        foreach (var wireless in new[] { false, true })
+        {
+            var fixture = Create("native-only-" + wireless, wireless);
+            fixture.Adb.Empty = true;
+            fixture.Form.ConfigurePreviewStatusRefresh(() => Task.FromResult(Snapshot(steamRunning: false)));
+            var a = Field<Label>(fixture.Form, "_usbStatus");
+            var steam = Field<Label>(fixture.Form, "_steamStatus");
+            var runtime = Field<Label>(fixture.Form, "_runtimeStatus");
+            var log = Field<RichTextBox>(fixture.Form, "_log");
+            Complete(Refresh(fixture.Form));
+            Check(new[] { a, steam, runtime }.All(status => status.Text.Contains("Optional") && status.ForeColor == HubForm.Muted),
+                "Missing dependencies for native Virtual Desktop were shown as errors or warnings.");
+            Check(!log.Text.Contains("connection check] WARNING:"), "An absent optional Quest triggered a Connection warning.");
+            Check(a.AccessibleDescription == Field<Label>(fixture.Form, "_connectionModeNote").Text,
+                "Optional connection status discarded the detailed setup guidance.");
+
+            fixture.Environment.SetPreviewTrackingSource(true);
+            Complete(Refresh(fixture.Form));
+            Check(steam.Text.Contains("Not running") && steam.ForeColor == HubForm.Bad &&
+                a.ForeColor == HubForm.Muted && runtime.ForeColor == HubForm.Muted,
+                "Steam Link must require SteamVR while keeping ADB and Python optional for native tracking.");
+
+            Field<CheckBox>(fixture.Form, "_tongue").Checked = true;
+            Complete(Refresh(fixture.Form));
+            Check(a.ForeColor == HubForm.Bad && runtime.ForeColor == HubForm.Warning && log.Text.Contains("connection check] WARNING:"),
+                "Selecting camera tracking did not surface the same missing prerequisites.");
+        }
+    }
+
     [STAThread]
     private static int Main()
     {
@@ -278,6 +293,7 @@ internal static class ConnectionStatusTests
             AsyncBoundaryTests();
             ContextAndDisposalTests();
             StateReasonAndComboTests();
+            OptionalDependenciesTests();
             Console.WriteLine($"Connection status checks passed: {_checks}; actual RefreshStatusAsync, native label/log, selected-transport mapping, pending/faulted unrelated work, context changes and disposal. No real ADB or displayed Hub.");
             return 0;
         }

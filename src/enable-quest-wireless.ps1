@@ -72,7 +72,7 @@ No wireless setting was changed. Do not install questcam-magisk.zip for this pro
     } | ConvertTo-Json | Set-Content -LiteralPath .\config\wireless-headset.json -Encoding utf8
 
     Write-Host "WIRELESS_ADB_READY $target"
-    Write-Host "Tongue preview: .\preview-latest-tongue.ps1 -Wireless -Version 7"
+    Write-Host "Use Launch-QproWireless.cmd to open Qpro Companion with this connection."
     Write-Warning "ADB is reachable on the local network until headset reboot or disable-quest-wireless.ps1. Use only a trusted private network."
 } finally {
     Pop-Location

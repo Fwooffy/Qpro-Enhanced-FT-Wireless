@@ -9,12 +9,15 @@ internal sealed partial class HubForm
     private readonly DarkButton _repairRuntimeButton = SetupButton("Repair runtime");
     private readonly DarkButton _checkRuntimeRecoveryButton = SetupButton("Find saved runtimes");
     private readonly DarkButton _restoreRuntimeButton = SetupButton("Restore saved runtime");
-    private readonly ComboBox _runtimeRecoveryCopies = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
+    private readonly ComboBox _runtimeRecoveryCopies = new HubDropDown() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
     private readonly Label _runtimeRecoveryNote = Info("Repair reinstalls the private PC runtime's libraries. Restore checks a saved runtime before replacing the current one. Models, recordings and settings stay in place.");
     private bool _runtimeRecoveryChecking;
 
     private Control BuildRuntimeRecoveryControls()
     {
+#if QPRO_REMOTE_CLICKER
+        ConfigureDropDown(_runtimeRecoveryCopies);
+#endif
         var recovery = new BufferedTableLayoutPanel
         {
             Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,

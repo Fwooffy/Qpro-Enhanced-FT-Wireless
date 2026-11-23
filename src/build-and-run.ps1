@@ -62,7 +62,8 @@ param(
     [ValidateRange(10, 600)]
     [int]$GazeCalibrationSeconds = 60,
     [ValidateRange(10, 600)]
-    [int]$ConvergenceCalibrationSeconds = 40
+    [int]$ConvergenceCalibrationSeconds = 40,
+    [switch]$DirectVrchat
 )
 
 $ErrorActionPreference = "Continue"
@@ -190,15 +191,21 @@ if ($needsNativeBuild) {
 Push-Location $PSScriptRoot
 try {
     Write-Host "Qpro Companion launcher v2.35 (stream port $StreamPort)"
-    $sourceConfig = Join-Path $env:LOCALAPPDATA "QproFaceTracking\config\tracking-source.txt"
-    $savedSource = if (Test-Path -LiteralPath $sourceConfig -PathType Leaf) {
-        (Get-Content -LiteralPath $sourceConfig -Raw).Trim().ToLowerInvariant()
-    } else { "virtual-desktop" }
-    $requestedSource = if ($TrackingSource -eq "SteamLink") { "steam-link" } else { "virtual-desktop" }
-    if ($savedSource -ne $requestedSource) {
-        throw "The launcher selected $TrackingSource, but the Qpro module is configured for $savedSource. Install the matching source module in First-time setup, then restart VRCFaceTracking before retrying."
+    if ($TrackingSource -eq 'SteamLink' -and ($EyeCalibration -or $HybridPreview)) {
+        throw 'Choose Virtual Desktop for stereo eye calibration or hybrid preview. Steam Link native labels provide combined gaze.'
+    }
+    if (-not $DirectVrchat) {
+        $sourceConfig = Join-Path $env:LOCALAPPDATA "QproFaceTracking\config\tracking-source.txt"
+        $savedSource = if (Test-Path -LiteralPath $sourceConfig -PathType Leaf) {
+            (Get-Content -LiteralPath $sourceConfig -Raw).Trim().ToLowerInvariant()
+        } else { "virtual-desktop" }
+        $requestedSource = if ($TrackingSource -eq "SteamLink") { "steam-link" } else { "virtual-desktop" }
+        if ($savedSource -ne $requestedSource) {
+            throw "The launcher selected $TrackingSource, but the Qpro backup module is configured for $savedSource. Close VRCFaceTracking, run install-vrcft-eye-bridge.ps1 with -TrackingSource $TrackingSource, then reopen VRCFaceTracking."
+        }
     }
     Write-Host "Tracking source: $TrackingSource"
+    if ($DirectVrchat) { Write-Host 'Camera worker for the Qpro Companion direct VRChat session.' }
     if (-not [string]::IsNullOrWhiteSpace($AdbTarget)) {
         $adbState = & $adbExecutable get-state 2>&1
         if ($LASTEXITCODE -ne 0 -or ($adbState -join "`n").Trim() -ne "device") {
@@ -241,13 +248,20 @@ try {
 
     $recordEnabled = $Record -or $Calibration -or $TongueCalibration -or $TongueStillCalibration -or $TongueCorrectionCalibration -or $TongueRefinementCalibration -or $TongueArcCalibration -or -not [string]::IsNullOrWhiteSpace($RecordPath)
     $labelsEnabled = ($recordEnabled -or $ModelPreview -or $TonguePreview -or $EyeCalibration -or $HybridPreview) -and -not $NoLabels
-    $vrcftRequired = $Calibration -or $TongueCalibration -or $TongueStillCalibration -or $TongueCorrectionCalibration -or $TongueRefinementCalibration -or $TongueArcCalibration -or $ModelPreview -or $TonguePreview -or $PupilOutput -or $EyeCalibration -or $HybridPreview
-    if ($TrackingSource -eq "SteamLink" -and $labelsEnabled) {
+    $steamLabelsEnabled = $TrackingSource -eq "SteamLink" -and $labelsEnabled
+    if ($steamLabelsEnabled) {
         if ($LabelsPort -ne 27274) { throw "Steam Link training labels use port 27274; omit -LabelsPort or set it to 27274." }
-        $vrcftRequired = $true
-        Write-Host "Steam Link labels: the Qpro VRCFaceTracking module must receive OSC on port 9015 and publish factory reference packets to 127.0.0.1:$LabelsPort."
+        if ($DirectVrchat) {
+            Write-Host "Steam Link labels: start the capture or live camera feature from Qpro Companion. Its Steam Link OSC input on port 9015 supplies factory labels at 127.0.0.1:$LabelsPort."
+        } else {
+            Write-Host "Steam Link labels: the Qpro VRCFaceTracking module must receive OSC on port 9015 and publish factory reference packets to 127.0.0.1:$LabelsPort."
+        }
         Write-Host "On the headset, enable Steam Link Advanced Settings > OSC, Share eye tracking, Share face tracking, and set OSC Output Port to 9015."
     }
+    $steamVrRequired = $steamLabelsEnabled -or $Calibration -or $TongueCalibration -or $TongueStillCalibration -or
+        $TongueCorrectionCalibration -or $TongueRefinementCalibration -or $TongueArcCalibration -or $ModelPreview -or
+        $TonguePreview -or $PupilOutput -or $EyeCalibration -or $HybridPreview
+    $vrcftRequired = $steamVrRequired -and -not $DirectVrchat
     if ($vrcftRequired) {
         $moduleHelpers = Join-Path $PSScriptRoot "vrcft-module-installation.ps1"
         if (-not (Test-Path -LiteralPath $moduleHelpers -PathType Leaf)) {
@@ -259,7 +273,6 @@ try {
         $qproModule = Assert-QproInstalledModule -TrackingSource $TrackingSource -CustomLibs $customLibs -PackagedModule $packagedModule
         Write-Host "Verified Qpro $((Get-QproModuleIdentity $TrackingSource).Name) module: $qproModule"
     }
-    $steamVrRequired = $vrcftRequired -or $EyeCalibration
     $openSourceModelsRequired = $OpenSourcePreview -or $EyeCalibration -or $HybridPreview
     if ($RecordSeconds -gt 0 -and -not $recordEnabled) {
         throw "RecordSeconds requires -Record or -RecordPath."
@@ -512,6 +525,11 @@ try {
         }
     }
     $receiverArguments = @(".\receiver.py", "--port", "$StreamPort")
+    if ($DirectVrchat) { $receiverArguments += "--direct-vrchat" }
+    if ($DirectVrchat -or $PSBoundParameters.ContainsKey('TrackingSource')) {
+        $labelSource = if ($TrackingSource -eq 'SteamLink') { 'SteamLink' } else { 'VirtualDesktop' }
+        $receiverArguments += @("--label-source", $labelSource)
+    }
     $receiverArguments += @("--tracking-profile", $TrackingProfile.ToLowerInvariant())
     if ($null -ne $TongueProcessingFps) {
         $receiverArguments += @("--tongue-processing-fps", $TongueProcessingFps.ToString([System.Globalization.CultureInfo]::InvariantCulture))

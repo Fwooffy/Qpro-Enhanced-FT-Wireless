@@ -13,6 +13,11 @@ internal static class ControllerLifecycleFixtures
     {
         if (args.Length != 4 || args[0] != "--controller-lifecycle-fixture") return false;
         string mode = args[1], marker = args[2], witness = args[3];
+        if (mode == "camera-quit")
+        {
+            Console.WriteLine(HubTrackingExitFeedback.UserQuitMarker);
+            return true;
+        }
         if (mode.StartsWith("failure-", StringComparison.Ordinal))
         {
             // manage.py writes its own marker even on a worker failure.
@@ -53,6 +58,7 @@ internal static class ControllerLifecycleFixtures
         ControllerStatusFixtures.Run(root);
         TestCleanFailure(root);
         TestExplicitStop(root);
+        TestCameraQuit(root);
         foreach (var result in new[] { "missing", "interim", "malformed", "failed" })
             TestUnconfirmedFailure(root, result);
         TestIndependentStopSignals(root);
@@ -60,6 +66,29 @@ internal static class ControllerLifecycleFixtures
         incomplete.Observe(FinalCleanup);
         Check(incomplete.CompleteRestoration(outputDrained: false).IsError,
             "an undrained controller pipe cannot prove restoration even after a final-looking report");
+    }
+
+    static void TestCameraQuit(string root)
+    {
+        using var fixture = new Session(root);
+        fixture.Get<CheckBox>("_pupil").Checked = true;
+        foreach (var field in new[] { "_individualCheekPuff", "_individualCheekSuck", "_eyebrowBoost" })
+            fixture.Get<CheckBox>(field).Checked = false;
+        VrchatFaceSelection? applied = null;
+        var session = new VrchatFaceSession(() => new Dictionary<string, float>(), new MemoryStream(), _ => { },
+            _ => Task.FromResult<VrchatOscTarget?>(null), (_, _) => Task.FromResult<VrchatOscTarget?>(null),
+            TimeSpan.FromSeconds(2), setAdjustments: value => applied = value);
+        fixture.Set("_directSession", session);
+        fixture.Call("UpdateDirectFaceAdjustments");
+        Check(applied is { Tongue: true, Pupils: true }, "A running camera can apply both selected outputs");
+        fixture.Start("Camera tracking", "camera-quit", fixture.SharedStop, "camera");
+        fixture.Wait(() => applied is { HasAdjustments: false }, "camera Q yields to raw native expressions");
+        fixture.Get<CheckBox>("_eyebrowBoost").Checked = true;
+        fixture.Call("UpdateDirectFaceAdjustments");
+        Check(applied is { Tongue: false, Pupils: false, Brows: true } && !session.Completion.IsCompleted &&
+            fixture.Get<CheckBox>("_tongue").Checked && fixture.Get<CheckBox>("_pupil").Checked,
+            "Camera Q keeps native output and next-start choices while later brow edits leave camera data disabled");
+        fixture.Stop();
     }
 
     static void TestCleanFailure(string root)
