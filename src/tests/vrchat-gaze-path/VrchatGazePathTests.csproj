@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../vd-label-bridge/VirtualDesktopFaceMap.cs" Link="VirtualDesktopFaceMap.cs" />
+    <Compile Include="../../qpro-hub/DirectVrchat/VrchatFaceSource*.cs" Link="%(Filename)%(Extension)" />
+    <Compile Include="../../qpro-hub/DirectVrchat/VrchatFaceSelection.cs" Link="VrchatFaceSelection.cs" />
+    <Compile Include="../../qpro-hub/DirectVrchat/VrchatFaceOutput*.cs" Link="%(Filename)%(Extension)" />
+    <Compile Include="../../qpro-hub/DirectVrchat/VrchatGazeDirection.cs" Link="VrchatGazeDirection.cs" />
+    <Compile Include="../../qpro-hub/HubCheekPuffPreference.cs" Link="HubCheekPuffPreference.cs" />
+    <Compile Include="../../qpro-hub/HubCheekSuckPreference.cs" Link="HubCheekSuckPreference.cs" />
+    <Compile Include="../../shared/CheekPuffCalibrationProfile.cs" Link="CheekPuffCalibrationProfile.cs" />
+    <Compile Include="../../shared/EyebrowPreference.cs" Link="EyebrowPreference.cs" />
+    <Compile Include="../../vrcft-gaze-bridge/SteamOscSource.cs" Link="SteamOscSource.cs" />
+    <Compile Include="../../vrcft-gaze-bridge/LiveOverlayState.cs" Link="LiveOverlayState.cs" />
+    <Compile Include="../../vrcft-gaze-bridge/NativeTongueMapping.cs" Link="NativeTongueMapping.cs" />
+    <Compile Include="../../vrcft-gaze-bridge/NativeLipMapping.cs" Link="NativeLipMapping.cs" />
+    <Compile Include="../../vrcft-gaze-bridge/CheekPuffMapping.cs" Link="CheekPuffMapping.cs" />
+    <Compile Include="../../vrcft-gaze-bridge/EyebrowMapping.cs" Link="EyebrowMapping.cs" />
+    <Compile Include="../../vrcft-gaze-bridge/CheekSuckMapping.cs" Link="CheekSuckMapping.cs" />
+    <Compile Include="../../vrcft-gaze-bridge/SmirkMapping.cs" Link="SmirkMapping.cs" />
+  </ItemGroup>
+</Project>
