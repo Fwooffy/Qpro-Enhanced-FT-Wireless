@@ -7,7 +7,7 @@ internal sealed partial class HubForm
 {
     private readonly LinkLabel _updateLink = new()
     {
-        Text = "Check updates", LinkColor = Accent, ActiveLinkColor = Color.White,
+        Text = "Check updates", LinkColor = Accent, ActiveLinkColor = TextPrimary,
         VisitedLinkColor = Accent, DisabledLinkColor = DisabledText,
         AccessibleName = "Qpro app updates", TabStop = true,
     };
@@ -31,7 +31,8 @@ internal sealed partial class HubForm
         // token so they never access a disposed CancellationTokenSource.
         _updateToken = _updateLifetime.Token;
         Disposed += (_, _) => EndUpdateLifetime(releaseSource: true);
-        _updateLink.LinkClicked += async (_, _) => await HandleHubUpdateClickAsync();
+        _updateLink.LinkClicked += async (_, _) => await HandleHubUpdateClickAsync(
+            () => ShowComponentUpdatesAsync(offerAppUpdates: true), ShowReleaseUpdatesAsync);
         WireUpdateNotifications();
         if (_previewOnly) return;
         try
@@ -110,7 +111,14 @@ internal sealed partial class HubForm
         }
     }
 
-    private async Task HandleHubUpdateClickAsync()
+    private async Task HandleHubUpdateClickAsync(Func<Task<bool>> showComponents, Func<Task> showRelease)
+    {
+        if (_previewOnly || _updateChecking || _closingInProgress || _updateDialogOpen || _updateNotificationOpen) return;
+        if (HeaderShowsComponentUpdates && !await showComponents()) return;
+        if (!IsDisposed && !Disposing && !_closingInProgress) await showRelease();
+    }
+
+    private async Task ShowReleaseUpdatesAsync()
     {
         if (_previewOnly || _updateChecking || _closingInProgress || _updateDialogOpen || _updateNotificationOpen) return;
         var reviewCheck = UpdateCheckForReview();

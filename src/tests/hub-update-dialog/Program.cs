@@ -3,7 +3,7 @@ using System.Reflection;
 using System.Text.Json;
 using QproFaceTracking.Hub;
 
-internal static class UpdateDialogTests
+internal static partial class UpdateDialogTests
 {
     private static int _passed;
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
@@ -12,9 +12,9 @@ internal static class UpdateDialogTests
     [STAThread]
     static void Main(string[] args)
     {
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.SetColorMode(SystemColorMode.Dark);
-        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
         Control.CheckForIllegalCrossThreadCalls = true;
         if (args.Length == 3 && args[0] == "--markdown-preview")
         {
@@ -132,6 +132,7 @@ internal static class UpdateDialogTests
         Check((bool)preferenceType.GetProperty("IncludePrereleases")!.GetValue(restored)!, "Saved prerelease preference was lost.");
         CheckInstallPaths();
         CheckTrackingReview(stable, current);
+        CheckUpdateButtons(stable, current);
 
         var requests = new List<Request>();
         Task<HubUpdateCheck> Recheck(bool include, CancellationToken token)
@@ -195,8 +196,8 @@ internal static class UpdateDialogTests
             install.PerformClick(); Pump();
             Check(stageCalls == 1 && !prereleases.Enabled && !retry.Enabled && !Field<CheckBox>(dialog, "_automatic").Enabled,
                 "Channel preferences stayed editable during a download.");
-            Field<DarkButton>(dialog, "_close").PerformClick(); Pump();
-            Check(stageToken.IsCancellationRequested, "Close did not cancel a staged download.");
+            Escape(dialog); Pump();
+            Check(stageToken.IsCancellationRequested && dialog.Visible, "Escape did not wait for the active download to cancel.");
             stage.SetCanceled(stageToken); Pump();
             Check(dialog.IsDisposed && dialog.StagedUpdate is null, "Cancel did not close cleanly without an update.");
         }

@@ -15,7 +15,7 @@ internal sealed class HubUpdateAvailableDialog : Form
     {
         Text = HubForm.ProductDisplayName + " updates";
         DoubleBuffered = true;
-        BackColor = HubForm.Background; ForeColor = Color.WhiteSmoke;
+        BackColor = HubForm.Background; ForeColor = HubForm.TextBody;
         Font = new Font("Segoe UI", 10F);
         AutoScaleMode = AutoScaleMode.Dpi; AutoScaleDimensions = new SizeF(96, 96);
         ClientSize = new Size(540, release.IsPrerelease ? 290 : 250);
@@ -50,6 +50,6 @@ internal sealed class HubUpdateAvailableDialog : Form
     private static DarkButton ActionButton(string text) => new()
     {
         Text = text, AutoSize = true, Padding = new Padding(12, 6, 12, 6), Margin = new Padding(6, 0, 0, 0),
-        BackColor = HubForm.Raised, ForeColor = Color.WhiteSmoke,
+        BackColor = HubForm.Raised, ForeColor = HubForm.TextBody,
     };
 }

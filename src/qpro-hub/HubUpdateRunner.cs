@@ -173,7 +173,7 @@ internal sealed record HubUpdatePlan(int Schema, string StagedRuntime, string De
 internal sealed class HubUpdateApplyWindow : Form
 {
     private readonly Label _status = new() { Dock = DockStyle.Fill, AutoSize = false, TextAlign = ContentAlignment.MiddleLeft,
-        Padding = new Padding(24), ForeColor = Color.WhiteSmoke, Text = "Waiting for the Hub to finish closing…" };
+        Padding = new Padding(24), ForeColor = HubForm.TextBody, Text = "Waiting for the Hub to finish closing…" };
     private bool _applying = true;
     internal bool Succeeded { get; private set; }
 

@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Reflection;
 using System.Text.Json;
 using QproFaceTracking.Hub;
 
@@ -7,12 +6,9 @@ try
 {
 int assertions = 0;
 void Check(bool condition, string message) { assertions++; if (!condition) throw new Exception(message); }
-if (args.Length != 1 || !File.Exists(args[0]) || AssemblyName.GetAssemblyName(args[0]).Name != "Qpro.GazeBridge")
-    throw new Exception("Pass a packaged Qpro module DLL; the fixture only copies and inspects it.");
 string fixture = Path.Combine(Path.GetTempPath(), "qpro-component-tests-" + Guid.NewGuid().ToString("N"));
 string app = Path.Combine(fixture, "app");
 string local = Path.Combine(fixture, "local");
-string modules = Path.Combine(fixture, "modules");
 string shared = Path.Combine(local, "QproFaceTracking", "runtime");
 string registration = Path.Combine(local, "QproFaceTracking", "r", "rocm-runtimes.json");
 string manifest = Path.Combine(app, "release-manifest.json");
@@ -20,7 +16,7 @@ string a = new('a', 64), b = new('b', 64), c = new('c', 64);
 void Write(string path, string value) { Directory.CreateDirectory(Path.GetDirectoryName(path)!); File.WriteAllText(path, value); }
 void Json(string path, object value) => Write(path, JsonSerializer.Serialize(value));
 void Recipes() => Json(manifest, new { componentUpdates = new { schema = 1, runtimeRecipe = a, rocmRecipe = b, legacyRocmRecipe = c } });
-HubComponentPlan Plan(bool python = false, bool rocm = false, bool steam = false) => HubComponentUpdates.Inspect(app, local, modules, steam, python, rocm);
+HubComponentPlan Plan(bool python = false, bool rocm = false) => HubComponentUpdates.Inspect(app, local, python, rocm);
 Recipes();
 Check(Plan().Updates.Count == 0, "Fresh install must not add optional components.");
 string sharedPython = Path.Combine(shared, ".venv", "Scripts", "python.exe");
@@ -51,10 +47,10 @@ if (OperatingSystem.IsWindows())
         var linkedRecipes = HubComponentUpdates.ReadRecipes(appLink);
         Check(linkedRecipes is not null && linkedRecipes["runtimeRecipe"] == a && linkedRecipes["rocmRecipe"] == b,
             "Readable local package junction lost component recipes.");
-        Check(HubComponentUpdates.Inspect(appLink, local, modules, false, false, false).Updates.Count == 0,
+        Check(HubComponentUpdates.Inspect(appLink, local, false, false).Updates.Count == 0,
             "A linked package failed to recognize an existing valid runtime receipt.");
         Json(Path.Combine(shared, "runtime-ready.json"), new { format = "qpro-runtime-ready-v1", python = sharedPython, recipeSha256 = b });
-        Check(HubComponentUpdates.Inspect(appLink, local, modules, false, false, false).Updates.Single().Kind == HubComponentKind.Runtime,
+        Check(HubComponentUpdates.Inspect(appLink, local, false, false).Updates.Single().Kind == HubComponentKind.Runtime,
             "A linked package hid a required private-runtime component update.");
         Json(Path.Combine(shared, "runtime-ready.json"), new { format = "qpro-runtime-ready-v1", python = sharedPython, recipeSha256 = a });
         Check(!HubComponentUpdates.ReceiptMatches(Path.Combine(sharedLink, "runtime-ready.json"), a, sharedPython, false),
@@ -117,18 +113,6 @@ foreach (var badManifest in new[] { "{}", "{broken", "{\"componentUpdates\":{\"s
     Write(manifest, badManifest);
     Check(HubComponentUpdates.ReadRecipes(app) is null, "Invalid component recipe must not launch an update.");
 }
-Recipes();
-string supplied = Path.Combine(app, "vrcft-gaze-bridge", "bin", "Release", "net10.0", "Qpro.GazeBridge.dll");
-Directory.CreateDirectory(Path.GetDirectoryName(supplied)!); File.Copy(args[0], supplied);
-Directory.CreateDirectory(modules);
-string vd = Path.Combine(modules, "000-Qpro.VirtualDesktop.dll"); File.Copy(supplied, vd);
-Check(HubModuleInstallation.TryGetInstalledSource(modules, true, out bool steamLink) && !steamLink, "Installed VD source must be preserved even if the combo currently selects Steam Link.");
-Check(Plan(steam: true).Updates.Single().Kind == HubComponentKind.Module && !Plan(steam: true).Updates.Single().SteamLink, "Module update chose a different streaming app.");
-string sl = Path.Combine(modules, "000-Qpro.SteamLink.dll"); File.Copy(supplied, sl);
-Check(!HubModuleInstallation.TryGetInstalledSource(modules, false, out _), "Duplicate source modules must not be guessed.");
-Check(Plan().Updates.Count == 0 && Plan().Notes.Count > 0, "Ambiguous module ownership must go to manual repair.");
-File.Delete(vd);
-Check(HubModuleInstallation.TryGetInstalledSource(modules, false, out steamLink) && steamLink, "Installed Steam Link source was not preserved.");
 Console.WriteLine($"PASS: {assertions} component planning and receipt checks; no installations or package downloads. Fixture: {fixture}");
 return 0;
 }

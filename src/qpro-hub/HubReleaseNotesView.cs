@@ -2,6 +2,17 @@ namespace QproFaceTracking.Hub;
 
 internal sealed class HubReleaseNotesView : RichTextBox
 {
+#if QPRO_REMOTE_CLICKER
+    private static readonly Color HeadingColor = HubForm.TextPrimary;
+    private static readonly Color QuoteColor = HubForm.Muted;
+    private static readonly Color CodeColor = HubForm.Inset;
+    private static readonly Color LinkColor = HubForm.LinkText;
+#else
+    private static readonly Color HeadingColor = Color.FromArgb(124, 216, 213);
+    private static readonly Color QuoteColor = Color.FromArgb(166, 188, 195);
+    private static readonly Color CodeColor = Color.FromArgb(29, 53, 61);
+    private static readonly Color LinkColor = Color.FromArgb(124, 216, 213);
+#endif
     private IReadOnlyList<HubReleaseNotesLink> _links = [];
     private IReadOnlyList<HubReleaseNotesSpan> _spans = [];
     private string _renderedText = string.Empty;
@@ -49,10 +60,10 @@ internal sealed class HubReleaseNotesView : RichTextBox
                 float size = span.HeadingLevel switch { 1 => Font.Size * 1.5F, 2 => Font.Size * 1.3F, > 2 => Font.Size * 1.12F, _ => Font.Size };
                 using var styled = new Font(code ? "Consolas" : Font.FontFamily.Name, size, style);
                 SelectionFont = styled;
-                if (span.Style.HasFlag(HubReleaseNotesStyle.Heading)) SelectionColor = Color.FromArgb(124, 216, 213);
+                if (span.Style.HasFlag(HubReleaseNotesStyle.Heading)) SelectionColor = HeadingColor;
                 else if (span.Style.HasFlag(HubReleaseNotesStyle.Quote) || span.Style.HasFlag(HubReleaseNotesStyle.Rule))
-                    SelectionColor = Color.FromArgb(166, 188, 195);
-                if (code) SelectionBackColor = Color.FromArgb(29, 53, 61);
+                    SelectionColor = QuoteColor;
+                if (code) SelectionBackColor = CodeColor;
             }
             foreach (var link in _links)
             {
@@ -67,7 +78,7 @@ internal sealed class HubReleaseNotesView : RichTextBox
                     Select(boundaries[index], boundaries[index + 1] - boundaries[index]);
                     using var current = SelectionFont;
                     using var underlined = new Font(current ?? Font, (current?.Style ?? Font.Style) | FontStyle.Underline);
-                    SelectionFont = underlined; SelectionColor = Color.FromArgb(124, 216, 213);
+                    SelectionFont = underlined; SelectionColor = LinkColor;
                 }
             }
             Select(0, 0); ScrollToCaret();

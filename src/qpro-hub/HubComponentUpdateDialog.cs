@@ -4,6 +4,7 @@ internal sealed class HubComponentUpdateDialog : Form
 {
     private readonly DarkButton _update = new() { Text = "Update components", AutoSize = true, Padding = new Padding(12, 6, 12, 6) };
     private readonly DarkButton _close = new() { Text = "Close", AutoSize = true, Padding = new Padding(12, 6, 12, 6) };
+    private readonly DarkButton _appUpdates = new() { Text = "App updates", AutoSize = true, Padding = new Padding(12, 6, 12, 6), DialogResult = DialogResult.Retry };
     private readonly Label _status = new() { AutoSize = true, Dock = DockStyle.Fill, UseMnemonic = false };
     private readonly Func<HubComponentUpdate, Action<string>, Task<string?>> _apply;
     private readonly HubComponentPlan _plan;
@@ -11,12 +12,13 @@ internal sealed class HubComponentUpdateDialog : Form
     private readonly HubActivityClassifier _classifier = new();
     private bool _running;
 
-    internal HubComponentUpdateDialog(HubComponentPlan plan, Func<HubComponentUpdate, Action<string>, Task<string?>> apply)
+    internal HubComponentUpdateDialog(HubComponentPlan plan, Func<HubComponentUpdate, Action<string>, Task<string?>> apply,
+        bool offerAppUpdates = false, bool trackingBusy = false)
     {
         _plan = plan; _apply = apply;
         Text = "Qpro component updates";
         Font = new Font("Segoe UI", 10F);
-        ForeColor = Color.WhiteSmoke; BackColor = HubForm.Background;
+        ForeColor = HubForm.TextBody; BackColor = HubForm.Background;
         AutoScaleMode = AutoScaleMode.Dpi; AutoScaleDimensions = new SizeF(96, 96);
         Size = new Size(720, 560); MinimumSize = new Size(560, 430);
         StartPosition = FormStartPosition.CenterParent; MinimizeBox = false; MaximizeBox = false;
@@ -28,9 +30,9 @@ internal sealed class HubComponentUpdateDialog : Form
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.Controls.Add(new Label { Text = "Keep tracking components up to date", Font = new Font(Font, FontStyle.Bold), AutoSize = true, Margin = new Padding(0, 0, 0, 12) }, 0, 0);
-        layout.Controls.Add(new Label { Text = "This release's checked requirements are used. Close VRCFaceTracking for a module update and stop Qpro tracking or training. Models, captures, settings and your streaming app are kept.", AutoSize = true, Dock = DockStyle.Fill, ForeColor = HubForm.Muted, Margin = new Padding(0, 0, 0, 14) }, 0, 1);
+        layout.Controls.Add(new Label { Text = "Stop Qpro tracking and training before updating the PC runtime. Models, captures, settings and your streaming app are kept.", AutoSize = true, Dock = DockStyle.Fill, ForeColor = HubForm.Muted, Margin = new Padding(0, 0, 0, 14) }, 0, 1);
         _detail = new RichTextBox { ReadOnly = true, DetectUrls = false, Dock = DockStyle.Fill,
-            BackColor = HubForm.Inset, ForeColor = Color.WhiteSmoke, BorderStyle = BorderStyle.None,
+            BackColor = HubForm.Inset, ForeColor = HubForm.TextBody, BorderStyle = BorderStyle.None,
             Font = Font, AccessibleName = "Component update plan" };
         _detail.Text = string.Join("\n\n", plan.Updates.Select(item => item.Name + "\n" + item.Detail).Concat(plan.Notes));
         if (_detail.Text.Length == 0) _detail.Text = "Installed components match this release. Components that are not installed remain optional in First-time setup.";
@@ -41,9 +43,12 @@ internal sealed class HubComponentUpdateDialog : Form
         _status.Margin = new Padding(0, 14, 0, 14);
         layout.Controls.Add(_status, 0, 3);
         var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
-        actions.Controls.Add(_close); actions.Controls.Add(_update); layout.Controls.Add(actions, 0, 4);
+        actions.Controls.Add(_close); actions.Controls.Add(_update); actions.Controls.Add(_appUpdates); layout.Controls.Add(actions, 0, 4);
+        _appUpdates.Visible = offerAppUpdates;
         Controls.Add(layout);
-        _update.Enabled = plan.Updates.Count > 0;
+        CancelButton = _close;
+        _update.Enabled = plan.Updates.Count > 0 && !trackingBusy;
+        if (plan.Updates.Count > 0 && trackingBusy) SetStatus("Stop tracking before updating components. You can review the plan now.", HubForm.Warning);
         _update.Click += async (_, _) => await ApplyAsync();
         _close.Click += (_, _) => Close();
         FormClosing += (_, e) =>
@@ -62,7 +67,7 @@ internal sealed class HubComponentUpdateDialog : Form
     private async Task ApplyAsync()
     {
         if (_running) return;
-        _running = true; _update.Enabled = _close.Enabled = false;
+        _running = true; _update.Enabled = _close.Enabled = _appUpdates.Enabled = false;
         try
         {
             foreach (var item in _plan.Updates)
@@ -78,10 +83,10 @@ internal sealed class HubComponentUpdateDialog : Form
                     return;
                 }
             }
-            SetStatus("Component updates completed and checked. Reopen VRCFaceTracking if its module was updated.", HubForm.Good);
+            SetStatus("Component updates completed and checked.", HubForm.Good);
         }
         catch (Exception error) { SetStatus("Component updates stopped: " + error.Message + " Check the detailed log before retrying.", HubForm.Bad); }
-        finally { _running = false; _close.Enabled = true; }
+        finally { _running = false; _close.Enabled = _appUpdates.Enabled = true; }
     }
 
     private void SetStatus(string text, Color color) { _status.Text = text; _status.ForeColor = color; }

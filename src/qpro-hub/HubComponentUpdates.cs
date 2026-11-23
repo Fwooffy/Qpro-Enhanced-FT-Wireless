@@ -3,30 +3,20 @@ using System.Text.RegularExpressions;
 
 namespace QproFaceTracking.Hub;
 
-internal enum HubComponentKind { Module, Runtime, Rocm, LegacyRocm }
+internal enum HubComponentKind { Runtime, Rocm, LegacyRocm }
 internal sealed record HubComponentUpdate(HubComponentKind Kind, string Name, string Detail,
-    string? Recipe, string? EnvironmentRoot = null, bool SteamLink = false);
+    string Recipe, string EnvironmentRoot);
 internal sealed record HubComponentPlan(IReadOnlyList<HubComponentUpdate> Updates, IReadOnlyList<string> Notes);
 
 // Component recipes come from the already verified app package. Startup never
 // queries pip or installs a library; it compares receipts written after checks.
 internal static class HubComponentUpdates
 {
-    internal static HubComponentPlan Inspect(string runtimeRoot, string localAppData, string customLibs,
-        bool selectedSteamLink, bool customPython, bool customRocm)
+    internal static HubComponentPlan Inspect(string runtimeRoot, string localAppData, bool customPython, bool customRocm)
     {
         var updates = new List<HubComponentUpdate>();
         var notes = new List<string>();
         var recipes = ReadRecipes(runtimeRoot);
-        string supplied = Path.Combine(runtimeRoot, "vrcft-gaze-bridge", "bin", "Release", "net10.0", "Qpro.GazeBridge.dll");
-        if (HubModuleInstallation.HasInstalled(customLibs))
-        {
-            if (!HubModuleInstallation.TryGetInstalledSource(customLibs, selectedSteamLink, out bool steamLink))
-                notes.Add("The installed Qpro module source is ambiguous. Use First-time setup to choose and repair it.");
-            else if (File.Exists(supplied) && !HubModuleInstallation.IsCurrent(customLibs, supplied, steamLink))
-                updates.Add(new(HubComponentKind.Module, "Qpro " + (steamLink ? "Steam Link" : "Virtual Desktop") + " module",
-                    "Replace the installed module with this app's version. Close VRCFaceTracking and its ModuleProcess helper first.", null, SteamLink: steamLink));
-        }
         if (recipes is null)
         {
             notes.Add("This package has no component recipe information. Runtime maintenance is available in First-time setup.");
@@ -110,7 +100,6 @@ internal static class HubComponentUpdates
 
     internal static bool RuntimeUpdateVerified(HubComponentUpdate item, string localAppData)
     {
-        if (item.Recipe is null) return false;
         string qpro = Path.Combine(localAppData, "QproFaceTracking");
         if (item.Kind == HubComponentKind.Runtime)
             return ReceiptMatches(Path.Combine(qpro, "runtime", "runtime-ready.json"), item.Recipe,

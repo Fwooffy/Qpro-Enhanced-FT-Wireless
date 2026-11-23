@@ -295,6 +295,37 @@ try
         "{\"name\":\"OtherApp\",\"version\":\"3.0.1\",\"updateFormat\":1}");
     Reject(() => Stage(Archive(wrongBrandManifest, packageFolder: "QproCompanion.V3.0.1"), packageVersion: brandedVersion),
         "renamed archive still requires the Qpro manifest identity");
+    var directVersion = new Version(3, 0, 5);
+    var directFiles = ValidFiles(manifestVersion: directVersion.ToString());
+    foreach (string helper in new[] { "runtime-recovery.ps1", "tracking_budget.py" })
+        directFiles["QproRuntime/" + helper] = Encoding.UTF8.GetBytes("Fixture " + helper);
+    directFiles.Remove("QproRuntime/vrcft-gaze-bridge/bin/Release/net10.0/Qpro.GazeBridge.dll");
+    Reject(() => Stage(Archive(directFiles, packageVersion: directVersion.ToString()), packageVersion: directVersion),
+        "bridge-based release without its required face module");
+    const string manifestPath = "QproRuntime/release-manifest.json";
+    var directManifest = JsonNode.Parse(directFiles[manifestPath])!.AsObject();
+    directManifest["faceOutput"] = "direct-vrchat-osc";
+    directFiles[manifestPath] = Encoding.UTF8.GetBytes(directManifest.ToJsonString());
+    var directStage = Stage(Archive(directFiles, packageVersion: directVersion.ToString()), packageVersion: directVersion);
+    HubUpdatePackage.ValidateStagedRelease(directStage.RuntimeRoot, directVersion);
+    HubUpdatePackage.Discard(directStage, storage);
+    Check(!Directory.Exists(directStage.RuntimeRoot), "direct release without the legacy bridge stages, revalidates and cleans up");
+    directManifest["vrcftBackupBundled"] = true;
+    directFiles[manifestPath] = Encoding.UTF8.GetBytes(directManifest.ToJsonString());
+    string[] backupFiles = ["vrcft-gaze-bridge/bin/Release/net10.0/Qpro.GazeBridge.dll", "install-vrcft-eye-bridge.ps1",
+        "uninstall-vrcft-eye-bridge.ps1", "vrcft-module-installation.ps1"];
+    foreach (string file in backupFiles) directFiles["QproRuntime/" + file] = Encoding.UTF8.GetBytes("Fixture " + file);
+    foreach (string file in backupFiles)
+    {
+        var missingBackupFile = new Dictionary<string, byte[]>(directFiles);
+        missingBackupFile.Remove("QproRuntime/" + file);
+        Reject(() => Stage(Archive(missingBackupFile, packageVersion: directVersion.ToString()), packageVersion: directVersion),
+            "backup-capable package without " + file);
+    }
+    var backupStage = Stage(Archive(directFiles, packageVersion: directVersion.ToString()), packageVersion: directVersion);
+    HubUpdatePackage.ValidateStagedRelease(backupStage.RuntimeRoot, directVersion);
+    HubUpdatePackage.Discard(backupStage, storage);
+    Check(!Directory.Exists(backupStage.RuntimeRoot), "backup-capable package stages and cleans up");
     foreach (Version target in new[] { new Version(3, 0, 0), new Version(4, 0, 0) })
     {
         Dictionary<string, byte[]> complete = ValidFiles(manifestVersion: target.ToString());

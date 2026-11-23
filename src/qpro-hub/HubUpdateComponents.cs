@@ -7,8 +7,6 @@ internal sealed partial class HubForm
 
     private HubComponentPlan InspectComponentUpdates() => HubComponentUpdates.Inspect(_root,
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "VRCFaceTracking", "CustomLibs"),
-        _environment.SteamLinkSelected,
         !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("QPRO_PYTHON")),
         !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("QPRO_ROCM_HOME")));
 
@@ -29,18 +27,22 @@ internal sealed partial class HubForm
         catch (Exception error) { if (!IsDisposed) AppendLog("[Updates] Component status could not be checked: " + error.Message); }
     }
 
-    private async Task ShowComponentUpdatesAsync()
+    private async Task<bool> ShowComponentUpdatesAsync(bool offerAppUpdates = false)
     {
-        if (_previewOnly || UtilityActionIsBusy()) return;
+        if (_previewOnly || _updateDialogOpen || HubUpdateReviewIsBusy()) return false;
+        _updateDialogOpen = true;
         try
         {
             var plan = await Task.Run(InspectComponentUpdates);
-            if (IsDisposed || Disposing || UtilityActionIsBusy()) return;
-            using var dialog = new HubComponentUpdateDialog(plan, ApplyComponentUpdateAsync);
-            dialog.ShowDialog(this);
+            if (IsDisposed || Disposing || HubUpdateReviewIsBusy()) return false;
+            using var dialog = new HubComponentUpdateDialog(plan, ApplyComponentUpdateAsync, offerAppUpdates,
+                _starting || _stopping || LiveTrackingRunning);
+            bool appUpdates = dialog.ShowDialog(this) == DialogResult.Retry;
             await CheckComponentUpdatesAsync();
+            return appUpdates;
         }
-        catch (Exception error) { ShowWorkflowFailure("Component updates", error); }
+        catch (Exception error) { if (!IsDisposed && !Disposing) ShowWorkflowFailure("Component updates", error); return false; }
+        finally { _updateDialogOpen = false; }
     }
 
     private async Task<string?> ApplyComponentUpdateAsync(HubComponentUpdate item, Action<string> progress)
@@ -48,29 +50,19 @@ internal sealed partial class HubForm
         if (_previewOnly) return "Preview mode does not install components.";
         if (_closingInProgress || UtilityActionIsBusy()) return "Finish the current Qpro action first.";
         if (LiveTrackingRunning) return "Stop live tracking before updating components.";
-        if (item.Kind == HubComponentKind.Module && VrcftModuleProcessRunning())
-            return "Close VRCFaceTracking and wait for its ModuleProcess helper to exit, then retry.";
         // The plan is only a preview. Re-read environment ownership and recipes
         // immediately before launching a helper; the user may have changed them.
         var current = InspectComponentUpdates().Updates.FirstOrDefault(candidate => candidate.Kind == item.Kind);
         if (current is null)
         {
-            bool alreadyCurrent = item.Kind == HubComponentKind.Module
-                ? _environment.SteamLinkSelected == item.SteamLink && CurrentBridgeInstalled()
-                : HubComponentUpdates.RuntimeUpdateVerified(item, Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+            bool alreadyCurrent = HubComponentUpdates.RuntimeUpdateVerified(item, Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
             return alreadyCurrent ? null : "The component is no longer available for this update. Reopen Component updates to check its status.";
         }
-        if (current.Recipe != item.Recipe || current.SteamLink != item.SteamLink ||
-            current.EnvironmentRoot != item.EnvironmentRoot)
+        if (current.Recipe != item.Recipe || current.EnvironmentRoot != item.EnvironmentRoot)
             return "The installed component changed. Reopen Component updates to review the new plan.";
         var args = new List<string>();
         string script;
-        if (item.Kind == HubComponentKind.Module)
-        {
-            script = "install-vrcft-eye-bridge.ps1";
-            args.AddRange(["-TrackingSource", item.SteamLink ? "SteamLink" : "VirtualDesktop"]);
-        }
-        else if (item.Kind == HubComponentKind.Runtime)
+        if (item.Kind == HubComponentKind.Runtime)
         { script = "setup-runtime.ps1"; args.Add("-Update"); }
         else
         {
@@ -79,7 +71,7 @@ internal sealed partial class HubForm
             bool legacy = item.Kind == HubComponentKind.LegacyRocm;
             if (!HubRocmOsPolicy.CanInstall(Environment.OSVersion.Version.Build, _experimentalWindows10Rocm.Checked, legacy))
                 return "This Windows version requires the compatible ROCm option in First-time setup.";
-            args.AddRange(["-Update", "-RocmStorageRoot", Path.GetDirectoryName(item.EnvironmentRoot!)!]);
+            args.AddRange(["-Update", "-RocmStorageRoot", Path.GetDirectoryName(item.EnvironmentRoot)!]);
             if (legacy) args.Add("-UseLegacyRocm");
             args.AddRange(HubRocmOsPolicy.InstallArguments(Environment.OSVersion.Version.Build, _experimentalWindows10Rocm.Checked));
         }
@@ -96,14 +88,7 @@ internal sealed partial class HubForm
         {
             _componentUpdateOutput = progress;
             if (!await RunUtilityAsync(label, script, args.ToArray())) return "The helper did not confirm success. See Activity for the exact error.";
-            if (item.Kind == HubComponentKind.Module)
-            {
-                _environment.ReloadTrackingSource();
-                SyncTrackingSourceControls(); UpdateTrackingSourceNotes();
-                if (_environment.SteamLinkSelected != item.SteamLink || !CurrentBridgeInstalled())
-                    return FailedVerification("The installed module did not match the selected update. Retry with VRCFaceTracking closed.");
-            }
-            else if (!HubComponentUpdates.RuntimeUpdateVerified(item, Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)))
+            if (!HubComponentUpdates.RuntimeUpdateVerified(item, Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)))
                 return FailedVerification("The helper exited, but the release recipe and readiness receipt could not be verified. Check Activity and retry.");
             succeeded = true;
             AppendLog("[Updates] " + item.Name + " updated and verified.");

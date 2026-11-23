@@ -38,11 +38,14 @@ internal sealed partial class HubForm
     {
         var available = UpdateCheckForReview();
         _updateLink.Text = available?.Release is not null ? "Update available"
-            : _componentPlan?.Updates.Count > 0 ? "Component updates" : "Check updates";
-        _updateLink.AccessibleDescription = available?.Message ?? _updateCheck?.Message ?? "Check the selected release channel again.";
+            : HeaderShowsComponentUpdates ? "Component updates" : "Check updates";
+        _updateLink.AccessibleDescription = HeaderShowsComponentUpdates ? "Review updates for installed Qpro components."
+            : available?.Message ?? _updateCheck?.Message ?? "Check the selected release channel again.";
     }
 
     private HubUpdateCheck? UpdateCheckForReview() => _updateNotification.ForReview(_updateCheck);
+
+    private bool HeaderShowsComponentUpdates => _componentPlan?.Updates.Count > 0 && UpdateCheckForReview()?.Release is null;
 
     private bool CanShowUpdateNotification()
     {
@@ -76,6 +79,6 @@ internal sealed partial class HubForm
         }
         finally { _updateNotificationOpen = false; }
         // Opening this notice never downloads or applies an update.
-        if (viewUpdate && !IsDisposed && !Disposing && !_closingInProgress) await HandleHubUpdateClickAsync();
+        if (viewUpdate && !IsDisposed && !Disposing && !_closingInProgress) await ShowReleaseUpdatesAsync();
     }
 }

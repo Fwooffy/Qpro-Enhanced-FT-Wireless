@@ -167,8 +167,25 @@ internal static class HubUpdatePackage
         if (new FileInfo(Path.Combine(package, "QproFaceTracking.exe")).Length <= 0)
             throw new InvalidDataException("The update contains an empty app executable.");
         foreach (string required in new[] { "setup-runtime.ps1", "runtime-python.ps1", "receiver.py", "tongue_model_preview.py",
-                     "platform-tools/adb.exe", "vrcft-gaze-bridge/bin/Release/net10.0/Qpro.GazeBridge.dll" })
+                     "platform-tools/adb.exe" })
             if (!File.Exists(Within(runtime, required))) throw new InvalidDataException("The update runtime is missing " + required + ".");
+        // Historical manifests use VRCFaceTracking for face output. A direct
+        // release embeds output in the Hub and may omit the compatibility DLL.
+        const string legacyBridge = "vrcft-gaze-bridge/bin/Release/net10.0/Qpro.GazeBridge.dll";
+        bool directOutput = root.TryGetProperty("faceOutput", out JsonElement output) &&
+            output.ValueKind == JsonValueKind.String && output.GetString() == "direct-vrchat-osc";
+        bool bundledBackup = false;
+        if (root.TryGetProperty("vrcftBackupBundled", out JsonElement backup))
+        {
+            if (backup.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                throw new InvalidDataException("The release manifest has an invalid VRCFaceTracking backup declaration.");
+            bundledBackup = backup.GetBoolean();
+        }
+        if ((!directOutput || bundledBackup) && !File.Exists(Within(runtime, legacyBridge)))
+            throw new InvalidDataException("The update runtime is missing " + legacyBridge + ".");
+        if (bundledBackup)
+            foreach (string helper in new[] { "install-vrcft-eye-bridge.ps1", "uninstall-vrcft-eye-bridge.ps1", "vrcft-module-installation.ps1" })
+                if (!File.Exists(Within(runtime, helper))) throw new InvalidDataException("The update runtime is missing " + helper + ".");
         // V3 uses these helpers for checked runtime recovery and inference limits.
         // Older updater packages remain valid without files they never shipped.
         if (expected.Major >= 3)

@@ -14,11 +14,12 @@ internal sealed class HubUpdateDialog : Form
     private readonly Label _summary = new() { Dock = DockStyle.Fill, AutoSize = true, ForeColor = HubForm.Muted,
         Margin = new Padding(0, 0, 0, 14), UseMnemonic = false };
     private readonly HubReleaseNotesView _notes = new() { ReadOnly = true, DetectUrls = false, Dock = DockStyle.Fill,
-        BackColor = HubForm.Inset, ForeColor = Color.WhiteSmoke, BorderStyle = BorderStyle.None, ScrollBars = RichTextBoxScrollBars.Vertical };
+        BackColor = HubForm.Inset, ForeColor = HubForm.TextBody, BorderStyle = BorderStyle.None, ScrollBars = RichTextBoxScrollBars.Vertical };
     private readonly Label _status = new() { AutoSize = true, Dock = DockStyle.Fill, ForeColor = HubForm.Muted, Margin = new Padding(0, 8, 0, 8) };
     private readonly ProgressBar _progress = new() { Dock = DockStyle.Fill, Height = 12, Visible = false, Maximum = 1000 };
     private readonly Func<HubUpdateRelease, IProgress<HubUpdateProgress>, CancellationToken, Task<HubStagedUpdate>> _stage;
     private readonly Func<bool, CancellationToken, Task<HubUpdateCheck>>? _checkUpdates;
+    private readonly Action<Uri> _openLink;
     private readonly Version _current;
     private readonly string? _blocked;
     private readonly CancellationTokenSource _lifetime = new();
@@ -38,14 +39,15 @@ internal sealed class HubUpdateDialog : Form
     internal HubUpdateDialog(HubUpdateCheck check, Version current, bool automatic, string? blocked,
         Func<HubUpdateRelease, IProgress<HubUpdateProgress>, CancellationToken, Task<HubStagedUpdate>> stage,
         bool includePrereleases = false,
-        Func<bool, CancellationToken, Task<HubUpdateCheck>>? checkUpdates = null)
+        Func<bool, CancellationToken, Task<HubUpdateCheck>>? checkUpdates = null, Action<Uri>? openLink = null)
     {
         _stage = stage;
         _checkUpdates = checkUpdates; _current = current; _blocked = blocked;
+        _openLink = openLink ?? (uri => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true }));
         _lifetimeToken = _lifetime.Token;
         Text = HubForm.ProductDisplayName + " updates";
         DoubleBuffered = true;
-        BackColor = HubForm.Background; ForeColor = Color.WhiteSmoke;
+        BackColor = HubForm.Background; ForeColor = HubForm.TextBody;
         Font = new Font("Segoe UI", 10F);
         AutoScaleMode = AutoScaleMode.Dpi; AutoScaleDimensions = new SizeF(96, 96);
         Size = new Size(760, 670); MinimumSize = new Size(610, 520);
@@ -88,6 +90,7 @@ internal sealed class HubUpdateDialog : Form
         actions.Controls.Add(_close); actions.Controls.Add(_install); actions.Controls.Add(_github); actions.Controls.Add(_components);
         layout.Controls.Add(actions, 0, 6);
         Controls.Add(layout);
+        CancelButton = _close;
         ShowCheck(check);
         _prereleases.CheckedChanged += async (_, _) => await CheckAgainAsync();
         _checkAgain.Click += async (_, _) => await CheckAgainAsync();
@@ -114,7 +117,7 @@ internal sealed class HubUpdateDialog : Form
     private void OpenReleaseLink(Uri uri)
     {
         if (IsDisposed || Disposing || uri.Scheme is not ("https" or "http")) return;
-        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true }); }
+        try { _openLink(uri); }
         catch (Exception error)
         {
             _status.ForeColor = HubForm.Bad;
@@ -130,7 +133,7 @@ internal sealed class HubUpdateDialog : Form
             (release.IsPrerelease ? " · Prerelease" : string.Empty) : "App updates";
         _summary.Text = $"Installed: V{_current}\n{check.Message}\n\n" +
             "Update this app in the same folder. Your models, recordings, options and connections are kept. The Hub restarts to apply it. " +
-            "Use Components for Qpro module, runtime and GPU library updates.";
+            "Use Components for PC runtime and GPU library updates.";
         _notes.SetMarkdown(check.Release?.Notes ?? (IncludePrereleases
             ? "Stable releases and prereleases are checked on the project's public GitHub releases page."
             : "Stable updates are checked on the project's public GitHub releases page."));
@@ -241,6 +244,6 @@ internal sealed class HubUpdateDialog : Form
     private static DarkButton Button(string text) => new()
     {
         Text = text, AutoSize = true, Padding = new Padding(12, 6, 12, 6), Margin = new Padding(6, 0, 0, 0),
-        BackColor = HubForm.Raised, ForeColor = Color.WhiteSmoke,
+        BackColor = HubForm.Raised, ForeColor = HubForm.TextBody,
     };
 }
