@@ -46,7 +46,7 @@ internal sealed partial class HubForm
         details.Controls.Add(heading);
 
         var name = Info("Select a model");
-        name.ForeColor = Color.White;
+        name.ForeColor = TextPrimary;
         name.Font = new Font(UiFontName, 11F, FontStyle.Bold);
         name.UseMnemonic = false;
         name.Margin = new Padding(0, 0, 0, 12);
@@ -94,6 +94,19 @@ internal sealed partial class HubForm
         activation.ForeColor = Accent;
         activation.Margin = Padding.Empty;
         details.Controls.Add(activation);
+
+        var actions = new BufferedFlowLayoutPanel
+        {
+            Dock = DockStyle.Top, AutoSize = true, WrapContents = true,
+            Margin = new Padding(0, 12, 0, 0), AccessibleName = "Selected model actions",
+        };
+        actions.Controls.Add(ActionButton("Rename", (_, _) => RenameSelectedModel()));
+        actions.Controls.Add(ActionButton("Export", (_, _) => ExportSelectedModel()));
+        var delete = ActionButton("Delete", (_, _) => DeleteSelectedModel());
+        delete.VisualStyle = HubButtonStyle.Destructive;
+        BindModelDeleteAction(delete);
+        actions.Controls.Add(delete);
+        details.Controls.Add(actions);
 
         void RefreshDetails()
         {

@@ -11,11 +11,45 @@ using System.Text.RegularExpressions;
 
 namespace QproFaceTracking.Hub;
 
+internal sealed record HubDataInteraction(
+    Func<string, string, MessageBoxButtons, MessageBoxIcon, MessageBoxDefaultButton, DialogResult> Message,
+    Func<string, string, string, string?> Text,
+    Func<bool, string?, string?> Package,
+    Func<Task<IReadOnlyList<string>>> CapturePrerequisites,
+    Func<bool> RuntimeReady,
+    Func<string, string, string[], Task<bool>> RunWorkflow);
+
 internal sealed partial class HubForm
 {
-    private DatasetInfo? FindLatestDataset(TongueDatasetKind kind, bool requireCompleted, DateTime? newerThan = null)
+    private HubDataInteraction? _previewDataInteraction;
+    private bool DataActionsAvailable => !_previewOnly || _previewDataInteraction is not null;
+
+    internal void ConfigurePreviewDataInteraction(HubDataInteraction interaction)
     {
-        return FindDatasets(kind, requireCompleted, newerThan).FirstOrDefault();
+        if (!_previewOnly) throw new InvalidOperationException("The test interaction requires an offline preview.");
+        _previewDataInteraction = interaction;
+        ReloadProfiles();
+    }
+
+    private DialogResult DataMessage(string text, string title, MessageBoxButtons buttons = MessageBoxButtons.OK,
+        MessageBoxIcon icon = MessageBoxIcon.Information, MessageBoxDefaultButton defaultButton = MessageBoxDefaultButton.Button1) =>
+        _previewDataInteraction?.Message(text, title, buttons, icon, defaultButton) ??
+        MessageBox.Show(this, text, title, buttons, icon, defaultButton);
+
+    private bool DataRuntimeReady() => _previewDataInteraction?.RuntimeReady() ?? BackendReady();
+
+    private Task<bool> RunDatasetWorkflowAsync(string label, string script, params string[] args) =>
+        _previewDataInteraction?.RunWorkflow(label, script, args) ?? RunUtilityAsync(label, script, args);
+
+    private bool DataChangeBlocked()
+    {
+        if (_closingInProgress) return true;
+        if (!_starting && !_stopping && !_trackingCleanupPending && !_gazeRecoveryRunning &&
+            !_datasetOperationBusy && !_utilityActionRunning && !_setupActionRunning && !LiveTrackingRunning)
+            return false;
+        DataMessage("Stop optional tracking and finish any current setup, capture, or training before changing these files.",
+            "Files are in use");
+        return true;
     }
 
     private IReadOnlyList<DatasetInfo> FindDatasets(TongueDatasetKind kind, bool requireCompleted, DateTime? newerThan = null)
@@ -48,28 +82,41 @@ internal sealed partial class HubForm
         foreach (var path in sessionPaths)
         {
             if (newerThan is not null && File.GetLastWriteTimeUtc(path) < newerThan.Value) continue;
-            try
-            {
-                var node = JsonNode.Parse(File.ReadAllText(path))?.AsObject();
-                if (node is null) continue;
-                var sessionType = node["sessionType"]?.GetValue<string>() ?? string.Empty;
-                var kind = requestedKind ?? Enum.GetValues<TongueDatasetKind>()
-                    .FirstOrDefault(candidate => HubTongueDatasetKind.MatchesSessionType(candidate, sessionType));
-                if (!HubTongueDatasetKind.MatchesSessionType(kind, sessionType)) continue;
-                var completed = node["completed"]?.GetValue<bool>() ?? false;
-                if (requireCompleted && !completed) continue;
-                var samples = node["samples"] as JsonArray;
-                var capture = Regex.Replace(path, "\\.qpsession\\.json$", ".qpcap", RegexOptions.IgnoreCase);
-                if (!File.Exists(capture)) continue;
-                var fallback = "Dataset " + Path.GetFileNameWithoutExtension(Path.GetFileNameWithoutExtension(path));
-                var displayName = node["displayName"]?.GetValue<string>()?.Trim();
-                var legacyDiagonalOnly = kind == TongueDatasetKind.Focused &&
-                    HubTongueDatasetKind.IsLegacyDiagonalOnly(node["prompts"] as JsonArray);
-                result.Add((kind, new DatasetInfo(path, capture, string.IsNullOrWhiteSpace(displayName) ? fallback : displayName, samples?.Count ?? 0, completed, legacyDiagonalOnly)));
-            }
-            catch { }
+            if (ReadDataset(path, requestedKind, requireCompleted) is { } entry) result.Add(entry);
         }
         return result;
+    }
+
+    private static (TongueDatasetKind Kind, DatasetInfo Dataset)? ReadDataset(
+        string path, TongueDatasetKind? requestedKind = null, bool requireCompleted = false)
+    {
+        try
+        {
+            var node = JsonNode.Parse(File.ReadAllText(path))?.AsObject();
+            if (node is null) return null;
+            var sessionType = node["sessionType"]?.GetValue<string>() ?? string.Empty;
+            var kind = requestedKind ?? Enum.GetValues<TongueDatasetKind>()
+                .FirstOrDefault(candidate => HubTongueDatasetKind.MatchesSessionType(candidate, sessionType));
+            if (!HubTongueDatasetKind.MatchesSessionType(kind, sessionType)) return null;
+            var completed = node["completed"]?.GetValue<bool>() ?? false;
+            if (requireCompleted && !completed) return null;
+            var capture = Regex.Replace(path, "\\.qpsession\\.json$", ".qpcap", RegexOptions.IgnoreCase);
+            if (!File.Exists(capture)) return null;
+            var fallback = "Dataset " + Path.GetFileNameWithoutExtension(Path.GetFileNameWithoutExtension(path));
+            var displayName = node["displayName"]?.GetValue<string>()?.Trim();
+            var legacyDiagonalOnly = kind == TongueDatasetKind.Focused &&
+                HubTongueDatasetKind.IsLegacyDiagonalOnly(node["prompts"] as JsonArray);
+            return (kind, new DatasetInfo(path, capture, string.IsNullOrWhiteSpace(displayName) ? fallback : displayName,
+                (node["samples"] as JsonArray)?.Count ?? 0, completed, legacyDiagonalOnly));
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
+        { return null; }
+    }
+
+    private static bool HasDatasetLabels(DatasetInfo dataset)
+    {
+        try { return new FileInfo(Path.ChangeExtension(dataset.CapturePath, ".qplabel.jsonl")).Length > 0; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return false; }
     }
 
     private void ReloadDatasetQueues()
@@ -81,18 +128,11 @@ internal sealed partial class HubForm
         var focusedRecordedSelection = (_focusedRecordedDatasets.SelectedItem as RecordedDatasetChoice)?.Dataset.SessionPath;
         var fullRecordedSelection = (_fullRecordedDatasets.SelectedItem as RecordedDatasetChoice)?.Dataset.SessionPath;
         var trainedSessions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var models = Path.Combine(_root, "models");
-        if (Directory.Exists(models))
+        foreach (int version in TongueModelVersions())
         {
-            foreach (var metadata in Directory.GetFiles(models, "qpro-stereo-tongue-v*.metadata.json"))
-            {
-                try
-                {
-                    var session = JsonNode.Parse(File.ReadAllText(metadata))?["datasetSession"]?.GetValue<string>();
-                    if (!string.IsNullOrWhiteSpace(session)) trainedSessions.Add(session);
-                }
-                catch { }
-            }
+            if (ReadModelMetadata(version)?["datasetSession"] is JsonValue value &&
+                value.TryGetValue<string>(out var session) && !string.IsNullOrWhiteSpace(session))
+                trainedSessions.Add(session);
         }
 
         // Session files can contain thousands of samples. Share one fresh scan
@@ -133,6 +173,7 @@ internal sealed partial class HubForm
 
     private void DeleteRecordedDataset(TongueDatasetKind kind)
     {
+        if (!DataActionsAvailable) return;
         var box = kind switch
         {
             TongueDatasetKind.Quick => _quickRecordedDatasets,
@@ -141,16 +182,12 @@ internal sealed partial class HubForm
         };
         if (box.SelectedItem is not RecordedDatasetChoice choice)
         {
-            MessageBox.Show(this, "There is no recorded dataset to delete in this folder.", "No dataset selected", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            DataMessage("There is no recorded dataset to delete in this folder.", "No dataset selected");
             return;
         }
-        if (_datasetOperationBusy || LiveTrackingRunning)
-        {
-            MessageBox.Show(this, "Finish capture or training and stop live tracking before deleting a dataset.", "Dataset is in use", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
-        }
+        if (DataChangeBlocked()) return;
         var dataset = choice.Dataset;
-        if (MessageBox.Show(this,
+        if (DataMessage(
                 $"Permanently delete the recorded dataset “{dataset.DisplayName}”?\n\nThis removes its camera recording, session details, labels, and prepared training cache from this extracted copy. Any trained tongue model stays available.\n\n{dataset.SessionPath}",
                 "Delete dataset", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
             return;
@@ -163,7 +200,7 @@ internal sealed partial class HubForm
         catch (Exception error)
         {
             ReloadDatasetQueues();
-            MessageBox.Show(this, error.Message, "Could not delete dataset", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            DataMessage(error.Message, "Could not delete dataset", icon: MessageBoxIcon.Warning);
         }
     }
 
@@ -190,13 +227,62 @@ internal sealed partial class HubForm
         foreach (var path in caches.Where(Directory.Exists))
             if ((new DirectoryInfo(path).Attributes & FileAttributes.ReparsePoint) != 0)
                 throw new InvalidOperationException("A prepared training cache is a link; no dataset files were deleted.");
-        foreach (var path in files.Where(File.Exists)) File.Delete(path);
-        foreach (var path in caches.Where(Directory.Exists)) Directory.Delete(path, recursive: true);
+        RemoveDataFiles(root, files.Where(File.Exists), caches.Where(Directory.Exists));
+    }
+
+    private static void RemoveDataFiles(string root, IEnumerable<string> files, IEnumerable<string> directories)
+    {
+        var staging = Path.Combine(root, ".qpro-remove-" + Guid.NewGuid().ToString("N"));
+        var entries = files.Select(path => (Path: path, Directory: false))
+            .Concat(directories.Select(path => (Path: path, Directory: true))).ToArray();
+        if (entries.Length == 0) return;
+        var moved = new List<(string Original, string Staged, bool Directory)>();
+        Directory.CreateDirectory(staging);
+        try
+        {
+            foreach (var entry in entries)
+            {
+                var destination = Path.Combine(staging, Path.GetFileName(entry.Path));
+                Move(entry.Path, destination, entry.Directory);
+                moved.Add((entry.Path, destination, entry.Directory));
+            }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            try
+            {
+                foreach (var entry in moved.AsEnumerable().Reverse())
+                    Move(entry.Staged, entry.Original, entry.Directory);
+                Directory.Delete(staging);
+            }
+            catch (Exception rollbackError) when (rollbackError is IOException or UnauthorizedAccessException)
+            {
+                throw new IOException($"Removal could not finish. Check the retained files in {staging}.",
+                    new AggregateException(error, rollbackError));
+            }
+            throw;
+        }
+        try { Directory.Delete(staging, recursive: true); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            throw new IOException($"The selected files were removed from the Hub. Windows could not clear the temporary folder {staging}.", error);
+        }
+
+        static void Move(string source, string destination, bool directory)
+        {
+            if (directory) Directory.Move(source, destination);
+            else File.Move(source, destination);
+        }
     }
 
     private void LoadQueue(ComboBox box, Label status, IReadOnlyList<DatasetInfo> all, string? previous, HashSet<string> trainedSessions)
     {
-        var ready = all.Where(dataset => dataset.Completed && dataset.SampleCount > 0 && !trainedSessions.Contains(Path.GetFileName(dataset.SessionPath))).ToList();
+        var untrained = all.Where(dataset => dataset.Completed && dataset.SampleCount > 0 &&
+            !trainedSessions.Contains(Path.GetFileName(dataset.SessionPath))).ToList();
+        var ready = untrained.Where(HasDatasetLabels).ToList();
+        // ComboBox.Items.Clear does not raise SelectedIndexChanged when it
+        // implicitly discards a selection. Update the bound Train button too.
+        box.SelectedIndex = -1;
         box.Items.Clear();
         foreach (var dataset in ready) box.Items.Add(new DatasetChoice(dataset));
         for (var index = 0; index < box.Items.Count; index++)
@@ -209,9 +295,11 @@ internal sealed partial class HubForm
         }
         if (box.SelectedIndex < 0 && box.Items.Count > 0) box.SelectedIndex = 0;
         var incomplete = all.Count(dataset => !dataset.Completed || dataset.SampleCount == 0);
-        status.Text = ready.Count == 0
-            ? (incomplete > 0 ? $"Queue empty · {incomplete} incomplete" : "Queue empty — record first")
-            : $"{ready.Count} dataset{(ready.Count == 1 ? string.Empty : "s")} ready to train";
+        var missingLabels = untrained.Count - ready.Count;
+        status.Text = ready.Count > 0
+            ? $"{ready.Count} dataset{(ready.Count == 1 ? string.Empty : "s")} ready to train"
+            : missingLabels > 0 ? "Queue empty · native reference labels missing"
+            : incomplete > 0 ? $"Queue empty · {incomplete} incomplete" : "Queue empty — record first";
         status.ForeColor = ready.Count > 0 ? Good : Muted;
     }
 
@@ -220,9 +308,13 @@ internal sealed partial class HubForm
         var node = JsonNode.Parse(File.ReadAllText(sessionPath))?.AsObject()
             ?? throw new InvalidDataException("The dataset session metadata is invalid.");
         node["displayName"] = CleanDisplayName(displayName);
-        var temporary = sessionPath + ".tmp";
-        File.WriteAllText(temporary, node.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-        File.Move(temporary, sessionPath, true);
+        var temporary = sessionPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllText(temporary, node.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            File.Move(temporary, sessionPath, true);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
     private IEnumerable<int> TongueModelVersions()
@@ -292,7 +384,9 @@ internal sealed partial class HubForm
 
     private void RenameSelectedModel()
     {
-        if (_modelList.SelectedItem is not FileChoice model) { MessageBox.Show(this, "Select a tongue model first."); return; }
+        if (!DataActionsAvailable) return;
+        if (_modelList.SelectedItem is not FileChoice model) { DataMessage("Select a tongue model first.", "No model selected"); return; }
+        if (DataChangeBlocked()) return;
         var version = VersionFromPath(model.Primary);
         var current = ModelFriendlyName(version, ReadModelMetadata(version));
         var name = PromptForText("Rename tongue model", "Choose the friendly name shown in the hub. The model files remain paired and unchanged.", current);
@@ -300,80 +394,103 @@ internal sealed partial class HubForm
         var existing = ReadModelMetadata(version);
         var origin = existing?["origin"] is JsonValue originValue && originValue.TryGetValue<string>(out var previousOrigin)
             ? previousOrigin : HubModelMetadata.IsBundledDeveloper(version, existing) ? "bundled developer model" : "renamed local model";
-        WriteModelMetadata(version, name, null, origin);
-        AppendLog($"Renamed tongue model v{version} to “{name}”.");
-        ReloadProfiles();
+        try
+        {
+            WriteModelMetadata(version, name, null, origin);
+            AppendLog($"Renamed tongue model v{version} to “{name}”.");
+            ReloadProfiles();
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { DataMessage(error.Message, "Model rename failed", icon: MessageBoxIcon.Warning); }
     }
 
     private void DeleteSelectedModel()
     {
-        if (_modelList.SelectedItem is not FileChoice model) { MessageBox.Show(this, "Select a tongue model first."); return; }
-        if (LiveTrackingRunning) { MessageBox.Show(this, "Stop live tracking before deleting a model."); return; }
+        if (!DataActionsAvailable) return;
+        if (_modelList.SelectedItem is not FileChoice model) { DataMessage("Select a tongue model first.", "No model selected"); return; }
+        if (DataChangeBlocked()) return;
         var version = VersionFromPath(model.Primary);
         if (HubModelMetadata.IsBundledDeveloper(version, ReadModelMetadata(version)))
         {
-            MessageBox.Show(this, "The bundled developer model is protected so the Hub retains a ready-to-use tongue model. You can export or rename it, but not delete it.", "Bundled model protected");
+            DataMessage("The bundled developer model stays available. You can export or rename it.", "Bundled model protected");
             return;
         }
-        if (MessageBox.Show(this, $"Delete “{model.Label}” from this installation?\n\nThis removes its paired checkpoints and cannot be undone unless you exported it first.", "Delete tongue model", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+        if (DataMessage($"Delete “{model.Label}” from this installation?\n\nThis removes its paired checkpoints and model details.",
+            "Delete tongue model", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
         var models = Path.Combine(_root, "models");
-        foreach (var path in Directory.GetFiles(models, $"qpro-stereo-tongue-v{version}-*")) File.Delete(path);
-        if (File.Exists(ModelMetadataPath(version))) File.Delete(ModelMetadataPath(version));
-        AppendLog($"Deleted tongue model v{version}.");
-        ReloadProfiles();
+        try
+        {
+            if ((new DirectoryInfo(models).Attributes & FileAttributes.ReparsePoint) != 0)
+                throw new IOException("The model folder points outside this copy of Qpro Companion.");
+            var paths = new[] { model.Primary, model.Secondary!, ModelMetadataPath(version) };
+            RemoveDataFiles(_root, paths.Where(File.Exists), []);
+            AppendLog($"Deleted tongue model v{version}.");
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { DataMessage(error.Message, "Model delete failed", icon: MessageBoxIcon.Warning); }
+        finally { ReloadProfiles(); }
     }
 
     private void ExportSelectedModel()
     {
-        if (_modelList.SelectedItem is not FileChoice model) { MessageBox.Show(this, "Select a tongue model first."); return; }
+        if (!DataActionsAvailable) return;
+        if (_modelList.SelectedItem is not FileChoice model) { DataMessage("Select a tongue model first.", "No model selected"); return; }
         var version = VersionFromPath(model.Primary);
         var metadata = ReadModelMetadata(version);
         var displayName = ModelFriendlyName(version, metadata);
-        using var dialog = new SaveFileDialog
-        {
-            Title = "Export tongue model",
-            Filter = "Qpro tongue model (*.qptonguemodel)|*.qptonguemodel",
-            FileName = SafeFileName(displayName) + ".qptonguemodel",
-            AddExtension = true,
-            DefaultExt = "qptonguemodel"
-        };
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var package = SelectModelPackage(export: true, SafeFileName(displayName) + ".qptonguemodel");
+        if (package is null) return;
         try
         {
-            HubModelPackage.Export(dialog.FileName, model.Primary, model.Secondary!, version, displayName, metadata);
-            AppendLog($"Exported “{model.Label}” to {dialog.FileName}.");
+            HubModelPackage.Export(package, model.Primary, model.Secondary!, version, displayName, metadata);
+            AppendLog($"Exported “{model.Label}” to {package}.");
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException)
         {
-            MessageBox.Show(this, error.Message, "Model export failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            DataMessage(error.Message, "Model export failed", icon: MessageBoxIcon.Error);
         }
     }
 
     private void ImportModel()
     {
-        if (LiveTrackingRunning) { MessageBox.Show(this, "Stop live tracking before importing a model."); return; }
-        using var dialog = new OpenFileDialog { Title = "Import tongue model", Filter = "Qpro tongue model (*.qptonguemodel)|*.qptonguemodel", CheckFileExists = true };
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        if (!DataActionsAvailable) return;
+        if (DataChangeBlocked()) return;
+        var package = SelectModelPackage(export: false);
+        if (package is null) return;
+        var fallback = Path.GetFileNameWithoutExtension(package);
         var models = Path.Combine(_root, "models");
         try
         {
             var version = HubModelPackage.NextVersion(models);
-            var manifest = HubModelPackage.Import(dialog.FileName, models, version, packageManifest =>
+            var manifest = HubModelPackage.Import(package, models, version, packageManifest =>
                 HubModelMetadata.Create(version,
-                    CleanDisplayName(packageManifest["displayName"]?.GetValue<string>() ?? Path.GetFileNameWithoutExtension(dialog.FileName)),
+                    CleanDisplayName(packageManifest["displayName"]?.GetValue<string>() ?? fallback),
                     null, "imported package", null, packageManifest));
-            var displayName = manifest["displayName"]?.GetValue<string>() ?? Path.GetFileNameWithoutExtension(dialog.FileName);
+            var displayName = manifest["displayName"]?.GetValue<string>() ?? fallback;
             AppendLog($"Imported “{CleanDisplayName(displayName)}” as local model v{version}.");
             ReloadProfiles();
         }
         catch (Exception error)
         {
-            MessageBox.Show(this, error.Message, "Model import failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            DataMessage(error.Message, "Model import failed", icon: MessageBoxIcon.Error);
         }
+    }
+
+    private string? SelectModelPackage(bool export, string? suggestedName = null)
+    {
+        if (_previewDataInteraction is { } interaction) return interaction.Package(export, suggestedName);
+        using FileDialog dialog = export
+            ? new SaveFileDialog { FileName = suggestedName ?? "tongue-model.qptonguemodel", AddExtension = true, DefaultExt = "qptonguemodel" }
+            : new OpenFileDialog { CheckFileExists = true };
+        dialog.Title = export ? "Export tongue model" : "Import tongue model";
+        dialog.Filter = "Qpro tongue model (*.qptonguemodel)|*.qptonguemodel";
+        return dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileName : null;
     }
 
     private string? PromptForText(string title, string prompt, string initial)
     {
+        if (_previewDataInteraction is { } interaction)
+            return interaction.Text(title, prompt, initial) is { } name ? CleanDisplayName(name) : null;
         using var dialog = new TextPromptDialog(title, prompt, initial, UiFontName, Background, Panel, Raised, Border, Accent);
         return dialog.ShowDialog(this) == DialogResult.OK ? CleanDisplayName(dialog.Value) : null;
     }
