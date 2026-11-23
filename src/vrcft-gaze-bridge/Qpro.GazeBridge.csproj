@@ -15,6 +15,7 @@
   </Target>
   <ItemGroup>
     <Compile Include="../shared/CheekTrackingSession.cs" Link="CheekTrackingSession.cs" />
+    <Compile Include="../shared/FaceOutputOwnership.cs" Link="FaceOutputOwnership.cs" />
     <Reference Include="VRCFaceTracking.Core">
       <HintPath>$(VrcftInstallDir)\VRCFaceTracking.Core.dll</HintPath>
       <Private>false</Private>

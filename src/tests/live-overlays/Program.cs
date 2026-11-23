@@ -24,6 +24,38 @@ catch (Exception error)
 
 void RunChecks()
 {
+    var brows = new[] { UnifiedExpressions.BrowPinchLeft, UnifiedExpressions.BrowLowererLeft,
+        UnifiedExpressions.BrowPinchRight, UnifiedExpressions.BrowLowererRight, UnifiedExpressions.BrowInnerUpLeft,
+        UnifiedExpressions.BrowInnerUpRight, UnifiedExpressions.BrowOuterUpLeft, UnifiedExpressions.BrowOuterUpRight };
+    foreach (bool mapLost in new[] { false, true })
+    foreach (bool eyeSlot in new[] { false, true })
+    {
+        using var f = new Fixture();
+        f.SetSlotOwnership(eyes: eyeSlot, mouth: !eyeSlot);
+        f.Native(faceFlags: 1, eyeFollowing: true, eyesValid: true, brow: .3f);
+        f.Module.Update();
+        foreach (var shape in brows) Near(Tongue(shape), .3f, "a valid upper face supplies native brows for either slot");
+        // A second provider can supply a different value for one of the shapes.
+        UnifiedTracking.Data.Shapes[(int)brows[0]].Weight = .7f;
+        if (mapLost) f.LoseMap();
+        else f.Native(faceFlags: 1, eyeFollowing: false, eyesValid: true, brow: .9f);
+        f.Module.Update();
+        foreach (var shape in brows.Skip(1)) Near(Tongue(shape), 0, "upper source loss clears each previously written brow");
+        Near(Tongue(brows[0]), .7f, "source loss preserves another provider's current brow");
+        if (!mapLost && !eyeSlot) Near(Tongue(UnifiedExpressions.TongueOut), .85f, "upper face loss preserves available lower-face tracking");
+        UnifiedTracking.Data.Shapes[(int)brows[1]].Weight = .6f;
+        f.Module.Update();
+        Near(Tongue(brows[1]), .6f, "an already released brow is not repeatedly neutralized");
+        f.Native(faceFlags: 1, eyeFollowing: true, eyesValid: true, brow: .2f);
+        f.Module.Update();
+        Near(Tongue(brows[1]), .2f, "upper face recovery resumes native brow output");
+        f.Module.Status = ModuleState.Idle;
+        f.Module.Update();
+        f.Module.Status = ModuleState.Active;
+        f.Native(faceFlags: 1, eyeFollowing: false, eyesValid: true);
+        f.Module.Update();
+        Near(Tongue(brows[1]), .2f, "reactivation with no sample does not clear a previous owner's brow");
+    }
     foreach (string nativeStyle in new[] { "Off", "Strong" })
     {
         foreach ((float left, float right, float strongLeft, float strongRight) in new[]
@@ -242,6 +274,7 @@ void SetSentinels()
     UnifiedTracking.Data.Eye.Right.Gaze.x = .234f;
     UnifiedTracking.Data.Eye.Left.PupilDiameter_MM = 4.321f;
     UnifiedTracking.Data.Shapes[(int)UnifiedExpressions.TongueOut].Weight = .345f;
+    UnifiedTracking.Data.Shapes[(int)UnifiedExpressions.BrowOuterUpRight].Weight = .456f;
 }
 void CheckSentinels(string label)
 {
@@ -249,6 +282,7 @@ void CheckSentinels(string label)
     Near(UnifiedTracking.Data.Eye.Right.Gaze.x, .234f, label + ": right gaze");
     Near(UnifiedTracking.Data.Eye.Left.PupilDiameter_MM, 4.321f, label + ": pupil");
     Near(Tongue(UnifiedExpressions.TongueOut), .345f, label + ": tongue");
+    Near(Tongue(UnifiedExpressions.BrowOuterUpRight), .456f, label + ": brow");
 }
 
 sealed class Fixture : IDisposable
@@ -279,6 +313,7 @@ sealed class Fixture : IDisposable
         SetCheekSession(active: true);
         ConfigureCheekStyle("Off");
         Set("_nextCheekSuckModeCheckTick", long.MaxValue);
+        Set("_nextEyebrowSettingsCheckTick", long.MaxValue);
         Set("_wasActive", true);
         SetSlotOwnership(eyes: true, mouth: true);
         Module.Status = ModuleState.Active;
@@ -308,7 +343,7 @@ sealed class Fixture : IDisposable
     }
 
     internal void Native(byte faceFlags, bool eyeFollowing, bool eyesValid,
-        float leftCheek = 0f, float rightCheek = 0f)
+        float leftCheek = 0f, float rightCheek = 0f, float brow = 0f)
     {
         if (_view is null)
         {
@@ -320,6 +355,7 @@ sealed class Fixture : IDisposable
         state[0] = faceFlags;
         state[1] = (byte)(eyeFollowing ? 1 : 0);
         state[292] = state[293] = (byte)(eyesValid ? 1 : 0);
+        foreach (int index in new[] { 0, 1, 22, 23, 57, 58 }) WriteFloat(state, 4 + index * 4, brow);
         WriteFloat(state, 4 + 2 * 4, leftCheek);
         WriteFloat(state, 4 + 3 * 4, rightCheek);
         WriteFloat(state, 4 + 63 * 4, .25f);

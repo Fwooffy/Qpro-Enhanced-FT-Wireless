@@ -99,10 +99,15 @@ public sealed class TrackingModule : ExtTrackingModule
     private bool _cheekSuckOutputApplied;
     private readonly SmirkTracker _smirkTracker = new();
     private EyebrowSettings _eyebrowSettings = EyebrowPreference.Default;
+    private EyebrowWeights? _lastBrowOutput;
     private long _nextEyebrowSettingsCheckTick;
     private readonly Func<long> _tickClock;
     private readonly string _mapName;
     private bool _wasActive;
+    private readonly object _outputGate = new();
+    private IDisposable? _outputLease;
+    private bool _companionBackup;
+    private bool RawBackup => _companionBackup && !_cheekSessionActive;
     private bool _heartbeatEnabled;
     private ModuleHeartbeatPublisher? _heartbeat;
     private long _nextHeartbeatTick;
@@ -137,6 +142,39 @@ public sealed class TrackingModule : ExtTrackingModule
     public override (bool eyeSuccess, bool expressionSuccess) Initialize(
         bool eyeAvailable,
         bool expressionAvailable)
+        => InitializeOutput(eyeAvailable, expressionAvailable, null, OpenInputs);
+
+    internal (bool eyeSuccess, bool expressionSuccess) InitializeOutput(bool eyeAvailable, bool expressionAvailable,
+        string? configDirectory, Func<bool, bool, (bool eyeSuccess, bool expressionSuccess)> openInputs)
+    {
+        lock (_outputGate)
+        {
+            if (_outputLease is not null) return (_needsEye, _needsExpression);
+            _needsEye = _needsExpression = false;
+            if (!eyeAvailable && !expressionAvailable) return (false, false);
+            _outputLease = FaceOutputOwnership.TryAcquireModule(out var route, configDirectory);
+            if (_outputLease is null)
+            {
+                Logger.LogInformation("Face output is assigned to Companion or is unavailable. The module did not open tracking inputs.");
+                return (false, false);
+            }
+            _companionBackup = route == FaceOutputRoute.Vrcft;
+            bool opened = false;
+            try
+            {
+                var result = openInputs(eyeAvailable, expressionAvailable);
+                opened = result.eyeSuccess || result.expressionSuccess;
+                (_needsEye, _needsExpression) = result;
+                return result;
+            }
+            finally
+            {
+                if (!opened) Teardown();
+            }
+        }
+    }
+
+    private (bool eyeSuccess, bool expressionSuccess) OpenInputs(bool eyeAvailable, bool expressionAvailable)
     {
         _needsEye = eyeAvailable;
         _needsExpression = expressionAvailable;
@@ -225,6 +263,14 @@ public sealed class TrackingModule : ExtTrackingModule
 
     public override void Update()
     {
+        // Teardown must finish the last slot write before another process can
+        // acquire the owner file and begin sending frames.
+        lock (_outputGate) UpdateInputs();
+    }
+
+    private void UpdateInputs()
+    {
+        if (!_needsEye && !_needsExpression) { _lastBrowOutput = null; Thread.Sleep(10); return; }
         if (Status != ModuleState.Active)
         {
             DiscardInactivePackets();
@@ -279,8 +325,7 @@ public sealed class TrackingModule : ExtTrackingModule
 
         if (_needsEye)
             UpdateEyes(expressions);
-        if ((_needsEye || _needsExpression) && _second[1] != 0)
-            UpdateBrowExpressions(expressions);
+        UpdateBrowExpressions(expressions, available: _second[1] != 0);
         if (_needsExpression)
         {
             if (lowerFaceAvailable)
@@ -298,7 +343,22 @@ public sealed class TrackingModule : ExtTrackingModule
 
     public override void Teardown()
     {
+        lock (_outputGate)
+        {
+            _needsEye = _needsExpression = false;
+            try { CloseInputs(); }
+            finally
+            {
+                _outputLease?.Dispose();
+                _outputLease = null;
+            }
+        }
+    }
+
+    private void CloseInputs()
+    {
         PublishHeartbeat("closed", force: true);
+        _heartbeat = null;
         ResetOverlayState();
         _wasActive = false;
         _smirkTracker.Reset();
@@ -680,22 +740,39 @@ public sealed class TrackingModule : ExtTrackingModule
         Set(3, values[59]); Set(2, values[60]);
     }
 
-    private void UpdateBrowExpressions(ReadOnlySpan<float> values)
+    private void UpdateBrowExpressions(ReadOnlySpan<float> values, bool available = true)
     {
         // Brow blendshapes are present even when VRCFT owns only the face
         // expression slot. Preserve Virtual Desktop's separate left/right
         // inner, outer, and lowering values in either module configuration.
-        RefreshEyebrowSettings();
-        EyebrowWeights brow = EyebrowMapping.FromFaceWeights(
-            values, _eyebrowSettings.Enabled, _eyebrowSettings.Sensitivity);
-        Set((int)UnifiedExpressions.BrowPinchLeft, brow.LowerLeft);
-        Set((int)UnifiedExpressions.BrowLowererLeft, brow.LowerLeft);
-        Set((int)UnifiedExpressions.BrowPinchRight, brow.LowerRight);
-        Set((int)UnifiedExpressions.BrowLowererRight, brow.LowerRight);
-        Set((int)UnifiedExpressions.BrowInnerUpLeft, brow.InnerLeft);
-        Set((int)UnifiedExpressions.BrowInnerUpRight, brow.InnerRight);
-        Set((int)UnifiedExpressions.BrowOuterUpLeft, brow.OuterLeft);
-        Set((int)UnifiedExpressions.BrowOuterUpRight, brow.OuterRight);
+        EyebrowWeights brow;
+        if (available)
+        {
+            if (!RawBackup) RefreshEyebrowSettings();
+            brow = EyebrowMapping.FromFaceWeights(values, !RawBackup && _eyebrowSettings.Enabled, _eyebrowSettings.Sensitivity);
+            _lastBrowOutput = brow;
+        }
+        else
+        {
+            if (_lastBrowOutput is not { } previous) return;
+            brow = previous;
+            _lastBrowOutput = null;
+        }
+        Apply(UnifiedExpressions.BrowPinchLeft, brow.LowerLeft);
+        Apply(UnifiedExpressions.BrowLowererLeft, brow.LowerLeft);
+        Apply(UnifiedExpressions.BrowPinchRight, brow.LowerRight);
+        Apply(UnifiedExpressions.BrowLowererRight, brow.LowerRight);
+        Apply(UnifiedExpressions.BrowInnerUpLeft, brow.InnerLeft);
+        Apply(UnifiedExpressions.BrowInnerUpRight, brow.InnerRight);
+        Apply(UnifiedExpressions.BrowOuterUpLeft, brow.OuterLeft);
+        Apply(UnifiedExpressions.BrowOuterUpRight, brow.OuterRight);
+
+        void Apply(UnifiedExpressions expression, float value)
+        {
+            if (available) Set((int)expression, value);
+            // A different VRCFT provider may have replaced this shape since our last sample.
+            else Interlocked.CompareExchange(ref UnifiedTracking.Data.Shapes[(int)expression].Weight, 0f, value);
+        }
     }
 
     private void UpdateMouth(ReadOnlySpan<float> values, byte faceFlags, NativeFaceSource source,
@@ -707,7 +784,7 @@ public sealed class TrackingModule : ExtTrackingModule
             foreach (int target in targets)
                 Set(target, values[expressionIndex]);
 
-        SmirkWeights smile = _smirkTracker.Update(values, frameTickMs);
+        SmirkWeights smile = RawBackup ? new(values[32], values[33]) : _smirkTracker.Update(values, frameTickMs);
         Set((int)UnifiedExpressions.MouthCornerPullLeft, smile.Left);
         Set((int)UnifiedExpressions.MouthCornerSlantLeft, smile.Left);
         Set((int)UnifiedExpressions.MouthCornerPullRight, smile.Right);
@@ -767,6 +844,7 @@ public sealed class TrackingModule : ExtTrackingModule
 
     private void UpdateUnavailableSource()
     {
+        UpdateBrowExpressions(default, available: false);
         if (_needsEye)
         {
             long now = _tickClock();
@@ -832,6 +910,7 @@ public sealed class TrackingModule : ExtTrackingModule
 
     private bool DiscardInactivePackets()
     {
+        _lastBrowOutput = null;
         bool drained = LocalDatagrams.DiscardPending(_gazeSocket);
         drained &= LocalDatagrams.DiscardPending(_tongueSocket);
         drained &= LocalDatagrams.DiscardPending(_pupilSocket);
@@ -852,6 +931,7 @@ public sealed class TrackingModule : ExtTrackingModule
 
     private void ResetOverlayState()
     {
+        _lastBrowOutput = null;
         foreach (LiveOverlayState overlay in OverlayStates()) overlay.Reset();
         _cheekPuffNativeOutputApplied = false;
         _cheekSuckOutputApplied = false;
@@ -884,6 +964,7 @@ public sealed class TrackingModule : ExtTrackingModule
         bool active = _cheekSessionProbe();
         if (active == _cheekSessionActive) return;
         _cheekSessionActive = active;
+        if (_companionBackup) _smirkTracker.Reset();
         _cheekPuffTracker.Reset();
         _cheekSuckTracker.Reset();
         _nextCheekPuffModeCheckTick = _nextCheekSuckModeCheckTick = 0;

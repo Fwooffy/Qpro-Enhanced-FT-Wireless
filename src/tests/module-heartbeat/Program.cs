@@ -14,6 +14,7 @@ using Qpro.GazeBridge;
 using QproFaceTracking.Hub;
 using VRCFaceTracking.Core.Library;
 
+if (FaceOutputOwnershipFixtures.RunChild(args)) return;
 var checks = 0;
 const string Hash = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 void Check(bool condition, string message) { checks++; if (!condition) throw new Exception(message); }
@@ -132,6 +133,17 @@ using (var fixture = new ModuleFixture(false))
     Check(View(failed, fixture.Time).State == "failed" && View(failed, fixture.Time).Detail.Contains("VRCFaceTracking's log"),
         "Module initialization failure directs to the owning app log");
     var waiting = observation with { Snapshot = observation.Snapshot with { NativeState = "unavailable" } };
+    Check(HubModuleHeartbeat.BackupInputProblem(waiting, fixture.Time, true, false) is null,
+        "An active eyes-only backup can accept pupils before a first pupil packet.");
+    Check(HubModuleHeartbeat.BackupInputProblem(waiting, fixture.Time, false, true)?.Contains("expression tracking") == true,
+        "An eyes-only backup must explain why tongue capture cannot start.");
+    var faceOnly = waiting with { Snapshot = waiting.Snapshot! with { OwnsFace = true, OwnsEyes = false } };
+    Check(HubModuleHeartbeat.BackupInputProblem(faceOnly, fixture.Time, true, false)?.Contains("eye tracking") == true,
+        "A face-only backup must explain why gaze cannot start.");
+    Check(HubModuleHeartbeat.BackupInputProblem(faceOnly, fixture.Time + HubModuleHeartbeat.LeaseMs + 1, false, true) is not null,
+        "A stale heartbeat cannot authorize camera output even if the host process is running.");
+    Check(HubModuleHeartbeat.BackupInputProblem(inactive, fixture.Time, false, false) is not null,
+        "A loaded, inactive module cannot receive backup output.");
     Check(View(waiting, fixture.Time).State == "waiting" && View(waiting, fixture.Time).Detail.Contains("Connect Virtual Desktop"),
         "Waiting native VD output directs to the selected source");
 }
@@ -184,7 +196,8 @@ using (var process = Process.GetCurrentProcess())
     }
     finally { File.Delete(path); }
 }
-Console.WriteLine($"PASS: {checks} module-heartbeat protocol, stale/nonmatching/closed, bounded-writer and production-source checks.");
+await FaceOutputOwnershipFixtures.Run(Check);
+Console.WriteLine($"PASS: {checks} module-heartbeat, output ownership, and production-source checks.");
 
 static HeartbeatChannel[] Channels(bool applied) =>
  [new("gaze-left", -1, 250, false), new("gaze-right", -1, 250, false), new("tongue", applied ? 0 : -1, 300, applied),
@@ -241,10 +254,13 @@ sealed class ModuleFixture : IDisposable
         _sender.Send(packet, packet.Length, (IPEndPoint)_tongue.Client.LocalEndPoint!);
         if (!_tongue.Client.Poll(1_000_000, SelectMode.SelectRead)) throw new Exception("Offline loopback packet did not arrive.");
     }
-    internal void Native()
+    internal void Native(float browLeft = 0, float smileLeft = 0, float smileRight = 0)
     {
         _map = MemoryMappedFile.CreateNew(null, 360); _view = _map.CreateViewAccessor();
         var bytes = new byte[360]; bytes[0] = 3; bytes[1] = bytes[292] = bytes[293] = 1;
+        BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(4, 4), browLeft);
+        BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(4 + 32 * 4, 4), smileLeft);
+        BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(4 + 33 * 4, 4), smileRight);
         _view.WriteArray(0, bytes, 0, bytes.Length); Set("_map", _map); Set("_view", _view);
     }
     public void Dispose() { Module.Teardown(); _sender.Dispose(); _view?.Dispose(); _map?.Dispose(); }

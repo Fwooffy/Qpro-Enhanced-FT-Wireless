@@ -1,0 +1,17 @@
+<Project>
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)../shared/FaceOutputOwnership.cs" Link="Shared/FaceOutputOwnership.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)DirectVrchat/*.cs" Link="Hub/DirectVrchat/%(Filename)%(Extension)"
+             Condition="'$(MSBuildProjectName)' != 'QproFaceTracking.Hub'" />
+    <Compile Include="$(MSBuildThisFileDirectory)../vd-label-bridge/VirtualDesktopFaceMap.cs;
+                      $(MSBuildThisFileDirectory)../vrcft-gaze-bridge/SteamOscSource.cs;
+                      $(MSBuildThisFileDirectory)../vrcft-gaze-bridge/LiveOverlayState.cs;
+                      $(MSBuildThisFileDirectory)../vrcft-gaze-bridge/SmirkMapping.cs;
+                      $(MSBuildThisFileDirectory)../vrcft-gaze-bridge/CheekPuffMapping.cs;
+                      $(MSBuildThisFileDirectory)../vrcft-gaze-bridge/CheekSuckMapping.cs;
+                      $(MSBuildThisFileDirectory)../vrcft-gaze-bridge/NativeTongueMapping.cs;
+                      $(MSBuildThisFileDirectory)../vrcft-gaze-bridge/NativeLipMapping.cs;
+                      $(MSBuildThisFileDirectory)../vrcft-gaze-bridge/EyebrowMapping.cs"
+             Link="DirectVrchat/%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

@@ -10,9 +10,9 @@
   "AuthorName": "Fwooffy",
   "ModuleName": "Qpro Companion \u2014 Virtual Desktop",
   "ModuleDescription": "Quest Pro face tracking with opt-in Qpro gaze, tongue, cheek and pupil outputs. The Qpro Companion installer creates the selected source card.",
-  "UsageInstructions": "Select Virtual Desktop or Steam Link in Qpro Companion and install its matching module in First-time setup with VRCFaceTracking closed.",
-  "DownloadUrl": "https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases",
-  "ModulePageUrl": "https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless",
+  "UsageInstructions": "In Qpro Companion, open First-time setup, select VRCFaceTracking backup and your streaming app, and install the matching module with VRCFaceTracking closed. Reopen VRCFaceTracking to load it.",
+  "DownloadUrl": "https://github.com/Fwooffy/Qpro-Companion/releases",
+  "ModulePageUrl": "https://github.com/Fwooffy/Qpro-Companion",
   "DllFileName": "Qpro.GazeBridge.dll",
   "FileHash": null
 }
