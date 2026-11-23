@@ -77,6 +77,8 @@ class LabelFailureTests(unittest.TestCase):
         recorder.last_sample_monotonic_ns = time.monotonic_ns()
         recorder.sample_count = 20
         recorder.schema_names = ["TongueOut"]
+        recorder._recent_lock = threading.Lock()
+        recorder._recent_samples = collections.deque([{"faceFlags": 1, "values": [0.0]}])
         recorder.source_change_sequence, recorder.source_unchanged_ms = 10, 0.0
         self.assertTrue(recorder.manual_tongue_reference_ready())
         self.assertTrue(recorder.source_is_live())
@@ -163,6 +165,46 @@ class LabelFailureTests(unittest.TestCase):
 
 
 class LabelCaptureTests(unittest.TestCase):
+    def test_direct_labels_require_selected_source_and_its_single_schema_sender(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as resources:
+            path = Path(directory) / "labels.qplabel.jsonl"
+            recorder = LabelSidecarRecorder(path, port=0, expected_source="SteamLink")
+            resources.callback(recorder.close)
+            endpoint = recorder._socket.getsockname()
+            sender = resources.enter_context(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+            stray = resources.enter_context(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+            schema = {"v": 1, "type": "schema", "names": ["TongueOut"]}
+            sample = {"v": 1, "type": "sample", "sequence": 1, "qpc": 1,
+                      "qpcFrequency": 1, "utcUnixMs": 1, "faceFlags": 1, "values": [0.75]}
+            for sock, message in (
+                (stray, {**schema, "trackingSource": "VirtualDesktop"}),
+                (stray, {**sample, "trackingSource": "VirtualDesktop"}),
+                (sender, {**sample, "trackingSource": "SteamLink"}),
+                (sender, {**schema, "trackingSource": "SteamLink"}),
+                (stray, {**schema, "trackingSource": "SteamLink"}),
+                (stray, {**sample, "trackingSource": "SteamLink"}),
+                (sender, {**schema, "trackingSource": "SteamLink", "names": ["JawDrop"]}),
+                (sender, {**sample, "trackingSource": "SteamLink", "nativeTongueAgeMs": -1}),
+                (sender, sample),
+                (sender, {**sample, "trackingSource": "SteamLink",
+                          "nativeTongueValid": True, "nativeTongueAgeMs": 22,
+                          "leftEyeIsValid": True, "leftEyeOrientation": [0.0, 0.1, 0.0, 0.9]}),
+            ):
+                sock.sendto(json.dumps(message).encode(), endpoint)
+            deadline = time.monotonic() + 2
+            while (recorder.sample_count < 1 or recorder.invalid_count < 8) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            recorder.close()
+            summary = inspect_sidecar(path)
+            self.assertEqual((summary["schemas"], summary["samples"], recorder.invalid_count), (1, 1, 8))
+            record = recorder.nearest_sample(time.monotonic_ns())
+            self.assertEqual(native_tongue_out(record, recorder.schema_names), 0.75)
+            self.assertEqual(record["nativeTongueAgeMs"], 22.0)
+            self.assertIs(record["nativeTongueValid"], True)
+            self.assertIs(record["leftEyeIsValid"], True)
+            self.assertIs(record["rightEyeIsValid"], False)
+            self.assertEqual(record["leftEyeOrientation"], [0.0, 0.1, 0.0, 0.9])
+
     def test_records_schema_and_timestamped_sample(self) -> None:
         probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         probe.bind(("127.0.0.1", 0))
@@ -250,10 +292,15 @@ class LabelCaptureTests(unittest.TestCase):
                 deadline = time.monotonic() + 1.0
                 while recorder.sample_count < 2 and time.monotonic() < deadline:
                     time.sleep(0.01)
-                nearest = recorder.nearest_sample(time.monotonic_ns())
-                self.assertNotIn("trackingSource", nearest)
+                recorder.close()
+                # Windows can timestamp both datagrams on the same monotonic
+                # tick. Inspect the actual second record to test source tags.
+                records = [json.loads(line) for line in (Path(directory) / "steam.jsonl").read_text().splitlines()]
+                samples = [record for record in records if record["type"] == "sample"]
+                self.assertEqual(len(samples), 2)
+                self.assertNotIn("trackingSource", samples[1])
                 with self.assertRaisesRegex(ValueError, "TongueOut layout is ambiguous"):
-                    native_tongue_out(nearest, recorder.schema_names)
+                    native_tongue_out(samples[1], recorder.schema_names)
             finally:
                 recorder.close()
                 sender.close()
@@ -316,6 +363,12 @@ class NearestLabelSampleTests(unittest.TestCase):
                     self.assertEqual(result, expected)
                     self.assertIsNot(result, expected)
                     self.assertIs(result["values"], expected["values"])
+
+    def test_maximum_distance_rejects_stale_and_too_distant_future_samples(self):
+        recorder = self.recorder([1_100_000_000])
+        self.assertIsNotNone(recorder.nearest_sample(1_000_000_000, maximum_distance_ms=100))
+        self.assertIsNone(recorder.nearest_sample(999_999_999, maximum_distance_ms=100))
+        self.assertIsNone(recorder.nearest_sample(1_200_000_001, maximum_distance_ms=100))
 
 
 class NativeTongueLayoutTests(unittest.TestCase):

@@ -58,13 +58,22 @@ internal sealed class SteamOscSource : IDisposable
     private long _lastCombinedGazeTick;
     private float _combinedGazeX;
     private float _combinedGazeY;
+    private (float X, float Y, float Z) _combinedGazePoint;
 
     internal SteamOscSource(int port = DefaultPort)
     {
         _socket = new UdpClient(AddressFamily.InterNetwork);
-        _socket.Client.ExclusiveAddressUse = true;
-        _socket.Client.Bind(new IPEndPoint(IPAddress.Loopback, port));
-        _socket.Client.Blocking = false;
+        try
+        {
+            _socket.Client.ExclusiveAddressUse = true;
+            _socket.Client.Bind(new IPEndPoint(IPAddress.Loopback, port));
+            _socket.Client.Blocking = false;
+        }
+        catch
+        {
+            _socket.Dispose();
+            throw;
+        }
     }
 
     internal ReadOnlySpan<float> Expressions => _expressions;
@@ -82,6 +91,8 @@ internal sealed class SteamOscSource : IDisposable
     internal float RightOpenness => CalculateOpenness(_expressions[13], _expressions[29]);
 
     internal bool HasFreshFace(long now, long maxAgeMs = DefaultFreshMs) => IsFresh(LastFaceTick, now, maxAgeMs);
+    internal long? ExpressionAge(int index, long now) =>
+        IsFresh(_expressionTicks[index], now, DefaultFreshMs) ? now - _expressionTicks[index] : null;
     internal bool HasFreshEye(long now, long maxAgeMs = DefaultFreshMs) => IsFresh(LastEyeTick, now, maxAgeMs);
     internal bool HasFreshLowerFaceCapability(long now, long maxAgeMs = DefaultFreshMs) =>
         IsFresh(LastLowerFaceCapabilityTick, now, maxAgeMs);
@@ -102,7 +113,9 @@ internal sealed class SteamOscSource : IDisposable
         return count;
     }
 
-    internal void Poll()
+    internal void Poll() => Poll(Environment.TickCount64);
+
+    internal void Poll(long now)
     {
         for (int i = 0; i < MaxDatagramsPerPoll && _socket.Client.Poll(0, SelectMode.SelectRead); i++)
         {
@@ -122,12 +135,12 @@ internal sealed class SteamOscSource : IDisposable
             if (!IPAddress.IsLoopback(sender.Address) || datagram.Length > MaxDatagramBytes)
                 continue;
             ReceivedDatagrams++;
-            if (ParseDatagram(datagram, Environment.TickCount64))
+            if (ParseDatagram(datagram, now))
                 ParsedDatagrams++;
             else
                 RejectedDatagrams++;
         }
-        ExpireWeights(Environment.TickCount64);
+        ExpireWeights(now);
     }
 
     internal bool DiscardPending()
@@ -144,10 +157,15 @@ internal sealed class SteamOscSource : IDisposable
         return drained;
     }
 
-    internal bool TryGetCombinedGaze(long now, out float x, out float y, long maxAgeMs = DefaultFreshMs)
+    internal bool TryGetCombinedGaze(long now, out float x, out float y, long maxAgeMs = DefaultFreshMs) =>
+        TryGetCombinedGaze(now, out x, out y, out _, maxAgeMs);
+
+    internal bool TryGetCombinedGaze(long now, out float x, out float y,
+        out (float X, float Y, float Z) point, long maxAgeMs = DefaultFreshMs)
     {
         x = _combinedGazeX;
         y = _combinedGazeY;
+        point = _combinedGazePoint;
         return IsFresh(_lastCombinedGazeTick, now, maxAgeMs);
     }
 
@@ -284,6 +302,7 @@ internal sealed class SteamOscSource : IDisposable
                 return;
             _combinedGazeX = MathF.Atan2(values[0], -values[2]);
             _combinedGazeY = MathF.Atan2(values[1], -values[2]);
+            _combinedGazePoint = (values[0], values[1], values[2]);
             _lastCombinedGazeTick = LastGazeTick = tick;
             return;
         }

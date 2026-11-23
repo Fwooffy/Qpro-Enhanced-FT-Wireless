@@ -39,6 +39,14 @@ class NativeTongueReferenceTests(unittest.TestCase):
         self.assertEqual(_native_tongue_reference(self.sample(), ["JawDrop"], self.now),
                          (0, "unavailable"))
 
+    def test_fresh_forwarding_does_not_extend_measured_tongue_age(self):
+        recent = {**self.sample(age_ms=50), "nativeTongueAgeMs": 250, "nativeTongueValid": True}
+        self.assertEqual(_native_tongue_reference(recent, self.names, self.now), (0.75, "available"))
+        old = {**recent, "nativeTongueAgeMs": 251}
+        self.assertEqual(_native_tongue_reference(old, self.names, self.now), (0.0, "stale"))
+        invalid = {**recent, "nativeTongueValid": False}
+        self.assertEqual(_native_tongue_reference(invalid, self.names, self.now), (0.0, "invalid"))
+
     def test_invalid_lower_face_and_values_are_rejected(self):
         samples = [self.sample(flags=0), self.sample(flags=2), self.sample(flags=True),
                    self.sample(value=float("nan")), self.sample(value=float("inf")),

@@ -436,7 +436,7 @@ class TongueStillCaptureSession:
         )
         status = (
             "FACTORY PACKETS READY" if labels_ready
-            else "WAITING FOR VRCFT FACTORY PACKETS"
+            else "WAITING FOR NATIVE TONGUE REFERENCE"
         )
         cv2.putText(image, status, (760, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.46,
                     (80, 245, 120) if labels_ready else (80, 80, 255), 1, cv2.LINE_AA)

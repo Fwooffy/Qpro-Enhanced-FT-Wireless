@@ -52,6 +52,8 @@ def native_tongue_out(
     flags = sample.get("faceFlags", 1)
     if not isinstance(flags, int) or isinstance(flags, bool) or not flags & 1:
         return None
+    if sample.get("nativeTongueValid", True) is not True:
+        return None
     declared_source = sample.get("trackingSource")
     if declared_source is not None and declared_source not in TRACKING_SOURCES:
         raise ValueError("The factory tongue sample has an unsupported trackingSource")
@@ -67,15 +69,15 @@ def native_tongue_out(
             "does not identify Virtual Desktop or Steam Link. Regenerate its "
             "cache with --tracking-source VirtualDesktop or --tracking-source "
             "SteamLink, choosing the app used for that recording. For a new "
-            "capture, update the matching Qpro module and record again."
+            "capture, record through the current Qpro Companion."
         )
     if flags & 2 and source == "VirtualDesktop":
         if (len(names) != 70 or tuple(names[63:]) != _STANDARD_TONGUE_CHANNELS
                 or len(set(names)) != 70):
             raise ValueError(
                 "The alternate Virtual Desktop tongue layout needs the full "
-                "70-channel factory schema. Restart the matching Qpro module "
-                "and record the capture again."
+                "70-channel factory schema. Restart the selected face tracking "
+                "source in Qpro Companion and record the capture again."
             )
         index = 63
     else:
@@ -95,7 +97,12 @@ def native_tongue_out(
 
 
 class LabelSidecarRecorder:
-    def __init__(self, path: str | Path | None, port: int = 27274) -> None:
+    def __init__(
+        self, path: str | Path | None, port: int = 27274, *,
+        expected_source: str | None = None,
+    ) -> None:
+        if expected_source is not None and expected_source not in TRACKING_SOURCES:
+            raise ValueError(f"Unsupported native label source: {expected_source}")
         self.path = Path(path).resolve() if path is not None else None
         if self.path is not None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -104,6 +111,8 @@ class LabelSidecarRecorder:
         self.invalid_count = 0
         self.schema_names: list[str] = []
         self.schema_tracking_source: str | None = None
+        self.expected_source = expected_source
+        self._schema_sender: tuple[str, int] | None = None
         self.last_sample_monotonic_ns: int | None = None
         self.source_change_sequence = 0
         self.source_unchanged_ms: float | None = None
@@ -137,7 +146,15 @@ class LabelSidecarRecorder:
 
     def _initialize_receiver(self, port: int) -> None:
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._socket.bind(("127.0.0.1", port))
+        try:
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            self._socket.bind(("127.0.0.1", port))
+        except OSError as error:
+            raise OSError(
+                f"Could not listen for native tracking labels on UDP port {port}. "
+                f"Close other Qpro capture or preview windows and retry. ({error})"
+            ) from error
         self._socket.settimeout(0.2)
         self._running = True
         self._write(
@@ -151,7 +168,7 @@ class LabelSidecarRecorder:
         )
         self._thread = threading.Thread(
             target=self._run_receive_loop,
-            name="vrcft-label-receiver",
+            name="qpro-label-receiver",
             daemon=True,
         )
         self._thread.start()
@@ -201,6 +218,14 @@ class LabelSidecarRecorder:
                 if not isinstance(message, dict) or message.get("v") != 1:
                     raise ValueError("unsupported message")
                 message_type = message.get("type")
+                source = message.get("trackingSource")
+                if source is not None and source not in TRACKING_SOURCES:
+                    raise ValueError("invalid tracking source")
+                if self.expected_source is not None and (
+                    source != self.expected_source
+                    or (self._schema_sender is not None and address != self._schema_sender)
+                ):
+                    raise ValueError("unexpected label producer")
                 if message_type == "schema":
                     names = message.get("names")
                     if (not isinstance(names, list) or not names
@@ -208,9 +233,10 @@ class LabelSidecarRecorder:
                             or any(not isinstance(name, str) or not name
                                    for name in names)):
                         raise ValueError("invalid schema")
-                    source = message.get("trackingSource")
-                    if source is not None and source not in TRACKING_SOURCES:
-                        raise ValueError("invalid tracking source")
+                    if self.expected_source is not None:
+                        if self._schema_sender is not None and names != self.schema_names:
+                            raise ValueError("native label schema changed during capture")
+                        self._schema_sender = address
                     self.schema_names = names
                     self.schema_tracking_source = source
                     self._write(
@@ -225,9 +251,8 @@ class LabelSidecarRecorder:
                 elif message_type == "sample":
                     # A source-tagged schema cannot certify an untagged packet
                     # from another producer sharing this localhost port.
-                    source = message.get("trackingSource")
-                    if source is not None and source not in TRACKING_SOURCES:
-                        raise ValueError("invalid tracking source")
+                    if self.expected_source is not None and self._schema_sender is None:
+                        raise ValueError("sample arrived before the native label schema")
                     if (source is not None and self.schema_tracking_source is not None
                             and source != self.schema_tracking_source):
                         raise ValueError("sample source does not match schema")
@@ -251,7 +276,8 @@ class LabelSidecarRecorder:
                     source_unchanged_ms = float(
                         message.get("sourceUnchangedMs", -1.0)
                     )
-                    if source_change_sequence < 0 or source_unchanged_ms < -1.0:
+                    if (source_change_sequence < 0 or not math.isfinite(source_unchanged_ms)
+                            or source_unchanged_ms < -1.0):
                         raise ValueError("invalid source freshness")
                     sample_record: dict[str, object] = {
                         "type": "sample",
@@ -278,6 +304,16 @@ class LabelSidecarRecorder:
                             message.get("rightEyeConfidence", 0.0)
                         ),
                     }
+                    if "nativeTongueValid" in message:
+                        valid_tongue = message["nativeTongueValid"]
+                        if not isinstance(valid_tongue, bool):
+                            raise ValueError("invalid native tongue validity")
+                        sample_record["nativeTongueValid"] = valid_tongue
+                    if "nativeTongueAgeMs" in message:
+                        age_ms = float(message["nativeTongueAgeMs"])
+                        if not math.isfinite(age_ms) or age_ms < 0:
+                            raise ValueError("invalid native tongue age")
+                        sample_record["nativeTongueAgeMs"] = age_ms
                     for field_name, expected_count in (
                         ("leftEyeOrientation", 4),
                         ("leftEyePosition", 3),
@@ -299,15 +335,15 @@ class LabelSidecarRecorder:
                     if any(not math.isfinite(value) for value in numeric_metadata):
                         raise ValueError("non-finite eye confidence")
                     self._write(sample_record)
-                    self.sample_count += 1
-                    self.last_sample_monotonic_ns = arrival_monotonic_ns
-                    self.source_change_sequence = source_change_sequence
-                    self.source_unchanged_ms = source_unchanged_ms
                     with self._recent_lock:
                         self._recent_samples.append(sample_record)
+                        self.last_sample_monotonic_ns = arrival_monotonic_ns
+                        self.source_change_sequence = source_change_sequence
+                        self.source_unchanged_ms = source_unchanged_ms
+                        self.sample_count += 1
                 else:
                     raise ValueError("unknown message type")
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            except (KeyError, TypeError, ValueError, OverflowError):
                 self.invalid_count += 1
             now = time.monotonic()
             if now - last_flush >= 1.0 and self._file is not None:
@@ -329,7 +365,7 @@ class LabelSidecarRecorder:
             and 0.0 <= self.source_unchanged_ms
             <= maximum_unchanged_seconds * 1000.0
             and label_age is not None
-            and label_age <= 1.0
+            and 0.0 <= label_age <= 1.0
         )
 
     def manual_tongue_reference_ready(self) -> bool:
@@ -338,17 +374,24 @@ class LabelSidecarRecorder:
         Facial hair, a bandage, or a neutral pose can leave Meta's blendshapes
         unchanged while the user can still label exact camera stills by hand.
         Keep the packet age and TongueOut schema checks so a disconnected
-        VRCFT bridge cannot silently produce an unsupervised capture.
+        reference source cannot silently produce an unsupervised capture.
         """
         age = self.label_age_seconds()
-        return bool(
-            self.sample_count >= 10
-            and "TongueOut" in self.schema_names
-            and age is not None
-            and 0.0 <= age <= 1.0
-        )
+        if (self.sample_count < 10 or "TongueOut" not in self.schema_names
+                or age is None or not 0.0 <= age <= 1.0):
+            return False
+        with self._recent_lock:
+            sample = self._recent_samples[-1] if self._recent_samples else None
+        if sample is None:
+            return False
+        try:
+            return native_tongue_out(sample, self.schema_names) is not None
+        except ValueError:
+            return False
 
-    def nearest_sample(self, monotonic_ns: int) -> dict[str, object] | None:
+    def nearest_sample(
+        self, monotonic_ns: int, *, maximum_distance_ms: float | None = None,
+    ) -> dict[str, object] | None:
         with self._recent_lock:
             if not self._recent_samples:
                 return None
@@ -368,7 +411,12 @@ class LabelSidecarRecorder:
                     # The preceding time can have duplicates; retain the first
                     # arrival at that time, including queries beyond the tail.
                     index = bisect_left(samples, before, 0, index, key=arrival)
-            return dict(samples[index])
+            sample = samples[index]
+            if maximum_distance_ms is not None and (
+                abs(monotonic_ns - arrival(sample)) > maximum_distance_ms * 1_000_000
+            ):
+                return None
+            return dict(sample)
 
     def close(self) -> None:
         if not self._running:

@@ -59,7 +59,9 @@ def _native_tongue_reference(
                 or not flags & 1):
             return 0.0, "invalid"
         age_ms = (now_ns - arrival) / 1_000_000.0
-        if not 0.0 <= age_ms <= TONGUE_MAX_NATIVE_AGE_MS:
+        source_age_ms = float(sample.get("nativeTongueAgeMs", 0.0))
+        if (not 0.0 <= age_ms or not 0.0 <= source_age_ms
+                or age_ms + source_age_ms > TONGUE_MAX_NATIVE_AGE_MS):
             return 0.0, "stale"
         native = native_tongue_out(sample, names)
         if native is None:
@@ -620,7 +622,7 @@ class LiveTongueModelPreview:
         cv2.putText(image, "Quest Pro personalized tongue preview", (24, 42),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.86, (240, 240, 240), 2, cv2.LINE_AA)
         output_text = (
-            "EXPERIMENTAL VRCFT TONGUE OUTPUT ON - T disables immediately"
+            "EXPERIMENTAL CAMERA TONGUE OUTPUT ON - T disables immediately"
             if output_enabled
             else "Stock tongue output active; T enables the tongue override"
         )
@@ -669,7 +671,7 @@ class LiveTongueModelPreview:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.49, (220, 220, 220), 1, cv2.LINE_AA)
         cv2.putText(
             image,
-            "T toggles VRCFT output | Q quits and restores stock tongue automatically.",
+            "T toggles camera output | Q quits and restores native tongue output.",
             (24, height - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (170, 170, 170), 1, cv2.LINE_AA,
         )
         return image
@@ -812,7 +814,7 @@ class TongueInferenceWorker:
                             f"pipeline_ms={prediction.pipeline_ms:.1f} "
                             f"limit_ms={TONGUE_MAX_PIPELINE_MS:.0f}. "
                             "Camera tongue output paused because this frame is too old; "
-                            "the module uses native tongue values. Check the selected GPU "
+                            "native tongue values are used when available. Check the selected GPU "
                             "runtime and reduce other camera work before retrying.",
                             flush=True,
                         )
@@ -831,9 +833,9 @@ class TongueInferenceWorker:
                         print(
                             "WARNING: TONGUE_NATIVE_SOURCE_UNKNOWN. The factory "
                             "label feed does not identify its streaming app; its "
-                            "native TongueOut reference is omitted. Close "
-                            "VRCFaceTracking, update the matching Qpro module "
-                            "in First-time setup, then reopen it and retry.", flush=True,
+                            "native TongueOut reference is unavailable. Restart the "
+                            "selected face tracking source using the current Qpro release.",
+                            flush=True,
                         )
                         self._reported_native_source_unknown = True
                     self._completed_frames += 1

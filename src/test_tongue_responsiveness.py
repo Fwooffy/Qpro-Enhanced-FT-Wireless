@@ -430,7 +430,7 @@ class TongueResponsivenessTests(unittest.TestCase):
                         status_log.assert_not_called()
                 messages = [str(call.args[0]) for call in status_log.call_args_list]
                 self.assertEqual(sum("TONGUE_NATIVE_SOURCE_UNKNOWN" in value for value in messages), 1)
-                self.assertTrue(any("native TongueOut reference is omitted" in value for value in messages))
+                self.assertTrue(any("native TongueOut reference" in value and "selected face tracking source" in value for value in messages))
             finally:
                 worker.close()
 

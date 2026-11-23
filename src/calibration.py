@@ -313,7 +313,7 @@ def prompt_image(
             cv2.LINE_AA,
         )
     if not labels_live:
-        status = "LABELS FROZEN: Start SteamVR + VRCFT, then move your face and eyes."
+        status = "LABELS FROZEN: Start face tracking, then move your face and eyes."
         status_color = (80, 80, 255)
     elif phase == "instruction":
         status = "Read calmly. Press SPACE or ENTER when you are ready to begin."

@@ -1,5 +1,5 @@
 using System.Diagnostics;
-using System.IO.MemoryMappedFiles;
+using Qpro.Shared;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.Versioning;
@@ -60,8 +60,6 @@ Console.CancelKeyPress += (_, eventArguments) =>
     cancellation.Cancel();
 };
 
-MemoryMappedFile? mappedFile = null;
-MemoryMappedViewAccessor? view = null;
 byte[] first = new byte[StateBytes];
 byte[] second = new byte[StateBytes];
 byte[] lastSourceState = new byte[StateBytes];
@@ -76,27 +74,6 @@ bool waitingReported = false;
 
 while (!cancellation.IsCancellationRequested)
 {
-    if (view is null)
-    {
-        try
-        {
-            mappedFile = MemoryMappedFile.OpenExisting(MapName, MemoryMappedFileRights.Read);
-            view = mappedFile.CreateViewAccessor(0, StateBytes, MemoryMappedFileAccess.Read);
-            Console.WriteLine($"VD_LABEL_SOURCE_READY bytes={StateBytes} rate={sampleRate}");
-            waitingReported = false;
-        }
-        catch (FileNotFoundException)
-        {
-            if (!waitingReported)
-            {
-                Console.WriteLine("WAITING_FOR_VIRTUAL_DESKTOP_BODY_STATE");
-                waitingReported = true;
-            }
-            cancellation.Token.WaitHandle.WaitOne(1000);
-            continue;
-        }
-    }
-
     long now = Stopwatch.GetTimestamp();
     if (now < nextSample)
     {
@@ -109,20 +86,28 @@ while (!cancellation.IsCancellationRequested)
 
     try
     {
-        view.ReadArray(0, first, 0, StateBytes);
-        Thread.MemoryBarrier();
-        view.ReadArray(0, second, 0, StateBytes);
+        if (!VirtualDesktopFaceMap.ReadStable(MapName, first, second))
+        {
+            AdvanceDeadline(ref nextSample, interval, now);
+            continue;
+        }
     }
-    catch (ObjectDisposedException)
+    catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentOutOfRangeException)
     {
-        view = null;
-        mappedFile = null;
+        if (!waitingReported)
+            Console.WriteLine("WAITING_FOR_VIRTUAL_DESKTOP_BODY_STATE");
+        waitingReported = true;
+        haveLastSourceState = false;
+        sourceChangeSequence = 0;
+        schemaDeadline = 0;
+        cancellation.Token.WaitHandle.WaitOne(1000);
+        nextSample = Stopwatch.GetTimestamp();
         continue;
     }
-    if (!first.AsSpan().SequenceEqual(second))
+    if (!haveLastSourceState)
     {
-        AdvanceDeadline(ref nextSample, interval, now);
-        continue;
+        Console.WriteLine($"VD_LABEL_SOURCE_READY bytes={StateBytes} rate={sampleRate}");
+        waitingReported = false;
     }
 
     if (!haveLastSourceState || !second.AsSpan().SequenceEqual(lastSourceState))
@@ -175,9 +160,6 @@ while (!cancellation.IsCancellationRequested)
 
     AdvanceDeadline(ref nextSample, interval, now);
 }
-
-view?.Dispose();
-mappedFile?.Dispose();
 
 static void AdvanceDeadline(ref long deadline, long interval, long now)
 {

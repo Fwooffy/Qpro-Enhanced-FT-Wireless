@@ -27,7 +27,7 @@ from tongue_still_capture import (
     TONGUE_REFINEMENT_PROMPTS,
     TongueStillCaptureSession,
 )
-from label_capture import LabelSidecarRecorder
+from label_capture import LabelSidecarRecorder, TRACKING_SOURCES
 from companion_lifecycle import CompanionLifetime
 from tracking_budget import PROFILE_RATES, resolve_tracking_budget
 
@@ -544,6 +544,9 @@ def main() -> int:
     )
     parser.add_argument("--labels-port", type=int, default=27274)
     parser.add_argument("--no-labels", action="store_true")
+    parser.add_argument("--direct-vrchat", action="store_true", help="publish overlays for the Qpro Companion direct VRChat session")
+    parser.add_argument("--label-source", choices=TRACKING_SOURCES,
+                        help="only accept native labels from this tracking source")
     parser.add_argument("--calibration", action="store_true")
     parser.add_argument("--tongue-calibration", action="store_true")
     parser.add_argument("--tongue-still-calibration", action="store_true")
@@ -564,12 +567,12 @@ def main() -> int:
     parser.add_argument(
         "--tongue-output",
         action="store_true",
-        help="start the experimental tongue-only VRCFT override enabled",
+        help="enable the experimental camera tongue override at startup",
     )
     parser.add_argument(
         "--pupil-output",
         action="store_true",
-        help="send opt-in relative pupil-size estimates from both eye cameras to VRCFT",
+        help="publish relative pupil-size estimates from both eye cameras",
     )
     parser.add_argument(
         "--pupil-sensitivity",
@@ -687,11 +690,18 @@ def main() -> int:
             or arguments.eye_calibration) and not arguments.face_model:
         parser.error("--open-source-preview requires --face-model")
     if arguments.hybrid_preview and arguments.no_labels:
-        parser.error("--hybrid-preview requires live Meta/VRCFT labels")
+        parser.error("--hybrid-preview requires live native face and eye labels")
     if arguments.eye_calibration and arguments.calibration:
         parser.error("--eye-calibration cannot be combined with --calibration")
     if arguments.eye_calibration and arguments.model:
         parser.error("--eye-calibration cannot be combined with --model")
+    if arguments.eye_calibration and arguments.no_labels:
+        parser.error("--eye-calibration requires native per-eye reference labels")
+    if arguments.label_source == "SteamLink" and (
+        arguments.eye_calibration or arguments.hybrid_preview
+    ):
+        parser.error("Choose Virtual Desktop for stereo eye calibration or hybrid preview. "
+                     "Steam Link's native label feed provides combined gaze.")
     if arguments.eye_calibration and not arguments.calibration_overlay:
         parser.error("--eye-calibration requires --calibration-overlay")
     if arguments.gaze_calibration_seconds < 10:
@@ -863,11 +873,12 @@ def main() -> int:
             else:
                 label_path = None
             label_recorder = LabelSidecarRecorder(
-                label_path, port=arguments.labels_port
+                label_path, port=arguments.labels_port, expected_source=arguments.label_source
             )
+            label_source = arguments.label_source or "the selected tracking source"
             print(
-                f"Listening for timestamped factory reference labels on "
-                f"127.0.0.1:{arguments.labels_port}"
+                f"Listening for native reference labels from {label_source} on "
+                f"127.0.0.1:{arguments.labels_port}", flush=True
             )
         if arguments.model is not None:
             from model_preview import LiveModelPreview
@@ -929,8 +940,9 @@ def main() -> int:
                     "Direction ensemble model: "
                     f"{tongue_model_preview.direction_checkpoint_path}"
                 )
+            output_name = "Qpro Companion" if arguments.direct_vrchat else "VRCFT"
             print(
-                "Experimental VRCFT tongue output starts "
+                f"Experimental tongue overlay for {output_name} starts "
                 + ("ON." if arguments.tongue_output else "OFF. Press T to toggle it.")
             )
         if arguments.pupil_output:
@@ -1235,7 +1247,7 @@ def main() -> int:
             if open_source_preview is not None:
                 open_source_prediction = open_source_preview.predict(strip)
                 factory_sample = (
-                    label_recorder.nearest_sample(pc_monotonic_ns)
+                    label_recorder.nearest_sample(pc_monotonic_ns, maximum_distance_ms=100)
                     if label_recorder is not None else None
                 )
                 if stereo_eye_calibration is not None:
@@ -1294,13 +1306,13 @@ def main() -> int:
                         )
             if stereo_eye_calibration is not None:
                 latest_factory = (
-                    label_recorder.nearest_sample(time.monotonic_ns())
+                    label_recorder.nearest_sample(time.monotonic_ns(), maximum_distance_ms=100)
                     if label_recorder is not None else None
                 )
                 factory_ready = bool(
                     label_recorder is not None
                     and label_recorder.sample_count >= 10
-                    and label_recorder.source_change_sequence >= 3
+                    and label_recorder.source_is_live()
                     and latest_factory is not None
                     and latest_factory.get("leftEyeIsValid", False)
                     and latest_factory.get("rightEyeIsValid", False)
@@ -1318,7 +1330,8 @@ def main() -> int:
                         "LABEL_PREFLIGHT_OK source=changing"
                         if labels_live
                         else "LABEL_PREFLIGHT_WAITING source=frozen; "
-                        "start SteamVR and VRCFT, then move your face and eyes"
+                        "start SteamVR and the selected face tracking source, "
+                        "then move your face and eyes"
                     )
                     labels_live_reported = labels_live
                 for calibration_key in shared.take_calibration_keys():
@@ -1361,7 +1374,10 @@ def main() -> int:
                         "pose cards provide tongue targets"
                         if labels_ready_now else
                         "LABEL_PREFLIGHT_WAITING mode=manual-stills; "
-                        "start the selected tracking app, SteamVR, and VRCFaceTracking"
+                        + ("enable Steam Link face sharing and set OSC Output Port to 9015"
+                           if arguments.label_source == "SteamLink" else
+                           "start the selected tracking app and enable native face sharing"),
+                        flush=True,
                     )
                     manual_reference_reported = labels_ready_now
                 for calibration_key in shared.take_calibration_keys():
@@ -1485,8 +1501,9 @@ def main() -> int:
                     )
             elif finalized:
                 print(
-                    "WARNING: no factory reference labels were received from the selected tracking source. The camera capture "
-                    "is valid but is not yet a supervised training dataset."
+                    "WARNING: no native reference labels were received from the selected tracking source. "
+                    "Check face sharing in your streaming app before retrying.",
+                    flush=True,
                 )
         if cleanup_errors and original_error is None:
             raise cleanup_errors[0]
