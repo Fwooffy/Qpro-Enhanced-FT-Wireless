@@ -13,6 +13,8 @@ import time
 from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
+from functools import lru_cache
+from statistics import median
 
 import cv2
 import numpy as np
@@ -27,6 +29,7 @@ PUPIL_MAGIC = b"QPDI"
 _LARGE_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 _SMALL_KERNEL = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 _PUPIL_QUANTILES = np.asarray((5, 10, 15, 20, 25, 30), dtype=np.float64) / 100.0
+_MAX_PUPIL_MEDIAN = 45
 
 
 def _error_summary(exc: Exception) -> str:
@@ -45,7 +48,8 @@ def _valid_eye_roi(roi: np.ndarray) -> bool:
     # Camera ROIs are strided views. OpenCV reduces them directly without
     # NumPy's slower strided passes or changing the intensity checks.
     low, high, _, _ = cv2.minMaxLoc(roi)
-    return high - low >= 18 and cv2.mean(roi)[0] >= 8
+    # Median blur cannot create a value darker than the input minimum.
+    return low <= _MAX_PUPIL_MEDIAN and high - low >= 18 and cv2.mean(roi)[0] >= 8
 
 
 def detect_pupil(
@@ -69,11 +73,9 @@ def _thresholds(clean: np.ndarray) -> list[int]:
     # every ROI. Per-bin counts stay exact in float32 for the 280x335 ROI.
     counts = cv2.calcHist([clean], [0], None, [256], [0, 256]).ravel()
     cumulative = counts.cumsum(dtype=np.float64)
-    ranks = _PUPIL_QUANTILES * (clean.size - 1)
-    lower_ranks = np.floor(ranks)
+    lower_ranks, upper_ranks, fraction = _pupil_quantile_ranks(clean.size)
     lower = np.searchsorted(cumulative, lower_ranks, side="right").astype(np.float64)
-    upper = np.searchsorted(cumulative, np.ceil(ranks), side="right").astype(np.float64)
-    fraction = ranks - lower_ranks
+    upper = np.searchsorted(cumulative, upper_ranks, side="right").astype(np.float64)
     difference = upper - lower
     # Match NumPy's stable linear interpolation on both halves of each bin.
     percentiles = np.where(
@@ -85,6 +87,13 @@ def _thresholds(clean: np.ndarray) -> list[int]:
         [low + 10, low + 20]
         + [int(value) for value in percentiles]
     ))
+
+
+@lru_cache(maxsize=8)
+def _pupil_quantile_ranks(size: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ranks = _PUPIL_QUANTILES * (size - 1)
+    lower = np.floor(ranks)
+    return lower, np.ceil(ranks), ranks - lower
 
 
 def _morph_pupil_image(clean: np.ndarray) -> np.ndarray:
@@ -117,17 +126,32 @@ def _detect_clean_pupil(
     x0, y0 = 55, 75
     best: tuple[float, PupilDetection] | None = None
     seen_contours: set[bytes] = set()
+    previous_foreground = 0
     for dark in _threshold_masks(morphed, _thresholds(clean)):
+        foreground = cv2.countNonZero(dark)
+        if foreground == previous_foreground:
+            # Increasing thresholds can only add pixels. Equal counts imply
+            # identical masks even if the original percentiles differ.
+            continue
+        previous_foreground = foreground
+        if foreground == dark.size:
+            break
         contours, _ = cv2.findContours(dark, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         for contour in contours:
+            if len(contour) < 5:
+                continue
+            area = cv2.contourArea(contour)
+            if not 100 <= area <= 6500:
+                continue
             # Several thresholds often produce the same boundary. Its score
             # uses the same median image, so evaluating it again adds no signal.
             key = contour.tobytes()
             if key in seen_contours:
                 continue
             seen_contours.add(key)
-            area = cv2.contourArea(contour)
-            if not 100 <= area <= 6500 or len(contour) < 5:
+            perimeter = cv2.arcLength(contour, True)
+            circularity = 4 * np.pi * area / (perimeter * perimeter) if perimeter else 0
+            if circularity < 0.42:
                 continue
             (x, y), axes, angle = cv2.fitEllipse(contour)
             major, minor = max(axes), min(axes)
@@ -139,9 +163,14 @@ def _detect_clean_pupil(
             fill = area / ellipse_area
             if not 0.60 <= fill <= 1.30:
                 continue
-            perimeter = cv2.arcLength(contour, True)
-            circularity = 4 * np.pi * area / (perimeter * perimeter) if perimeter else 0
-            if circularity < 0.42:
+            # The inner ellipse uses axes scaled by 0.70, so all its pixels
+            # lie within 0.35 * major of its center. Include two pixels for
+            # OpenCV's fixed-point rasterization and center rounding.
+            inner_radius = int(np.ceil(major * 0.35)) + 2
+            cx, cy = int(x), int(y)
+            core = clean[max(0, cy - inner_radius):cy + inner_radius + 1,
+                         max(0, cx - inner_radius):cx + inner_radius + 1]
+            if cv2.minMaxLoc(core)[0] > _MAX_PUPIL_MEDIAN:
                 continue
             # Require the fitted shape to be darker than its immediate annulus.
             # Only allocate masks around the ellipse, not the entire eye ROI.
@@ -151,18 +180,22 @@ def _detect_clean_pupil(
             right, bottom = min(clean.shape[1], int(x) + radius + 1), min(clean.shape[0], int(y) + radius + 1)
             patch = clean[top:bottom, left:right]
             inner = np.zeros(patch.shape, np.uint8)
-            outer = np.zeros(patch.shape, np.uint8)
             local_center = (x - left, y - top)
             cv2.ellipse(inner, (local_center, (axes[0] * 0.70, axes[1] * 0.70), angle), 255, -1)
-            cv2.ellipse(outer, (local_center, (axes[0] * 1.90, axes[1] * 1.90), angle), 255, -1)
-            cv2.ellipse(outer, (local_center, (axes[0] * 1.20, axes[1] * 1.20), angle), 0, -1)
             inside = patch[inner != 0]
-            ring = patch[outer != 0]
-            if inside.size < 20 or ring.size < 30:
+            if inside.size < 20:
                 continue
             inside_median = _median_uint8_samples(inside)
+            if inside_median > _MAX_PUPIL_MEDIAN:
+                continue
+            outer = np.zeros(patch.shape, np.uint8)
+            cv2.ellipse(outer, (local_center, (axes[0] * 1.90, axes[1] * 1.90), angle), 255, -1)
+            cv2.ellipse(outer, (local_center, (axes[0] * 1.20, axes[1] * 1.20), angle), 0, -1)
+            ring = patch[outer != 0]
+            if ring.size < 30:
+                continue
             contrast = _median_uint8_samples(ring) - inside_median
-            if inside_median > 45 or contrast < 25:
+            if contrast < 25:
                 continue
             center = (float(x + x0), float(y + y0))
             prior_penalty = (
@@ -228,7 +261,7 @@ class RelativePupilEye:
         ) > 35:
             return self._invalid("gaze outside calibrated area")
         self._recent_sizes.append(detection.diameter_px)
-        size = float(np.median(self._recent_sizes))
+        size = median(self._recent_sizes)
         if self._baseline is None:
             self._baseline_samples.append(size)
             self._baseline_centers.append(detection.center)
@@ -238,15 +271,16 @@ class RelativePupilEye:
             centers = np.asarray(self._baseline_centers, dtype=np.float32)
             center_spread = np.ptp(centers, axis=0)
             size_spread = max(self._baseline_samples) - min(self._baseline_samples)
+            baseline_samples = list(self._baseline_samples)
             half = len(self._baseline_samples) // 2
             size_trend = abs(
-                float(np.median(list(self._baseline_samples)[:half]))
-                - float(np.median(list(self._baseline_samples)[half:]))
-            )
+                median(baseline_samples[:half])
+                - median(baseline_samples[half:])
+            ) if half else 0.0
             if np.max(center_spread) > 20 or size_spread > 10 or size_trend > 4:
                 self.status = "warming: hold gaze steady"
                 return None
-            self._baseline = float(np.median(self._baseline_samples))
+            self._baseline = median(self._baseline_samples)
             self._baseline_center = tuple(np.median(centers, axis=0))
         ratio = size / self._baseline
         if not 0.50 <= ratio <= 1.70:
@@ -262,7 +296,7 @@ class RelativePupilEye:
         else:
             response = 0.32 - 0.06 * (self.sensitivity - 1.0)
             step = response * (estimate - self._smoothed)
-            self._smoothed += float(np.clip(step, -0.27, 0.27))
+            self._smoothed += min(0.27, max(-0.27, step))
         self.status = "tracking"
         return self._smoothed
 
@@ -274,6 +308,7 @@ class RelativePupilTracker:
         self.eyes = (RelativePupilEye(sensitivity=sensitivity), RelativePupilEye(sensitivity=sensitivity))
         self.detections: tuple[PupilDetection | None, PupilDetection | None] = (None, None)
         self._previous_centers: list[tuple[float, float] | None] = [None, None]
+        self._cpu_prepared: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
         self.backend = "cpu"
         self.device = "cpu"
         self.device_name = "CPU"
@@ -324,9 +359,17 @@ class RelativePupilTracker:
                 self.device_name = "CPU"
         if prepared is None:
             prepared = []
-            for roi in valid_rois.values():
+            for eye, roi in valid_rois.items():
+                cached = self._cpu_prepared.get(eye)
+                if cached is not None and cv2.norm(roi, cached[0], cv2.NORM_INF) == 0:
+                    prepared.append((cached[1], cached[2]))
+                    continue
                 clean = cv2.medianBlur(roi, 7)
-                prepared.append((clean, _morph_pupil_image(clean)))
+                morphed = _morph_pupil_image(clean)
+                # Callers may reuse a mutable frame buffer. Keep a snapshot
+                # of the ROI and rerun scoring and state updates on every frame.
+                self._cpu_prepared[eye] = (roi.copy(), clean, morphed)
+                prepared.append((clean, morphed))
         for eye, (clean, morphed) in zip(eye_ids, prepared):
             results[eye] = _detect_clean_pupil(clean, morphed, self._previous_centers[eye])
         return results

@@ -13,6 +13,7 @@ from pupil_dilation import (
     RelativePupilTracker,
     detect_pupil,
     encode_pupil_packet,
+    _detect_clean_pupil,
     _median_uint8_samples,
     _morph_pupil_image,
     _threshold_masks,
@@ -52,6 +53,7 @@ class PupilDilationTests(unittest.TestCase):
 
         rng = np.random.default_rng(38)
         frames = [rng.integers(0, 256, (400, 800), dtype=np.uint8),
+                  rng.integers(46, 256, (400, 800), dtype=np.uint8),
                   np.zeros((400, 800), np.uint8),
                   np.full((400, 800), 8, np.uint8)]
         # Exercise mean and range boundaries with strided camera views.
@@ -64,7 +66,45 @@ class PupilDilationTests(unittest.TestCase):
         for frame in frames:
             roi = frame[75:355, 55:390]
             self.assertEqual(_valid_eye_roi(roi),
-                             bool(np.ptp(roi) >= 18 and np.mean(roi) >= 8))
+                             bool(np.min(roi) <= 45 and np.ptp(roi) >= 18 and np.mean(roi) >= 8))
+
+    def test_bright_roi_cannot_pass_pupil_darkness_and_skips_blur(self) -> None:
+        source = np.full((400, 400), 155, dtype=np.uint8)
+        cv2.circle(source, (200, 200), 25, 46, -1)
+        with patch("pupil_dilation.cv2.medianBlur") as blur:
+            self.assertIsNone(detect_pupil(source))
+            blur.assert_not_called()
+
+    def test_bright_decoy_skips_masks_and_rotated_dark_candidate_is_scored(self) -> None:
+        clean = np.full((280, 335), 165, dtype=np.uint8)
+        mask = np.zeros_like(clean)
+        for center, intensity in (((35, 33), 45), ((176, 154), 70)):
+            cv2.ellipse(clean, center, (30, 18), 57, 0, 360, intensity, -1)
+            cv2.ellipse(mask, center, (30, 18), 57, 0, 360, 255, -1)
+        with (patch("pupil_dilation._threshold_masks", return_value=[mask]),
+              patch("pupil_dilation.cv2.ellipse", wraps=cv2.ellipse) as draw):
+            detection = _detect_clean_pupil(clean, clean, None)
+        self.assertIsNotNone(detection)
+        self.assertAlmostEqual(detection.center[0], 90, delta=1)
+        self.assertAlmostEqual(detection.center[1], 108, delta=1)
+        self.assertEqual(draw.call_count, 3)
+
+    def test_cpu_reuses_identical_pixels_per_eye_without_skipping_tracker_updates(self) -> None:
+        tracker = RelativePupilTracker(backend="cpu")
+        strip = np.hstack((eye(24), eye(24)))
+        with (patch("pupil_dilation.cv2.medianBlur", wraps=cv2.medianBlur) as blur,
+              patch("pupil_dilation._detect_clean_pupil", wraps=_detect_clean_pupil) as score):
+            for _ in range(12):
+                values = tracker.update(strip, [0, 1])
+            self.assertEqual(values, (5.0, 5.0))
+            self.assertEqual(blur.call_count, 2)
+            self.assertEqual(score.call_count, 24)
+            strip[190, 193] = 255
+            tracker.update(strip, [0, 1])
+            self.assertEqual(blur.call_count, 3)
+            strip[20, 610] = 20
+            tracker.update(strip, [0, 1])
+            self.assertEqual(blur.call_count, 3)
 
     def test_grayscale_morphology_preserves_threshold_masks(self) -> None:
         rng = np.random.default_rng(75)
