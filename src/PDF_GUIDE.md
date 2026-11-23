@@ -4,18 +4,12 @@
 
 ## Your first session
 
-On **First-time setup**, follow **1. Connect**, **2. PC runtime**, then **3. VRCFT module**. One step is shown at a time, with its status above.
+1. **Connect your streaming app.** In Virtual Desktop or Steam Link, enable eye and face sharing and connect to the PC.
+2. **Find VRChat.** Enable **Action Menu > OSC > Enabled** in VRChat. Open **First-time setup > VRChat output**. On the **Output route** switch, select **Direct to VRChat** (the default). Choose your **Streaming app**, close VRCFaceTracking if open, then press **Check VRChat connection**.
+3. **Check native expressions.** Keep Companion open. Native face and eyes stream automatically when the source and avatar are ready. Blink and smile in a mirror, then check **Activity** for output status.
 
-1. **Connect your Quest Pro.** Start with **USB cable**, approve USB debugging in the headset, then press **Check USB connection**. Allow **Shell / ADB Shell** in Magisk.
-2. **Install the PC runtime.** Press **Install runtime**. Keep the Hub open while its private Python and tracking libraries download. Wait for completion in **Activity**.
-3. **Install your VRCFaceTracking module.** Close VRCFaceTracking and wait for **ModuleProcess** to exit. Choose **Streaming app**, install its Qpro module, then reopen VRCFaceTracking.
-
-**Back** and **Next step** only navigate. **Open Facial tracking** changes pages; it does not start tracking.
-
-> [!TIP] Check the source before adding features
-> Connect through Virtual Desktop or Steam Link and confirm that mouth expressions and blinks move in VRCFaceTracking's preview. An installed module or green app status does not establish live tracking.
-
-Once expressions move, open **Facial tracking**, choose your features and press **Start tracking**. Finish with **Stop tracking** and wait for cleanup in **Activity**.
+> [!TIP] Adding camera features
+> Use **Headset** and **PC runtime** for camera tongue or pupil tracking. **Choose tracking features** opens **Facial tracking**. Direct native streaming can start before camera setup.
 
 Extras: **Show optional tools and recovery** groups **Optional features**, **Checks & Updates** and **Recovery**. Open a group, then a tool. With Magisk gaze, skip **Check gaze setup** and **Prepare gaze**.
 
@@ -23,31 +17,56 @@ Extras: **Show optional tools and recovery** groups **Optional features**, **Che
 
 | Topic | Jump to the guide page |
 | --- | --- |
-| Required apps and download | [Before you start](#before-you-start) |
+| Apps and avatars | [Before you start](#before-you-start), [Supported avatars](#supported-vrchat-avatars) |
 | Streaming app settings | [Virtual Desktop and Steam Link](#virtual-desktop-and-steam-link) |
-| Connect and install | [USB cable](#usb-cable), [Wireless ADB](#wireless-adb), [Runtime and Qpro module](#runtime-and-qpro-module) |
+| Connect and install | [USB cable](#usb-cable), [Wireless ADB](#wireless-adb), [PC runtime and VRChat output](#pc-runtime-and-vrchat-output) |
 | Features and tongue training | [Facial tracking](#facial-tracking), [Cheek puff and cheek suck](#cheek-puff-and-cheek-suck), [Personalize](#personalize) |
 | Optional setup and help | [Independent eye gaze](#independent-eye-gaze), [AMD ROCm](#amd-rocm), [Controllers](#controllers), [Setup problems](#setup-problems) |
 
 Read only the optional feature pages you need. The top-right **Contents** link returns here; PDF bookmarks open any topic directly.
 
+## Supported VRChat avatars
+
+Enable **Action Menu > OSC > Enabled**, then use **Check VRChat connection** in the Hub. OSCQuery discovers the local game and refreshes the avatar's output. If local discovery fails, Qpro checks a local HTTP fallback and verifies VRChat's identity before using it. No fixed VRChat port needs entering.
+
+### Native face tracking
+
+For avatars with **Use All Tracking Keys** enabled, VRChat advertises native full-face support. Qpro can then send the **102-byte /tracking/face/v1** format, including supported face shapes, gaze, blink and pupil values. The avatar still needs matching face animations; native support does not add missing blendshapes.
+
+### Existing avatar parameters
+
+On other avatars, Qpro writes only recognized, writable face parameters advertised through OSCQuery. Supported mappings include direct Unified Expressions and prefixed **v2** names, signed combined axes, separate eyes/brows, tracking-active booleans and supported binary bit suffixes (**1**, **2**, **4**, **8** and higher, plus **Negative**).
+
+Arbitrary custom names and packing schemes are not automatically supported. VRChat-controlled **UserEyeTracking** and **UserFaceTracking** are read-only. Verified VRChat clients can also use documented built-in gaze/blink endpoints omitted from OSCQuery. Read-only or incompatible inputs and custom eye equivalents suppress fallback. Eye-only output adds no face expressions.
+
+> [!NOTE] Verify your avatar
+> Check **Activity** and test your current avatar. An OSC connection alone cannot verify expressions. Missing animations or unsupported names need avatar changes.
+
+Close VRCFaceTracking and any other live face senders when using **Direct VRChat**. Prior hardware tests used the VRCFaceTracking route. Direct output still needs live headset and avatar testing.
+
+For avatar creators: [VRChat face OSC](https://creators.vrchat.com/avatars/face-tracking/osc/) and [Unified Expressions parameters](https://docs.vrcft.io/docs/tutorial-avatars/tutorial-avatars-extras/parameters).
+
 ## Before you start
 
-**Qpro Companion** is the app; its main window is the **Hub**. **ADB** connects it to your Quest. The **Qpro module** supplies face tracking to VRCFaceTracking.
+**Qpro Companion** is the app; its main window is the **Hub**. **ADB** connects it to your Quest. Qpro sends face data directly to VRChat; Virtual Desktop or Steam Link supplies native expressions.
 
 ### On the Quest Pro
 
-- A **rooted Meta Quest Pro** with Developer Mode enabled. If it is not rooted, first check exact firmware support in [Singularity](https://github.com/Lumince/singularity) and follow [Fwooffy and glorpette's root guide](https://github.com/glorpette/quest-guides/blob/main/root_guide_by_fwooffy.md).
+- A **Meta Quest Pro**. For camera and headset tools, enable Developer Mode and check root support for your exact firmware in [Singularity](https://github.com/Lumince/singularity) and follow [Fwooffy and glorpette's root guide](https://github.com/glorpette/quest-guides/blob/main/root_guide_by_fwooffy.md).
 - In **Settings > Hands & Eyes**, enable **Eye Tracking** and **Natural Facial Expressions**. Run eye calibration if offered. Allow your streaming app to use eye and face data.
-- Keep the headset awake. Approve USB debugging and Magisk **Shell / ADB Shell** root access when prompted.
+- For headset tools, keep the Quest awake and approve USB debugging and Magisk **Shell / ADB Shell** access when prompted.
 
 ### On the PC
 
-Install **SteamVR**, the [latest VRCFaceTracking from Steam](https://store.steampowered.com/app/3329480/VRCFaceTracking/) and your streaming app's PC software. Setup needs internet access and several gigabytes of free space.
+Install **SteamVR**, **VRChat** and your streaming app's PC software. Install VRCFaceTracking only if you plan to use the backup route. PC runtime setup needs internet access and several gigabytes of free space.
 
 1. Download **QproCompanion.V3.0.4.zip** from [Releases](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases), or use the supplied release ZIP.
 2. Right-click the ZIP in File Explorer and choose **Extract All**. Keep `QproFaceTracking.exe`, `Helpers` and `QproRuntime` together.
 3. Open `QproFaceTracking.exe`. For OneDrive, first choose **Always keep on this device** for the whole extracted folder.
+
+### Open Companion with SteamVR
+
+With SteamVR running, check **First-time setup > Launch with SteamVR** in Companion. It is off by default. Clear the checkbox with SteamVR running to disable it. Optional features still need **Start tracking**. Same-folder updates keep the setting. If you move the folder, open the new copy and enable it there.
 
 > [!NOTE] Independent gaze is optional
 > You do not need a gaze Magisk module or the Hub's gaze preparation for ordinary face tracking, tongue tracking or pupil dilation.
@@ -56,7 +75,7 @@ ADB and private Python are supplied. For update compatibility, the executable, a
 
 ## Virtual Desktop and Steam Link
 
-Choose one **Streaming app** in the Hub, then install its matching Qpro module.
+Choose one **Streaming app** in the Hub. It supplies native face data for either output route.
 
 ### Virtual Desktop
 
@@ -68,16 +87,16 @@ Connect the headset app to the [PC Streamer](https://www.vrdesktop.net/). Open *
 | Track controllers | **On** for Touch Pro, including Qpro hands + controllers. |
 | Emulate Index controllers | **Off** for the initial VRChat optical-finger check. |
 
-Start the PC Streamer and connect before opening VRCFaceTracking. Launch **SteamVR through Virtual Desktop**. For fingers, enable VRChat **Main Menu > Controls > Avatars Use Finger Tracking**. Emulated Vive trackers are optional body tracking, not a face-tracking requirement.
+Start the PC Streamer and connect the headset. Companion waits for shared face and eye data. Launch **SteamVR through Virtual Desktop**. For fingers, enable VRChat **Main Menu > Controls > Avatars Use Finger Tracking**. Emulated Vive trackers are optional body tracking, not a face-tracking requirement.
 
 For **Hands + controllers**, also enable Quest **Hand tracking** and **Automatically switch between controllers and hands**, plus Singularity's simultaneous switch. See [the complete prerequisites](#controllers).
 
 ### Steam Link
 
-In the headset's **Advanced Settings**, enable **OSC**, **Share eye tracking data** and **Share face tracking data**. Set **OSC Output Port** to **9015**. Use **Install Steam Link module** with VRCFaceTracking closed.
+In the headset's **Advanced Settings**, enable **OSC**, **Share eye tracking data** and **Share face tracking data**. Set **OSC Output Port** to **9015**. This native input port is separate from VRChat's discovered output port.
 
-> [!WARNING] Use one source module
-> Installing one Qpro source removes the other Qpro source. Recognized Virtual Desktop, LinkFT and Steam Link modules are backed up and replaced automatically. Unknown competing modules need manual review; follow **Activity**.
+> [!WARNING] Use one live face sender
+> Use one output route at a time. Close VRCFaceTracking for Direct VRChat, and stop other Steam Link receivers on port 9015. Companion installs a Qpro module only when you choose to install the backup.
 
 **USB cable** and **Wireless ADB (Wi-Fi)** choose the Qpro tracking-data connection, not the VR picture stream. The [full text guide](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/blob/main/src/RELEASE_INSTRUCTIONS.md) also covers the optional Virtual Desktop USB-video beta setup.
 
@@ -109,8 +128,8 @@ USB is the easiest first connection. Leave the cable attached and the headset aw
 
 1. Connect the Quest Pro to the PC and put it on.
 2. In **USB debugging**, choose **Always allow from this computer**, then **Allow**. The Hub cannot approve this headset permission for you.
-3. On **First-time setup > 1. Connect**, set **Connection type** to **USB cable** and press **Check USB connection**. Qpro verifies the Quest Pro and remembers it.
-4. If root access is unavailable, allow **Shell / ADB Shell** in Magisk. Open **Facial tracking > Your session > Show connection and camera settings**, then **Refresh connection status**.
+3. On **First-time setup > Headset**, set **Connection type** to **USB cable** and press **Check USB connection**. Qpro verifies the Quest Pro and remembers it.
+4. If root access is unavailable, allow **Shell / ADB Shell** in Magisk. On **Facial tracking**, select **Refresh connection status** under **Your session**.
 
 > [!TIP] You should not normally need to unplug USB
 > The USB selection stays in the app's settings. After reopening the Hub, keep the Quest awake and connected. If it stalls, stop tracking and training, then press **Check USB connection** in **First-time setup**.
@@ -132,7 +151,7 @@ Closing the Hub stops its live processes and then the configured PC ADB server. 
 
 Keep the Quest and PC on the same trusted private Wi-Fi network. You can start with USB, then switch to wireless.
 
-1. On **First-time setup**, choose **Wireless ADB (Wi-Fi)** under **Connection type**.
+1. On **First-time setup > Headset**, choose **Wireless ADB (Wi-Fi)** under **Connection type**.
 2. Enter the Quest's address in **Quest IP:port**, then press **Connect to Quest**. For example, `192.168.1.25:5555` uses the usual port, but you must use your own Quest's IP.
 3. **Quest connected** and **Wireless Quest ready** mean ADB and root are ready. You can unplug USB if it was attached.
 4. If wireless is off but USB works, open **Show wireless setup options** and press **Enable from USB**. After success, unplug USB and connect to the saved address.
@@ -152,45 +171,38 @@ Open **Show wireless setup options**, then **Show pairing options**. Keep the he
 
 A `protocol fault` usually needs a fresh code and temporary port. After rebooting, recheck the Wi-Fi IP and whether wireless ADB needs enabling again. **Activity** gives the exact failure.
 
-## Runtime and Qpro module
-
-After the Quest connects, use **Next step** to reach the remaining **First-time setup** steps.
+## PC runtime and VRChat output
 
 ### Install the PC runtime
 
-On **2. PC runtime**, press **Install runtime** and keep the Hub open. **Setup progress** shows the current message; **View setup activity** opens the full log. **Activity** reports PowerShell startup, downloads and still-running messages when output pauses. PyTorch is a large download.
+For camera features, open **First-time setup > PC runtime**, press **Install runtime** and keep the Hub open. **Setup progress** shows the current message. **View setup activity** opens the full log. PyTorch is a large download.
 
-Qpro uses private Python and works with or without an existing Python installation. You do not need to uninstall another app's Python. NVIDIA CUDA or CPU uses the normal runtime; AMD acceleration is a separate optional step.
+Qpro uses its own Python. The standard runtime supports NVIDIA CUDA and CPU. AMD acceleration is an optional separate setup.
 
 Open **Show optional tools and recovery > Recovery > Show PC runtime repair and recovery**. **Repair runtime** rebuilds packages; **Restore saved runtime** verifies a backup and keeps a recovery copy. Stop tracking, capture and training first. Models, recordings and choices stay; AMD ROCm is separate.
 
-### Install your VRCFaceTracking module
+### Enable direct VRChat output
 
-1. Open **3. VRCFT module**. **Close VRCFaceTracking** and wait for its **ModuleProcess** helper to exit.
-2. Choose **Virtual Desktop** or **Steam Link** under **Streaming app**.
-3. Press **Install Virtual Desktop module** or **Install Steam Link module**. Qpro verifies backups before replacing recognized sources. Wait for completion in **Activity**.
-4. Reopen VRCFaceTracking with the source connected. Check that ordinary expressions move in its preview, then press **Open Facial tracking**.
+Open **VRChat output**. The **Output route** switch defaults to **Direct to VRChat**. Choose your **Streaming app** and close VRCFaceTracking. Enable **Action Menu > OSC > Enabled** in VRChat and press **Check VRChat connection**. Check a blink and smile on your avatar. Keep Companion open to forward native face and eyes.
 
-Its card is **Qpro Companion — Virtual Desktop** or **Qpro Companion — Steam Link**, using the Hub's release version. Older QproFaceTracking cards remain recognized.
+### Optional VRCFaceTracking backup
 
-> [!NOTE] What a module check proves
-> **Installed · files verified** confirms the module files match. **Facial tracking > View module input** opens the live status in Activity without starting tracking. **Virtual Desktop source available** is neutral: native shared memory has no timestamp. Confirm moving expressions in VRCFaceTracking's preview; Companion tracking can stay off for that check.
+With a backup-capable package, select **VRCFaceTracking backup** on the same switch and choose your **Streaming app**. Open VRCFaceTracking once on a new installation. Close it and wait for **ModuleProcess** to exit, then press **Install Qpro backup module**. Installation backs up recognized source modules. Reopen VRCFaceTracking, run the matching Qpro module, press **Check backup connection** in Companion and test your avatar. To switch back, close VRCFaceTracking and select **Direct to VRChat**.
 
-Local app-folder links and Windows Cloud Files are supported. Keep OneDrive files offline. Backups stay in `%LOCALAPPDATA%\QproFaceTracking\module-recovery`, across Qpro folders. **Activity** gives the path. Failed switches roll back; unknown modules stay untouched.
-
-For module or file-access errors, follow **Activity**; they do not establish card damage. Optional **Check headset compatibility** and **Show firmware details** are under **Checks & Updates > Show headset compatibility**.
+> [!NOTE] Both routes need a working destination
+> If **Direct VRChat** is waiting, open VRChat, confirm OSC is enabled and check **Activity**. VRChat and OSC are also required for VRCFaceTracking output.
 
 ## Facial tracking
 
-Start the streaming app, SteamVR and VRCFaceTracking. Confirm live face input, then open **Facial tracking**.
+Start the streaming app, SteamVR and VRChat. Enable **Action Menu > OSC > Enabled**, then open **Facial tracking**.
 
 | Section | What it controls |
 | --- | --- |
-| Your session | Compact readiness status, **Streaming app**, and **Show connection and camera settings** for camera options. |
+| Your session | **Streaming app**, the selected output route and its status, plus **Show connection and camera settings**. |
 | Eyes | **Independent eye gaze + convergence**, **Experimental relative pupil dilation (eye cameras)** and **Adjust eyebrow movement**. |
 | Lower-face tracking | **Tongue model**, tongue output and the native individual cheek puff/suck switches. |
 
-Open **Controllers** below **Facial tracking** for controller options. Health and **Show tracking details** are on **Activity > Tracking health**. The bottom **Start tracking** / **Stop tracking** bar controls all selected features.
+Open **Controllers** below **Facial tracking** for controller options. Health and **Show tracking details** are on **Activity > Tracking health**. The bottom **Start tracking** / **Stop tracking** bar controls optional features.
 
 1. Choose your features. For tongue output, select **Developer tongue model** or your personal **Tongue model** and enable **Experimental tongue tracking**. Selecting a model alone does not enable its output. With Magisk gaze active, keep Hub gaze off.
 2. Press **Start tracking**. **Activity** confirms requested outputs, the loaded model and GPU or CPU backend.
@@ -202,10 +214,10 @@ Open **Controllers** below **Facial tracking** for controller options. Health an
 
 **Processing profile** defaults to **Responsive (default)**, keeping the current tracking cadence. **Balanced** limits pupil work to 12 eye pairs per second; **Low CPU** limits it to 8. Tongue keeps the camera cadence in every preset. Lower pupil rates mean slower response and warm-up. Choices are saved for the next start.
 
-> [!NOTE] Stop restores native cheeks
-> Tongue and pupil outputs stop. Individual cheek puff/suck also stop, restoring native cheeks. Eyebrow and built-in smirk adjustments can remain through the installed module; Magisk modules stay active.
+> [!NOTE] Native forwarding after Stop
+> **Stop tracking** ends optional features. Close Companion to stop forwarding in Direct VRChat. On the backup route, stop native output in VRCFaceTracking. A crash cannot guarantee a final OSC reset.
 
-Wait for cleanup in **Activity** before closing. The tongue model runs on the PC, not on the headset.
+Wait for cleanup in **Activity** before closing.
 
 ## Eyes
 
@@ -226,9 +238,9 @@ With a verified NVIDIA CUDA or AMD ROCm runtime, both eye images are filtered on
 
 ### Adjust eyebrow movement
 
-This starts off, passing native brow values. Turn it on and use **Eyebrow sensitivity** in **Show eye settings and guidance** to soften or amplify existing left/right inner raise, outer raise and lower/pinch movements. It applies immediately through the installed module; **Start tracking** is not required and **Stop tracking** does not disable it.
+This starts off, passing native brow values. Turn it on and use **Eyebrow sensitivity** in **Show eye settings and guidance** to soften or amplify existing left/right inner raise, outer raise and lower/pinch movements. **Start tracking** applies the adjustment. **Stop tracking** restores ordinary native eyebrows.
 
-Sensitivity cannot invent movement the headset did not detect. If VRCFaceTracking shows separate brows but the avatar does not, check its parameters and blendshapes.
+Sensitivity cannot invent movement the headset did not detect. If the native source has separate brows but the avatar does not, check its parameters and blendshapes.
 
 For poor performance, close unused camera/browser previews. Inspect **Activity** for backend, processing time, frame age and skipped work. Qpro processes the latest eye pair rather than queuing old frames.
 
@@ -269,16 +281,16 @@ Enable it for **1/0** separation. A clear one-sided puff becomes full strength o
 
 Enable it for the same **1/0** separation of the source's separate left/right cheek-suck signals. It does **not** use negative cheek-puff values. A deliberate two-cheek suck still moves both.
 
-1. Connect your streaming app and confirm that expressions move in VRCFaceTracking's preview.
+1. Connect your streaming app, enable VRChat OSC, then check source input in **Activity**.
 2. Turn on the individual cheek switches you want, then press **Start tracking**.
-3. Try your own left cheek, right cheek, then both. Compare VRCFaceTracking's preview with your avatar.
+3. Try your own left cheek, right cheek, then both. Compare native source values with your avatar.
 
 > [!TIP] Turn a switch off for native values
-> A disabled switch passes through that source's original puff or suck values. **Stop tracking**, closing the Hub or a Hub crash restores native cheeks. Saved choices remain for next time.
+> A disabled cheek switch sends the source's original puff or suck values. **Stop tracking** restores the native signals. Saved choices remain.
 
-Native cheek adjustments alone do not need camera tracking, a tongue model or calibration. Keep other camera features off if you only want these cheek adjustments.
+Native face/eye output and cheek adjustments alone do not need ADB, Python, camera tracking, a tongue model or calibration. Keep other camera features off if you only want these cheek adjustments.
 
-If the preview separates the sides but the avatar does not, check its cheek parameters and blendshapes. Small false native cheek values can still appear during other expressions; the module cannot guarantee perfect cheek detection for every face.
+If the preview separates the sides but the avatar does not, check its cheek parameters and blendshapes. Small false native cheek values can still appear during other expressions; Qpro cannot guarantee perfect cheek detection for every face.
 
 ## Personalize
 
@@ -299,7 +311,7 @@ Open **Personalize** in the sidebar. Under **Capture and train**, record poses, 
 > [!TIP] Capture varied stills, not a moving pose
 > Hold one pose per still. Vary jaw/headset position slightly between stills. Include hidden tongue, visible extension strengths and diagonals. Capture smiles and other hidden-tongue poses too, so they are not mistaken for tongue movement.
 
-Tongue cards need fresh VRCFaceTracking input, even while values remain steady. Held-out training checks use the same recording; a fresh recording or live test still matters.
+Tongue cards need fresh native input even when values stay steady. Keep SteamVR and the streaming app running. On the direct route, Steam Link capture shares Companion's existing feed. On the backup route, keep the Qpro VRCFaceTracking module open. Test training results on fresh poses.
 
 ## Models and facial hair
 
@@ -358,11 +370,11 @@ From V3.0.2, notes show headings, emphasis, lists and code formatting. HTTP/HTTP
 
 1. Use **View update** or the top-right **Update available** link to read release notes. After **Later**, that link keeps the checked details, including after a temporary network failure. **Check updates** checks manually.
 2. Stop tracking, then click **Update**. The ZIP checksum and packaged files are verified. Cancelling the download leaves the current app unchanged.
-3. Click **Restart and update**. App files are replaced in the **same folder**, then the Hub reopens. Start tracking yourself when ready.
-4. Open **Components**, review its changes and click **Update components** for installed modules/private runtimes that need updating.
+3. Click **Restart and update**. App files are replaced in the **same folder**, then the Hub reopens. Native forwarding resumes automatically.
+4. Open **Components**, review its changes and click **Update components** for installed optional components/private runtimes that need updating.
 
 > [!TIP] Your setup stays with you
-> Personal models, recordings, enabled options and connections are preserved. Retired bundled choices switch to the new developer model. A personal pair keeps its number and selection; the new model uses another number if needed. Updates do not start tracking automatically.
+> Personal models, recordings, enabled options and connections are preserved. Retired bundled choices switch to the new developer model. A personal pair keeps its number and selection; the new model uses another number if needed. Start optional features again when ready.
 
 ### Update choices
 
@@ -370,17 +382,19 @@ From V3.0.2, notes show headings, emphasis, lists and code formatting. HTTP/HTTP
 - **Include prereleases (test builds)** is off by default and remembered. A release needs a newer three-part version, such as `v3.0.1`. Same-version ZIPs are not offered; suffix tags such as `v3.0.1-beta.1` need manual download.
 - Without a checksum or a compatible package, use **View release on GitHub** for manual download.
 
+For older updater rejection, see [legacy recovery](#return-to-ordinary-tracking).
+
 ### Components and recovery
 
-Close VRCFaceTracking and wait for its module process to exit before a module update. Stop tracking/training before any component update. Reopen VRCFaceTracking afterward.
+Stop tracking and training before component updates. Close VRCFaceTracking and its helper before maintaining installed Qpro modules.
 
-Updates retain the streaming app and ROCm track. They do not enable optional components you never installed or change another app's Python. Errors stop remaining updates. Recovery copies are kept; ROCm retains its verified environment until new GPU checks pass. Allow extra disk space.
+Updates retain streaming-app and ROCm choices. Errors stop remaining updates. Recovery copies remain; ROCm retains its verified environment until new GPU checks pass.
 
 ## Controllers
 
 Open **Controllers** in the sidebar for the hand/controller compatibility check, feature switches and modes. Installation stays on **First-time setup**; the shared bottom bar starts/stops selected features.
 
-**Experimental hands + controllers** tracks real fingers while holding Touch Pro. Pose, buttons and haptics still come from controllers. It is **Virtual Desktop only**, separate from the face module and off by default.
+**Experimental hands + controllers** tracks real fingers while holding Touch Pro. Pose, buttons and haptics still come from controllers. It is **Virtual Desktop only**, separate from direct face output and off by default.
 
 ### Turn on these settings first
 
@@ -481,26 +495,29 @@ To remove thumb-rest input, close SteamVR. Open **First-time setup > Show option
 
 ## Return to ordinary tracking
 
-Stopping a session, removing a PC module and disabling headset gaze are different actions.
+Choose the action for the output, PC module or headset gaze method you want to stop.
 
 | What you want | What to do |
 | --- | --- |
-| Native cheek puff/suck | **Stop tracking**. Disable the individual cheek switches for native values during a session too. |
+| Native cheek puff/suck | Disable the individual cheek switches or press **Stop tracking** to end the extras session. |
 | Native eyebrows | Turn **Adjust eyebrow movement** off. |
-| Remove Qpro's whole face mapping | Stop, close VRCFaceTracking and use **Restore stock VRCFT** or **Uninstall Qpro module**. Check Activity before reopening. |
+| Stop face output | Close Companion on Direct VRChat. On the backup route, stop tracking in VRCFaceTracking or close it. |
 | Restore a recorded Hub gaze session | Stop, then **Recover Qpro gaze** and read its result. |
 | Remove Magisk independent gaze | Disable that gaze module in Magisk and reboot. |
 
-### Uninstall Qpro module
+### Older updater compatibility
 
-Open **First-time setup > Show optional tools and recovery > Recovery > Show VRCFaceTracking module maintenance**. Press **Uninstall Qpro module**, confirm and wait for **Setup step complete** before reopening VRCFaceTracking.
+Older updater rejects a package without the legacy bridge? Extract the full ZIP into a new folder. Keep the old folder and export personal models first. Do not copy only the EXE; both ZIP names contain the same package.
 
-Qpro modules are removed; verified source-module backups are restored when their original locations are free. **Activity > Restore stock VRCFT** does the same recovery. Occupied locations and damaged backups are left untouched with recovery instructions. Models/recordings stay saved.
+### Recover a VRCFaceTracking module
+
+**Activity > Restore stock VRCFT** appears when Companion detects an installed Qpro module or saved source-module backups. Close VRCFaceTracking and wait for **ModuleProcess** to exit. Press **Restore stock VRCFT**, confirm and check the removal and restore counts in **Activity** before reopening VRCFaceTracking.
+
+The action removes installed Qpro modules and restores verified source-module backups where their original folders are free. Verified backups stay in `%LOCALAPPDATA%\QproFaceTracking\module-recovery`. Models and recordings stay saved.
 
 > [!NOTE] The tongue model stays on the PC
-> It outputs only through a running Qpro camera process and module. Persistent eyebrow/smirk mapping belongs to the installed PC module; Magisk gaze is a separate headset modification.
+> Stop ends camera tongue output and optional expression adjustments. The streaming app's ordinary native face and eyes continue while Companion is open. Magisk gaze is a separate headset modification.
 
-If recovery refuses, retain the error and exact firmware build. **Reset legacy gaze** chooses normal gaze for an older unrecorded session; it cannot restore an unknown state or support a new engine.
 
 ## Setup problems
 
@@ -511,8 +528,9 @@ Read the first specific error in **Activity**. An exit code is a result, not the
 | Install runtime seems stuck | Keep the Hub open. Look for PowerShell PID, phase and still-running messages. With no script message, check Windows Security for blocked PowerShell and send the log. |
 | Code 1 with VCRUNTIME, native DLL or WinError 126/1114 | Install/repair [Microsoft's latest x64 Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170#latest-supported-redistributable-version), then retry. |
 | ModuleNotFoundError | Follow the missing-package/file repair message. Extract the whole named release ZIP. It is not automatically a Visual C++ issue. |
-| Module missing, wrong source or ready to switch | Close VRCFaceTracking and its module helper, choose **Streaming app**, then install. Recognized sources are backed up and replaced. Reopen afterward. |
-| No Steam Link expressions | Check OSC, eye/face sharing and **9015**. Remove competing source modules and restart VRCFaceTracking. |
+| Waiting for VRChat or OSC | Open VRChat, enable **Action Menu > OSC > Enabled** and verify the avatar accepts face tracking. Both output routes need VRChat OSC. |
+| Direct selected while VRCFaceTracking is open | Close VRCFaceTracking and its module helper. Wait for Companion to check the local VRChat connection. |
+| No Steam Link expressions | Check OSC, eye/face sharing and **9015**. Stop competing receivers on that native input port, reconnect and retry. |
 | ROCm missing torchgen or another import | Use **Verify / repair ROCm 10.1** or **Repair ROCm 10.1**. An import failure alone does not mean an unsupported GPU. |
 | Integrated AMD GPU appears | Qpro requires a mapped **discrete** Radeon. Check its driver and Windows detection; otherwise use CPU/NVIDIA runtime. |
 
@@ -523,12 +541,12 @@ USB failures use [the USB checklist](#usb-cable). Pairing `protocol fault` needs
 
 ## Tracking problems and support
 
-Check source, module, camera, model and avatar before retraining.
+Check native source, OSCQuery destination, camera, model and avatar before retraining.
 
 | Symptom | What to check |
 | --- | --- |
 | Tongue drops out or loses accuracy | Check loaded model, output state and freshness in **Activity**. Stale frames need performance attention; fresh hidden poses may need refinement. Try a known working model. |
-| Both avatar cheeks move together | Confirm the individual cheek switch and a running Qpro session. If VRCFaceTracking separates the sides, check the avatar's cheek parameters/blendshapes. |
+| Both avatar cheeks move together | Confirm the individual cheek switch and a running Qpro session. If the source separates the sides, check the avatar's cheek parameters/blendshapes. |
 | Pupils jump or lag | Lower **Pupil response**, check backend/frame age, close unused previews and reduce other camera work. |
 | Hands lag or only button gestures | Stop if FPS drops. Recheck [the required switches](#controllers), including Quest auto-switch, exact Virtual Desktop version and `HANDS_READY`; inspect both real fingers. |
 

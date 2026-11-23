@@ -12,4 +12,6 @@ Most setup is available in Qpro Companion's **First-time setup** page, opened wi
 | `Install-AMD-ROCm.cmd` | Install the separate AMD runtime after PC runtime setup. |
 | `Launch-QproRocm.cmd` | Check the AMD runtime and open the Hub. |
 
+Open **First-time setup > VRChat output** for face tracking. With **Direct to VRChat** selected, close VRCFaceTracking, choose your streaming app, enable **Action Menu > OSC > Enabled** in VRChat, and use **Check VRChat connection**. The connection and runtime helpers serve optional headset features. To install the optional **VRCFaceTracking backup**, use **Install Qpro backup module** in the Hub.
+
 See `../Quest_Pro_Enhanced_Face_Tracking_Guide.pdf` for beginner setup and troubleshooting.

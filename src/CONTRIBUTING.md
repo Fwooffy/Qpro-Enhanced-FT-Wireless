@@ -1,6 +1,6 @@
 # Contributing
 
-Issues and pull requests are welcome. Please state which Quest firmware, VRCFaceTracking version, connection type, GPU, and model you tested.
+Issues and pull requests are welcome. Please state which Quest firmware, streaming-app and VRChat versions, avatar output mode, connection type, GPU, and model you tested.
 
 Do not submit raw inward-camera captures, extracted Meta binaries/models, personal calibration data, or checkpoints trained on people who did not consent to public redistribution. Synthetic fixtures and summarized diagnostics are preferred.
 
@@ -9,9 +9,9 @@ Before opening a pull request:
 1. From `src/`, run `python -m unittest discover -p "test_*.py"` in a Qpro Python environment.
 2. Run `dotnet run --project tests/steam-osc/SteamOscSourceTests.csproj -c Release` with the .NET 10 SDK.
 3. Build `qpro-hub/QproFaceTracking.Hub.csproj` in Release mode.
-4. Verify that Stop restores the stock eye model, disables tongue output, stops the relay, and clears ADB forwarding.
+4. Verify that Stop restores the stock eye model, disables tongue output, stops the relay, and clears Qpro ADB forwarding. Check that ordinary native forwarding resumes after Stop and ends on Hub close. Test native standard face/eye sessions without ADB or Python separately from camera sessions.
 5. Avoid expanding firmware support without a hardware test and exact build number.
 
 See [tests and diagnostics](tests/README.md) for the release ZIP checker and test scope.
 
-The GitHub source includes tests and build scripts. The runnable release ZIP omits source code, tests, private captures, and personal models. The combined VRCFT bridge must remain the single owner of final face state. Gaze and tongue additions must not overwrite stock jaw, lip, cheek, brow, or blink values.
+The GitHub source includes tests and build scripts. The runnable release ZIP omits source code, tests, private captures, and personal models. The direct face bridge must remain the single owner of final face state during Companion sessions. Retained VRCFaceTracking modules and recovery tests cover older installations; installing one is not a new setup requirement. Gaze and tongue additions must not overwrite stock jaw, lip, cheek, brow, or blink values.

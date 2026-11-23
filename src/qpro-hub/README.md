@@ -1,12 +1,12 @@
 # Qpro Companion
 
-This is the native Windows control app for the Quest Pro tracking package. The Hub is a WinForms application targeting .NET 10. It keeps the existing PowerShell, Python, headset, and VRCFaceTracking components as the tracking back end.
+The Hub is a WinForms application targeting .NET 10. **Direct VRChat** reads native Virtual Desktop or Steam Link data and uses OSCQuery to discover local VRChat, with a verified local HTTP fallback. **VRCFaceTracking backup** delegates that output to the matching Qpro module. Native face and eye forwarding can run without ADB or Python. PowerShell, Python and ADB are helpers for optional features and setup.
 
 ## Pages
 
-- **Facial tracking:** compact Your session status followed by Eyes and Lower-face tracking; persistent Start tracking and Stop tracking buttons. Eyes groups independent gaze, pupil dilation and eyebrow movement. Lower-face tracking groups Tongue model, tongue output and native Individual cheek puff (1/0) / Individual cheek suck (1/0) switches. Camera settings and explanatory details expand when needed. Disabled cheek switches pass through the streaming app's original values. Start applies the selected cheek switches; Stop or closing the Hub restores native cheeks.
-- **Controllers:** separate sidebar page immediately after Facial tracking. Contains the existing hand/controller compatibility check, switches, thumb-rest modes and side selection. Optional installation stays on First-time setup. The fixed bottom Start tracking / Stop tracking bar controls all selected features across pages.
-- **First-time setup:** guided **Connect**, **PC runtime** and **VRCFT module** steps, with observed status above and one step shown at a time. **Check USB connection** verifies/retries USB. Wi-Fi enable and pairing controls are under **Show wireless setup options**. Only the selected source's Qpro module installer is shown; installing one source module removes the other. **Show optional tools and recovery** has three groups: **Optional features**, **Checks & Updates** and **Recovery**. Tools start closed; one opens at a time within a group. The full prerequisites stay beside their actions. Back/Next step and category changes only navigate; Open Facial tracking does not start tracking.
+- **Facial tracking:** compact Your session status followed by Eyes and Lower-face tracking; persistent Start tracking and Stop tracking buttons. Eyes groups independent gaze, pupil dilation and eyebrow movement. Lower-face tracking groups Tongue model, tongue output and native Individual cheek puff (1/0) / Individual cheek suck (1/0) switches. Camera settings and explanatory details expand when needed. Disabled cheek switches pass through the source's original values. Start applies selected extras. Stop restores ordinary native forwarding. Closing the Hub stops forwarding.
+- **Controllers:** separate sidebar page immediately after Facial tracking. Contains the existing hand/controller compatibility check, switches, thumb-rest modes and side selection. Optional installation stays on First-time setup. The fixed bottom Start tracking / Stop tracking bar controls selected extras across pages.
+- **First-time setup:** **VRChat output**, **Headset** and **PC runtime** sections. Select **Direct to VRChat** and close VRCFaceTracking to use the direct path. **Check VRChat connection** checks the local game after OSC is enabled. Choosing **VRCFaceTracking backup** exposes **Install Qpro backup module**. Installation saves recognized source modules for recovery and requires VRCFaceTracking and its helper to be closed. **Choose tracking features** opens the controls for optional features.
 - **Personalize:** Quick refinement has 16 tongue cards, Focused diagonals + facial hair has 22, and Full dataset has 58. Quick and Focused extend the selected tongue model; Full trains a new personal model from scratch. Each has a separate dataset queue and publishes a complete tongue model pair. There are no current cheek camera cards or cheek-head training steps.
 - **Model manager:** rename, export, import, and delete paired tongue models. The two bundled choices are Developer tongue model and Mustachio; personal imports/refinements remain available. Historical combined models are used for their tongue outputs.
 - **Activity:** Tracking health and Show tracking details above Detailed activity, with setup, training, tracking and error output.
@@ -20,7 +20,7 @@ This is the native Windows control app for the Quest Pro tracking package. The H
 - `HubEnvironment.cs`: ADB connection and local dependency discovery.
 - `HubScriptFactory.cs`: launches package scripts with the selected Python and ADB environment.
 - `HubSystem.cs`, `HubTheme.cs`, and `HubControls.cs`: status updates, styling, and custom controls.
-- `HubModuleHeartbeat.cs` and `HubModuleHeartbeatUi.cs`: validate and display the selected module's process, source, output slots and five current live channels.
+- `HubModuleHeartbeat.cs` checks the backup module's output ownership. Direct face input and destination checks run separately.
 
 Build with `dotnet build qpro-hub/QproFaceTracking.Hub.csproj -c Release` from `src/`. Pass `--root <complete release folder>` when launching a build outside the packaged release. The Hub does not bundle its headset binaries, pretrained models, Python runtime, or Android tools; those remain in the complete release ZIP.
 
@@ -30,11 +30,11 @@ Native individual cheek puff and suck use toggleable **1/0** separation of the s
 
 The pupil option is experimental. Its image and packet tests pass, and relative pupil animation has been live tested on a Quest Pro in VRChat. A Hub build or screenshot preview alone does not verify camera and avatar behavior on other systems.
 
-## Model and module checks
+## Model and direct-output checks
 
 Fresh setups select **Developer tongue model**. Its new visibility detector retains the original developer tongue direction outputs. A separate same-wearer recording showed fewer visible-tongue misses with native fusion, with one smile-tip miss remaining; some older beard poses worsened. Broader facial-hair and independent-wearer validation remain pending. **Mustachio** remains an opt-in experimental alternative. Updates preserve personal/imported selections and redirect verified retired bundled choices to the incoming developer model.
 
-The module heartbeat has **five live channels**: `gaze-left`, `gaze-right`, `tongue`, `pupil-left` and `pupil-right`. It verifies source and installed DLL identity, module process identity, output ownership and freshness before displaying a live-output result. Native cheek adjustments are session settings, not a camera-output channel. Matching installed files or a green process indicator does not prove that expressions move correctly in VRCFaceTracking or an avatar.
+The direct session reports source and VRChat destination observations. Verify movement on the avatar. The backup heartbeat fixtures cover VRCFaceTracking process identity, ownership and five timed override channels. Direct VRChat and backup each need their own live checks.
 
 Pupil image preprocessing can use a verified GPU runtime. CPU handles contour geometry and smoothing. Latest-frame workers and subscriber-only JPEG encoding bound queued work; Activity reports backend and timing.
 

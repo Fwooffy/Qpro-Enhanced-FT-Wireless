@@ -79,7 +79,7 @@ does not uninstall the hands runtime components.
 Controller switches, modes and the compatibility check are on the **Controllers**
 sidebar page, directly below **Facial tracking**. Optional installation stays on
 **First-time setup**. The bottom **Start tracking** / **Stop tracking** bar is
-shared across pages and controls all selected Qpro features.
+shared across pages and controls optional features. Ordinary face and eye data continue to stream while Companion is open.
 
 ### Headset and VRChat settings
 

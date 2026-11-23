@@ -5,6 +5,12 @@ Run these commands from `src/` in the source checkout or GitHub source export:
 | Check | Command | Purpose |
 | --- | --- | --- |
 | Python unit tests | `python -m unittest discover -p "test_*.py"` | Test capture, calibration, training, and runtime code with synthetic inputs. |
+| VRChat OSCQuery discovery | `dotnet run --project tests/vrchat-discovery/VrchatOscQueryTests.csproj -c Release` | Check local service discovery, verified HTTP fallback, namespace filtering and cancellation with local fixtures. |
+| Direct native face source | `dotnet run --project tests/vrchat-face-source/VrchatFaceSourceTests.csproj -c Release` | Check native source mapping, freshness, labels-only capture and socket ownership without a headset. |
+| Direct avatar output | `dotnet run --project tests/vrchat-face-output/VrchatFaceOutputTests.csproj -c Release` | Check native face blobs, recognized avatar parameters, built-in eye fallback and output reset over loopback UDP. |
+| Direct gaze path | `dotnet run --project tests/vrchat-gaze-path/VrchatGazePathTests.csproj -c Release` | Check gaze direction through the direct source and avatar output path with synthetic inputs. |
+| Direct session lifecycle | `dotnet run --project tests/vrchat-session/VrchatSessionTests.csproj -c Release` | Use real loopback HTTP/UDP to check late game discovery, Steam input, avatar changes, source loss, concurrent Stop and port release. No installed apps are used. |
+| Automatic native tracking | `dotnet run --project tests/hub-native-passthrough/HubNativePassthroughTests.csproj -c Release` | Exercise the Hub window with simulated sources and a local OSC receiver. Covers startup, changing streaming apps, stopping extras, retrying a busy port and closing the window. |
 | Cheek calibration compatibility | `dotnet run --project tests/cheek-calibration/CheekCalibrationTests.csproj -c Release` | Check three-pose profiles, source isolation, calibration telemetry and preservation of unsupported four-pose profiles. |
 | Camera cheek packets | `dotnet run --project tests/camera-cheeks/CameraCheekTests.csproj -c Release` | Check independent strengths, loopback-only packets, expiry and native fallback. |
 | Hub camera selection | `dotnet run --project tests/hub-camera-launch/HubCameraLaunchTests.csproj -c Release` | Check the actual tracking argument builder, paired model paths and independent tongue/camera-cheek switches without launching tracking. |
@@ -39,5 +45,7 @@ Run these commands from `src/` in the source checkout or GitHub source export:
 | Release metadata and source | `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File test_release_metadata.ps1` | Check module versions and public source inventories without installing a module. |
 | Release ZIP integrity | `python tests/check-release-zip.py <release.zip>` | Read the ZIP and verify its file list, hashes, and local Python imports. |
 | Release ZIP layout | `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tests/test-release-package.ps1` | Build small archives with the production ZIP writer; check branded downloads retain the old updater's app-folder name without changing payloads or checksums. |
+
+Direct VRChat tests cover native source ingestion, OSCQuery discovery, avatar mapping and output lifecycle with synthetic/loopback fixtures. A new setup does not install VRCFaceTracking. Tests that mention installed VRCFaceTracking APIs or modules below remain legacy compatibility/recovery checks and do not establish direct-output behavior. Native standard face/eye output without ADB/Python and camera tracking with their prerequisites need separate live acceptance.
 
 The runnable release ZIP contains the app and runtime, not these source tests. A passing synthetic test does not establish that a particular headset firmware, streaming app, or avatar works live.

@@ -154,7 +154,7 @@ class GuideDoc(BaseDocTemplate):
     def __init__(self, version: str, titles: list[str], output: Path = OUTPUT):
         super().__init__(str(output), pagesize=A4, leftMargin=MARGIN, rightMargin=MARGIN,
                          topMargin=88, bottomMargin=66, title=f"Qpro Companion {version} - Setup and feature guide",
-                         author="Fwooffy", subject="Rooted Quest Pro setup, features and recovery", pageCompression=1)
+                         author="Fwooffy", subject="Quest Pro native tracking, camera features and recovery", pageCompression=1)
         self.version, self.titles, self.records = version, titles, []
         self.addPageTemplates(PageTemplate("guide", frames=[Frame(MARGIN, FRAME_BOTTOM, WIDTH, HEIGHT,
             leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)], onPage=self.paint_page))
@@ -187,7 +187,7 @@ class GuideDoc(BaseDocTemplate):
         c.line(MARGIN, 47, PAGE_W - MARGIN, 47)
         c.setFont("Helvetica", 8)
         c.setFillColor(MUTED)
-        c.drawString(MARGIN, 29, "ROOTED QUEST PRO")
+        c.drawString(MARGIN, 29, "META QUEST PRO")
         c.setFillColor(BORDER)
         c.setFont("Helvetica-Bold", 10)
         c.drawCentredString(PAGE_W / 2, 28, "Made by Fwooffy")
@@ -263,16 +263,17 @@ def page_content(section: dict, number: int):
 
 def cover(version: str):
     cover_title = ParagraphStyle("cover title", parent=TITLE, fontSize=32, leading=38)
-    return [paragraph("QUEST PRO  /  ROOTED HEADSET", KICKER), Spacer(1, 10),
+    return [paragraph("QUEST PRO  /  VRCHAT", KICKER), Spacer(1, 10),
             paragraph("Qpro Companion", cover_title), paragraph("Set up once.\nChoose what you track.", TITLE),
-            paragraph(f"{version} release\nUSB or wireless ADB - Virtual Desktop or Steam Link", DECK),
+            paragraph(f"{version} guide\nVirtual Desktop or Steam Link", DECK),
             CoverMark(), Spacer(1, 24), paragraph("Start here", H3),
             paragraph("Get ordinary face tracking moving first. Then add tongue tracking, cheek controls, "
                       "pupil dilation or other optional features at your own pace."),
-            *note("WARNING", "Required before setup", "A **rooted Meta Quest Pro** and the latest "
-                  "**VRCFaceTracking from Steam**. Other Quest models and unrooted headsets are not supported."),
-            paragraph("Follow the three setup steps on the next page. After ordinary face tracking works, "
-                      "read the pages for the optional features you choose. Underlined links, the Contents "
+            *note("WARNING", "Required before setup", "A **Meta Quest Pro**, Virtual Desktop or Steam Link, and **VRChat OSC enabled**. "
+                  "Enable eye and face sharing in your streaming app. Camera and headset tools require root."),
+            paragraph("Choose Direct VRChat to forward native face and eyes automatically while Companion is open. "
+                      "An optional VRCFaceTracking backup is available. For camera features, use the Headset "
+                      "and PC runtime sections in First-time setup. Underlined links, the Contents "
                       "link and PDF bookmarks help you move between topics.", SMALL)]
 
 

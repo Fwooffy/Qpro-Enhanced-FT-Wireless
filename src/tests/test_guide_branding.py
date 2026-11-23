@@ -50,12 +50,13 @@ def main():
     check("No PDF JavaScript", "/JavaScript" not in str(reader.trailer["/Root"].get("/Names", {})))
 
     required = [f"QproCompanion.{version}.zip", f"QproFaceTracking.{version}.zip", "QproFaceTracking.exe",
-                "update compatibility", ".qptonguemodel", "Qpro Companion — Virtual Desktop",
-                "Qpro Companion — Steam Link", "Older QproFaceTracking cards remain recognized",
+                "update compatibility", ".qptonguemodel", "Action Menu > OSC > Enabled",
+                "OSCQuery", "Use All Tracking Keys", "/tracking/face/v1", "102-byte",
+                "Check VRChat connection", "Optional VRCFaceTracking backup",
                 "Developer tongue model", "Mustachio", "two bundled choices", "Local model numbers can change",
                 "Weighted camera + native", "same wearer's headset", "small tongue tip",
                 "broader wearer and facial-hair testing remain pending", "Individual cheek puff (1/0)",
-                "Individual cheek suck (1/0)", "original puff or suck values", "restores native cheeks",
+                "Individual cheek suck (1/0)", "original puff or suck values", "Native forwarding after Stop", "Native face and eyes stream automatically", "Close Companion to stop forwarding", "local HTTP fallback", "A crash cannot guarantee",
                 "16 tongue cards", "22 tongue cards", "58 tongue cards", "Facial tracking", "Controllers",
                 "Activity > Tracking health", "Automatically switch between controllers and hands",
                 "Skip Check gaze setup and Prepare gaze", "Thumb-rest mode", "Apply mode to",
@@ -67,12 +68,17 @@ def main():
                 "Pupil, eyebrow and tongue controls work separately", "VRChat menu scrolling",
                 "Automatic selection requires an existing binding selection",
                 "Preparation is not proof of live scrolling",
-                "The bottom Start tracking / Stop tracking bar controls all selected features",
-                "1. Connect", "2. PC runtime", "3. VRCFT module", "Next step", "Open Facial tracking",
+                "The bottom Start tracking / Stop tracking bar controls optional features",
+                "Steam Link capture shares Companion's existing feed",
+                "First-time setup > VRChat output", "First-time setup > Headset", "First-time setup > PC runtime",
+                "Choose tracking features", "Output route switch defaults to Direct to VRChat",
+                "select VRCFaceTracking backup on the same switch", "close VRCFaceTracking and select Direct to VRChat",
+                "Install Qpro backup module", "Check backup connection", "Both output routes need VRChat OSC",
+                "Installation backs up recognized source modules",
                 "Show optional tools and recovery", "Show wireless setup options", "Show pairing options",
-                "View setup activity", "ModuleProcess", "VRCFaceTracking module maintenance", "Show tongue settings",
+                "View setup activity", "ModuleProcess", "Activity > Restore stock VRCFT", "Show tongue settings",
                 "Optional features", "Checks & Updates", "Recovery > Show gaze recovery tools",
-                "Recovery > Show PC runtime repair and recovery", "Recovery > Show VRCFaceTracking module maintenance",
+                "Recovery > Show PC runtime repair and recovery", "detects an installed Qpro module or saved source-module backups",
                 "read-only preflight result", "PE code/layout family", "fixed-offset hooks",
                 "Mono hand-result fields, types, sizes and layout", "not support for all versions"]
     for phrase in required:
@@ -81,8 +87,17 @@ def main():
     for phrase in ["QPRO HUB", "Live tracking", "Camera cheek puff", "Calibrate cheek puff",
                    "Developer lower-face model", "v13", "37 cards", "79 cards", "21 cheek",
                    "qpro_touch_pro", "TOUCHPAD_WAITING", "Under Show hand and controller details, choose",
-                   "Reconnect USB", "Show module uninstall", "Show camera settings"]:
+                   "Reconnect USB", "Show module uninstall", "Show camera settings",
+                   "Install your VRCFaceTracking module", "3. VRCFT module",
+                   "latest VRCFaceTracking from Steam", "Stream native face and eyes", "Stop ends Companion output",
+                   "1. Connect", "2. PC runtime", "3. VRChat OSC", "Legacy recovery only",
+                   "Show VRCFaceTracking module maintenance", "Uninstall Qpro module",
+                   "Direct to VRChat (default)", "Return to direct output"]:
         check("No obsolete instruction: " + phrase, phrase not in flat)
+
+    markdown = (source / "PDF_GUIDE.md").read_text(encoding="utf-8")
+    for label in ("Open Facial tracking", "Next step"):
+        check("No obsolete setup button: " + label, f"**{label}**" not in markdown)
 
     links = 0
     page_refs = [page.indirect_reference for page in reader.pages]
@@ -118,18 +133,12 @@ def main():
         check(f"{name}: no trailing spaces", not any(line.rstrip() != line for line in text.splitlines()))
     for path in [source.parent / "README.md", source / "RELEASE_INSTRUCTIONS.md", source / "RELEASE_README.md"]:
         text = path.read_text(encoding="utf-8")
-        # The public README describes the published stable release while these
-        # setup documents can describe a newer test build. Verify both aliases
-        # for each document's declared version without rewriting release history.
-        document_version = re.search(r"^# Qpro Companion (V\d+\.\d+\.\d+)", text)
-        if document_version is None:
-            raise ValueError(f"{path}: missing public release version")
-        document_version = document_version[1]
         check(f"{path.name}: manual launch kept accurate", "QproFaceTracking.exe" in text)
         if path == source.parent / "README.md":
-            check("Published README: named release download", f"QproCompanion.{document_version}.zip" in text)
+            check("Published README: latest public release", "/releases/latest)" in text)
             check("Published README: legacy identities explained", "existing app/data folders" in text and "update compatibility" in text)
         else:
+            document_version = re.search(r"^# Qpro Companion (V\d+\.\d+\.\d+)", text)[1]
             check(f"{path.name}: both download aliases explained", f"QproCompanion.{document_version}.zip" in text and f"QproFaceTracking.{document_version}.zip" in text)
         check(f"{path.name}: model export preserved", ".qptonguemodel" in text)
 
