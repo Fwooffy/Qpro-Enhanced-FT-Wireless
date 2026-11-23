@@ -74,6 +74,32 @@ class RuntimeContractTests(unittest.TestCase):
         _magic, _version, flags, *_values = struct.unpack(PACKET_FORMAT, packet)
         self.assertEqual(flags, 2)
 
+    def test_direct_broadcaster_publishes_physical_left_with_invalid_right(self):
+        sock = mock.Mock()
+        with mock.patch.object(gaze_runtime.socket, "socket", return_value=sock):
+            broadcaster = gaze_runtime.GazeBroadcaster(27275, physical_order=True)
+        broadcaster.send(np.asarray([10.0, -5.0]), np.asarray([float("nan"), 2.0]),
+                         left_valid=True, right_valid=False)
+        packet, endpoint = sock.sendto.call_args.args
+        self.assertEqual(endpoint, ("127.0.0.1", 27275))
+        magic, version, flags, _, lx, ly, rx, ry = struct.unpack(PACKET_FORMAT, packet)
+        self.assertEqual((magic, version, flags), (PACKET_MAGIC, PACKET_VERSION, 1))
+        self.assertAlmostEqual(lx, math.radians(10.0))
+        self.assertAlmostEqual(ly, math.radians(-5.0))
+        self.assertEqual((rx, ry), (0.0, 0.0))
+
+    def test_invalid_eye_resets_only_its_own_filter(self):
+        eye_filter = gaze_runtime.IndependentEyeFilter(2)
+        eye_filter.update(np.asarray([1.0, 2.0]), np.asarray([3.0, 4.0]), 1.0)
+        left, right = eye_filter.update(np.asarray([1.0, 2.0]), np.full(2, np.nan), 1.02,
+                                        right_valid=False)
+        np.testing.assert_array_equal(left, [1.0, 2.0])
+        np.testing.assert_array_equal(right, [0.0, 0.0])
+        self.assertEqual(len(eye_filter.left_history), 2)
+        self.assertEqual(len(eye_filter.right_history), 0)
+        _, right = eye_filter.update(np.asarray([1.0, 2.0]), np.asarray([8.0, 9.0]), 1.04)
+        np.testing.assert_array_equal(right, [8.0, 9.0])
+
     def test_headless_runtime_handles_valid_and_idle_loops(self):
         self.assertEqual(self._run_with_one_sample(headless=True), 0)
 
@@ -81,7 +107,15 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(self._run_with_one_sample(headless=False), 0)
 
     def test_indefinite_no_window_outputs_until_stop_and_cleans_up(self):
-        self.assertEqual(self._run_with_one_sample(headless=False, no_window=True), 0)
+        for output_switch in ("--output-vrcft", "--direct-vrchat"):
+            with self.subTest(output_switch=output_switch):
+                self.assertEqual(self._run_with_one_sample(headless=False, no_window=True,
+                                                          output_switch=output_switch), 0)
+
+    def test_runtime_remaps_detector_validity_before_direct_output(self):
+        self.assertEqual(self._run_with_one_sample(headless=False, no_window=True,
+                                                  output_switch="--direct-vrchat",
+                                                  physical_left_only=True), 0)
 
     def test_preview_throttles_rendering_without_waiting_for_another_sample(self):
         self.assertEqual(self._run_with_one_sample(headless=False, check_throttle=True), 0)
@@ -93,11 +127,13 @@ class RuntimeContractTests(unittest.TestCase):
             ]), self.assertRaisesRegex(ValueError, "Preview FPS"):
                 gaze_runtime.main()
 
-    def _run_with_one_sample(self, *, headless: bool, no_window: bool = False, check_throttle: bool = False) -> int:
+    def _run_with_one_sample(self, *, headless: bool, no_window: bool = False,
+                             check_throttle: bool = False, output_switch: str = "--output-vrcft",
+                             physical_left_only: bool = False) -> int:
         sample = RawEyeSample(
             pc_monotonic_ns=1,
             kernel_time_s=1.0,
-            left_valid=True,
+            left_valid=not physical_left_only,
             right_valid=True,
             left_vector=(0.1, 0.0, 1.0),
             right_vector=(-0.1, 0.0, 1.0),
@@ -106,12 +142,14 @@ class RuntimeContractTests(unittest.TestCase):
         reader.samples = queue.Queue()
         reader.samples.put(sample)
         reader.errors = queue.Queue()
-        calibration = {"quality_gate": {"convergence_pass": False}}
+        calibration = {"quality_gate": {"convergence_pass": False}, "detector_tag_mapping": {
+            "physical_left": "trace_tag_1", "physical_right": "trace_tag_0",
+        }}
         arguments = ["gaze", "--adb", "test", "--calibration", "test"]
         if headless:
             arguments.extend(["--headless-seconds", "0.03"])
         if no_window:
-            arguments.extend(["--no-window", "--output-vrcft", "--stop-file", "test-stop"])
+            arguments.extend(["--no-window", output_switch, "--stop-file", "test-stop"])
         if check_throttle:
             arguments.extend(["--stop-file", "test-stop"])
 
@@ -138,7 +176,9 @@ class RuntimeContractTests(unittest.TestCase):
                 if no_window:
                     patches.enter_context(mock.patch.object(gaze_runtime.Path, "exists", side_effect=[False, False, True]))
                     broadcaster = mock.Mock()
-                    patches.enter_context(mock.patch.object(gaze_runtime, "GazeBroadcaster", return_value=broadcaster))
+                    create_broadcaster = patches.enter_context(
+                        mock.patch.object(gaze_runtime, "GazeBroadcaster", return_value=broadcaster)
+                    )
                 if check_throttle:
                     patches.enter_context(mock.patch.object(gaze_runtime.Path, "exists", side_effect=[False] * 100 + [True]))
                     # Advance one millisecond per loop, keeping this check
@@ -150,9 +190,13 @@ class RuntimeContractTests(unittest.TestCase):
             result = gaze_runtime.main()
 
             if no_window:
+                create_broadcaster.assert_called_once_with(
+                    27275, physical_order=output_switch == "--direct-vrchat"
+                )
                 for call in ui.values():
                     call.assert_not_called()
                 broadcaster.send.assert_called_once()
+                self.assertEqual(broadcaster.send.call_args.args[2:], (True, not physical_left_only))
                 broadcaster.close.assert_called_once_with()
             if check_throttle:
                 self.assertGreaterEqual(ui["imshow"].call_count, 2)

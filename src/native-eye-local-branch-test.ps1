@@ -19,7 +19,8 @@ param(
     [int]$ConvergenceSeconds = 80,
     [ValidateRange(0, 30)]
     [int]$HeadlessSeconds = 0,
-    [string]$StopFile = ""
+    [string]$StopFile = "",
+    [switch]$DirectVrchat
 )
 
 $ErrorActionPreference = "Stop"
@@ -65,7 +66,9 @@ $gazeJournalPath = "/data/local/tmp/qpro-independent-gaze-session.json"
 $inspectionAction = $RestoreOnly -or $RestoreIfActive -or $InspectOnly -or $ResetLegacySelection
 $overlay = Resolve-WorkspacePath $OverlayPath
 $calibrationOutputPath = Resolve-WorkspacePath $CalibrationOutput
+$liveGazeOutput = $VrcftOutput -or $DirectVrchat
 
+if ($VrcftOutput -and $DirectVrchat) { throw "Choose either -DirectVrchat or -VrcftOutput." }
 if (-not (Test-Path -LiteralPath $adb)) { throw "ADB not found. Re-extract the release so platform-tools\adb.exe is present." }
 if (-not $inspectionAction -and -not (Test-Path -LiteralPath $python)) { throw "Project Python environment not found under .venv\Scripts." }
 if ($Calibrate -and -not $inspectionAction) {
@@ -74,7 +77,7 @@ if ($Calibrate -and -not $inspectionAction) {
         throw "Start SteamVR before visual-axis calibration."
     }
 }
-if (($RuntimePreview -or $VrcftOutput) -and -not $inspectionAction -and -not (Test-Path -LiteralPath $calibrationOutputPath)) {
+if (($RuntimePreview -or $liveGazeOutput) -and -not $inspectionAction -and -not (Test-Path -LiteralPath $calibrationOutputPath)) {
     throw "Independent visual-axis calibration not found: $calibrationOutputPath"
 }
 if ($VrcftOutput -and -not $inspectionAction -and -not (Get-Process -Name "VRCFaceTracking" -ErrorAction SilentlyContinue)) {
@@ -609,13 +612,16 @@ try {
     Write-Host "HEADSET_TRACKING_RESTART phase=apply status=running"
     Write-Host "Temporary independent Meta gaze branch active. Q restores the recorded pre-Qpro eye state."
 
-    if ($RuntimePreview -or $VrcftOutput) {
+    if ($RuntimePreview -or $liveGazeOutput) {
         $runtimeArguments = @(
             (Join-Path $root "independent_visual_axis_runtime.py"),
             "--adb", $adb,
             "--calibration", $calibrationOutputPath
         )
-        if ($VrcftOutput) { $runtimeArguments += @("--output-vrcft", "--sample-timeout-seconds", "20") }
+        if ($liveGazeOutput) {
+            $outputSwitch = if ($DirectVrchat) { "--direct-vrchat" } else { "--output-vrcft" }
+            $runtimeArguments += @($outputSwitch, "--sample-timeout-seconds", "20")
+        }
         if ($NoWindow) { $runtimeArguments += "--no-window" }
         if ($HeadlessSeconds -gt 0) {
             $runtimeArguments += @("--headless-seconds", $HeadlessSeconds)

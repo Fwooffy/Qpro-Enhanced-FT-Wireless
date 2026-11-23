@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply the saved independent visual-axis calibration and optionally feed VRCFT."""
+"""Apply the saved independent visual-axis calibration and publish gaze overrides."""
 
 from __future__ import annotations
 
@@ -45,24 +45,27 @@ def load_calibration(path: str | Path) -> dict[str, Any]:
     return payload
 
 
+def detector_tag_indices(calibration: dict[str, Any]) -> tuple[int, int]:
+    tag_mapping = calibration.get("detector_tag_mapping", {})
+    tags = {"trace_tag_0": 0, "trace_tag_1": 1}
+    left = tags.get(tag_mapping.get("physical_left", "trace_tag_0"))
+    right = tags.get(tag_mapping.get("physical_right", "trace_tag_1"))
+    if left is None or right is None or left == right:
+        raise ValueError("The calibration has an unsupported detector-tag mapping. Recalibrate independent gaze and retry.")
+    return left, right
+
+
 def calibrated_angles(
     calibration: dict[str, Any], sample: RawEyeSample
 ) -> tuple[np.ndarray, np.ndarray]:
-    tag_mapping = calibration.get("detector_tag_mapping", {})
-    physical_left_source = tag_mapping.get("physical_left", "trace_tag_0")
-    physical_right_source = tag_mapping.get("physical_right", "trace_tag_1")
-    sources = {
-        "trace_tag_0": sample.left_angles,
-        "trace_tag_1": sample.right_angles,
-    }
-    if physical_left_source not in sources or physical_right_source not in sources:
-        raise ValueError("The calibration has an unsupported detector-tag mapping")
+    left_tag, right_tag = detector_tag_indices(calibration)
+    sources = (sample.left_angles, sample.right_angles)
     left = np.asarray(
-        apply_axis_eye_mapping(calibration["left"], sources[physical_left_source]),
+        apply_axis_eye_mapping(calibration["left"], sources[left_tag]),
         dtype=np.float64,
     )
     right = np.asarray(
-        apply_axis_eye_mapping(calibration["right"], sources[physical_right_source]),
+        apply_axis_eye_mapping(calibration["right"], sources[right_tag]),
         dtype=np.float64,
     )
     return left, right
@@ -84,15 +87,17 @@ def encode_packet(
     right_deg: np.ndarray,
     left_valid: bool = True,
     right_valid: bool = True,
+    *,
+    physical_order: bool = False,
 ) -> bytes:
-    # Physical testing in VRChat is the authoritative final boundary test.
-    # VRCFT/VRChat's exposed Left channel drives the user's physical right eye
-    # and vice versa: a same-target near fixation diverged when physical eyes
-    # were sent to same-named channels. Cross only at packet publication; the
-    # detector ownership, per-eye fits, previews, and filters stay physical.
-    left_x, left_y = vrcft_angles(right_deg)
-    right_x, right_y = vrcft_angles(left_deg)
-    flags = int(right_valid) | (int(left_valid) << 1)
+    # The legacy VRCFT route needed crossed channels in a live near-fixation
+    # test. The direct receiver takes anatomical sides for built-in gaze.
+    if not physical_order:
+        left_deg, right_deg = right_deg, left_deg
+        left_valid, right_valid = right_valid, left_valid
+    left_x, left_y = vrcft_angles(left_deg) if left_valid else (0.0, 0.0)
+    right_x, right_y = vrcft_angles(right_deg) if right_valid else (0.0, 0.0)
+    flags = int(left_valid) | (int(right_valid) << 1)
     return struct.pack(
         PACKET_FORMAT,
         PACKET_MAGIC,
@@ -107,12 +112,15 @@ def encode_packet(
 
 
 class GazeBroadcaster:
-    def __init__(self, port: int) -> None:
+    def __init__(self, port: int, *, physical_order: bool = False) -> None:
         self._address = ("127.0.0.1", int(port))
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._physical_order = physical_order
 
-    def send(self, left: np.ndarray, right: np.ndarray) -> None:
-        self._socket.sendto(encode_packet(left, right), self._address)
+    def send(self, left: np.ndarray, right: np.ndarray, left_valid: bool, right_valid: bool) -> None:
+        packet = encode_packet(left, right, left_valid, right_valid,
+                               physical_order=self._physical_order)
+        self._socket.sendto(packet, self._address)
 
     def close(self) -> None:
         self._socket.close()
@@ -122,7 +130,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--adb", required=True)
     parser.add_argument("--calibration", required=True)
-    parser.add_argument("--output-vrcft", action="store_true")
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--output-vrcft", action="store_true")
+    output.add_argument("--direct-vrchat", action="store_true", help="publish gaze for the Qpro Companion direct VRChat session")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--headless-seconds", type=float, default=0.0)
     parser.add_argument("--no-window", action="store_true", help="Run until stopped without rendering the gaze preview")
@@ -142,6 +152,7 @@ def main() -> int:
         raise ValueError("Preview FPS must be between 1 and 60")
 
     calibration = load_calibration(arguments.calibration)
+    left_tag, right_tag = detector_tag_indices(calibration)
     reader = RawTraceEyeReader(arguments.adb)
     eye_filter = IndependentEyeFilter(
         2,
@@ -150,7 +161,10 @@ def main() -> int:
         beta=0.15,
         derivative_cutoff_hz=1.5,
     )
-    broadcaster = GazeBroadcaster(arguments.port) if arguments.output_vrcft else None
+    broadcaster = (
+        GazeBroadcaster(arguments.port, physical_order=arguments.direct_vrchat)
+        if arguments.output_vrcft or arguments.direct_vrchat else None
+    )
     latest: RawEyeSample | None = None
     filtered_left: np.ndarray | None = None
     filtered_right: np.ndarray | None = None
@@ -187,11 +201,14 @@ def main() -> int:
                     break
                 latest = sample
                 left, right = calibrated_angles(calibration, sample)
+                tag_validity = (sample.left_valid, sample.right_valid)
+                left_valid, right_valid = tag_validity[left_tag], tag_validity[right_tag]
                 filtered_left, filtered_right = eye_filter.update(
-                    left, right, sample.pc_monotonic_ns / 1_000_000_000.0
+                    left, right, sample.pc_monotonic_ns / 1_000_000_000.0,
+                    left_valid=left_valid, right_valid=right_valid,
                 )
                 if broadcaster is not None:
-                    broadcaster.send(filtered_left, filtered_right)
+                    broadcaster.send(filtered_left, filtered_right, left_valid, right_valid)
                 rate_count += 1
                 received_valid |= sample.left_valid and sample.right_valid
 
@@ -225,7 +242,9 @@ def main() -> int:
             image = np.zeros((760, 1180, 3), dtype=np.uint8)
             put_text(image, "Quest Pro calibrated independent gaze", (24, 40),
                      (245, 245, 245), 0.9, 2)
-            mode = "LIVE VRCFT GAZE-ONLY OUTPUT" if broadcaster else "OBSERVATION ONLY"
+            mode = "OBSERVATION ONLY"
+            if broadcaster is not None:
+                mode = "GAZE OVERRIDE TO QPRO COMPANION" if arguments.direct_vrchat else "LIVE VRCFT GAZE-ONLY OUTPUT"
             mode_color = (80, 235, 120) if broadcaster else (50, 175, 255)
             put_text(image, mode, (24, 74), mode_color, 0.58, 1)
             put_text(
@@ -258,7 +277,7 @@ def main() -> int:
                          (805, 374), (80, 235, 120), 0.48, 1)
                 left_vrcft = vrcft_angles(filtered_left)
                 right_vrcft = vrcft_angles(filtered_right)
-                put_text(image, "VRCFT radians (calibrated yaw, pitch)", (24, 470),
+                put_text(image, "Radians (calibrated yaw, pitch)", (24, 470),
                          (210, 210, 210), 0.55, 1)
                 put_text(image,
                          f"L ({left_vrcft[0]:+.3f}, {left_vrcft[1]:+.3f})   "

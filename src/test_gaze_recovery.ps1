@@ -7,6 +7,37 @@ $errors = $null
 $sourcePath = Join-Path $PSScriptRoot 'native-eye-local-branch-test.ps1'
 $ast = [Management.Automation.Language.Parser]::ParseFile($sourcePath, [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw ($errors | Out-String) }
+
+# Exercise the live argument path without starting the headset gaze session.
+& {
+    function Get-Process { param($Name, $ErrorAction) }
+    function Test-Path { param($LiteralPath) return $fixtureHasGazeProfile }
+    $fixtureHasGazeProfile = $true
+    $gazeGuards = @($ast.EndBlock.Statements | Where-Object {
+        $_.Extent.Text -match '^\$liveGazeOutput =|^if \(\$VrcftOutput|^if \(\(\$RuntimePreview -or \$liveGazeOutput\)'
+    })
+    $gazeLaunch = $ast.Find({ param($node)
+        $node -is [Management.Automation.Language.IfStatementAst] -and
+        $node.Clauses[0].Item1.Extent.Text -eq '$RuntimePreview -or $liveGazeOutput'
+    }, $true)
+    if ($gazeGuards.Count -ne 4 -or -not $gazeLaunch) { throw 'Live gaze launcher guards were not found.' }
+    $arguments = @($gazeLaunch.Clauses[0].Item2.Statements | Where-Object { $_.Extent.Text -notmatch '^& \$python' })
+    $liveProbe = [scriptblock]::Create((@($ast.ParamBlock.Extent.Text,
+        '$root = Split-Path -Parent $sourcePath; $adb = "fixture-adb"; $calibrationOutputPath = "fixture-profile"; $inspectionAction = $false') +
+        @($gazeGuards | ForEach-Object { $_.Extent.Text }) +
+        @($arguments | ForEach-Object { $_.Extent.Text }) + ',$runtimeArguments') -join "`n")
+    $direct = & $liveProbe -DirectVrchat -NoWindow
+    if (($direct -join '|') -notlike '*|fixture-profile|--direct-vrchat|--sample-timeout-seconds|20|--no-window') {
+        throw 'Direct gaze did not enable the expected output and timeout without VRCFaceTracking.'
+    }
+    try { $null = & $liveProbe -VrcftOutput; throw 'Legacy gaze bypassed its VRCFaceTracking guard.' }
+    catch { if ($_.Exception.Message -notlike 'Start VRCFaceTracking before*') { throw } }
+    $fixtureHasGazeProfile = $false
+    try { $null = & $liveProbe -DirectVrchat; throw 'Direct gaze bypassed its calibration guard.' }
+    catch { if ($_.Exception.Message -notlike 'Independent visual-axis calibration not found:*') { throw } }
+    Write-Host 'PASS: Direct gaze enables local output, keeps profile validation and preserves the legacy VRCFaceTracking guard.'
+}
+
 foreach ($name in @('Get-RootShellRequest', 'Get-TargetMount', 'Get-GazeDeviceSerial', 'Get-GazeModules', 'Get-GazeServicePid', 'Get-GazeForeignMounts', 'Assert-GazeServiceModel', 'Assert-NoExternalGazeMethod', 'Show-GazeSetup', 'Reset-LegacyGazeSelection', 'Get-GazeFileHash', 'Get-GazeOwnerHost', 'Assert-GazeOwnerStopped', 'Read-GazeJournal', 'New-GazeJournal', 'Restore-StockModel', 'Invoke-GazeRecovery')) {
     $function = $ast.Find({ param($node)
         $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name

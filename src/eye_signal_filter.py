@@ -98,22 +98,37 @@ class IndependentEyeFilter:
         self.left.reset()
         self.right.reset()
 
+    def _update_eye(
+        self,
+        value: np.ndarray,
+        timestamp_s: float,
+        valid: bool,
+        history: collections.deque[np.ndarray],
+        eye_filter: OneEuroVectorFilter,
+    ) -> np.ndarray:
+        if not valid:
+            history.clear()
+            eye_filter.reset()
+            return np.zeros(self.dimensions, dtype=np.float64)
+        history.append(value.copy())
+        median = np.median(np.stack(history), axis=0)
+        return eye_filter.update(median, timestamp_s)
+
     def update(
         self,
         left: np.ndarray,
         right: np.ndarray,
         timestamp_s: float,
+        *,
+        left_valid: bool = True,
+        right_valid: bool = True,
     ) -> tuple[np.ndarray, np.ndarray]:
         left_value = np.asarray(left, dtype=np.float64)
         right_value = np.asarray(right, dtype=np.float64)
         expected = (self.dimensions,)
         if left_value.shape != expected or right_value.shape != expected:
             raise ValueError(f"both eye values must have shape {expected}")
-        self.left_history.append(left_value.copy())
-        self.right_history.append(right_value.copy())
-        left_median = np.median(np.stack(self.left_history), axis=0)
-        right_median = np.median(np.stack(self.right_history), axis=0)
         return (
-            self.left.update(left_median, timestamp_s),
-            self.right.update(right_median, timestamp_s),
+            self._update_eye(left_value, timestamp_s, left_valid, self.left_history, self.left),
+            self._update_eye(right_value, timestamp_s, right_valid, self.right_history, self.right),
         )
