@@ -55,6 +55,7 @@ $sourceFiles = @(
     "build-and-run.ps1",
     "camera-transport-recovery.ps1",
     "test_camera_transport_recovery.ps1",
+    "test_companion_launcher.ps1",
     "test_relay_listener_startup.ps1",
     "test_wireless_camera_identity.ps1",
     "test_camera_transport_status.py",
@@ -168,9 +169,11 @@ $sourceFiles = @(
     "qpro-hub\Program.cs",
     "vd-label-bridge\Qpro.VirtualDesktopLabelBridge.csproj",
     "vd-label-bridge\Program.cs",
+    "vd-label-bridge\VirtualDesktopFaceMap.cs",
     "vrcft-gaze-bridge\Qpro.GazeBridge.csproj",
     "vrcft-gaze-bridge\module.json",
     "shared\EyebrowPreference.cs",
+    "shared\FaceOutputOwnership.cs",
     "shared\CheekTrackingSession.cs",
     "shared\CheekPuffCalibrationProfile.cs",
     "shared\CheekPuffTelemetry.cs",
@@ -226,9 +229,12 @@ foreach ($folder in @('hybrid', 'controller-input')) {
         Copy-SourceFile $file.FullName.Substring($root.Length + 1)
     }
 }
-foreach ($hubSource in Get-ChildItem -LiteralPath (Join-Path $root "qpro-hub") -File -Filter "*.cs") {
-    Copy-SourceFile ("qpro-hub\" + $hubSource.Name)
+foreach ($folder in @('qpro-hub', 'qpro-hub\DirectVrchat')) {
+    foreach ($hubSource in Get-ChildItem -LiteralPath (Join-Path $root $folder) -File -Filter '*.cs') {
+        Copy-SourceFile (Join-Path $folder $hubSource.Name)
+    }
 }
+Copy-SourceFile 'qpro-hub\DirectVrchat.sources.props'
 foreach ($bridgeSource in Get-ChildItem -LiteralPath (Join-Path $root "vrcft-gaze-bridge") -File -Filter "*.cs") {
     Copy-SourceFile ("vrcft-gaze-bridge\" + $bridgeSource.Name)
 }

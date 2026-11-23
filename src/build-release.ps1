@@ -7,7 +7,9 @@ param(
     [string]$ExperimentalTongueModelRoot = "",
     [string]$DeveloperModelRoot = "",
     [string]$TestNotesPath = "",
-    [string]$ControllerInputAssetRoot = ""
+    [string]$ControllerInputAssetRoot = "",
+    [switch]$StageOnly,
+    [switch]$RequireLegacyUpdaterCompatibility
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,6 +38,73 @@ $assetRootResolved = if ([string]::IsNullOrWhiteSpace($AssetRoot)) { "" } else {
 if ($assetRootResolved -and -not (Test-Path -LiteralPath $assetRootResolved -PathType Container)) {
     throw "Asset root does not exist: $assetRootResolved"
 }
+$legacySdkRoot = if (-not [string]::IsNullOrWhiteSpace($VrcftInstallDir)) {
+    [System.IO.Path]::GetFullPath($VrcftInstallDir)
+}
+$legacyModulePath = 'vrcft-gaze-bridge\bin\Release\net10.0\Qpro.GazeBridge.dll'
+
+function Get-QproPrebuiltLegacyModule([string]$RuntimeAssetRoot, [string]$ModulePath) {
+    $candidate = Join-Path $RuntimeAssetRoot $ModulePath
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { return }
+    $checksums = Join-Path (Split-Path -Parent $RuntimeAssetRoot) 'SHA256SUMS.txt'
+    if (-not (Test-Path -LiteralPath $checksums -PathType Leaf)) {
+        Write-Warning 'Skipping the legacy module from AssetRoot because its package SHA256SUMS.txt is unavailable.'
+        return
+    }
+    $archivePath = 'QproRuntime/' + $ModulePath.Replace('\', '/')
+    $entry = '^([0-9a-fA-F]{64})\s+' + [regex]::Escape($archivePath) + '$'
+    $hashes = @(Get-Content -LiteralPath $checksums | ForEach-Object {
+        if ($_ -match $entry) { $Matches[1] }
+    })
+    if ($hashes.Count -ne 1 -or (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -ne $hashes[0]) {
+        throw 'The optional legacy module from AssetRoot does not match its package checksum.'
+    }
+    if ([Reflection.AssemblyName]::GetAssemblyName($candidate).Name -ne 'Qpro.GazeBridge') {
+        throw 'The optional legacy module from AssetRoot is not a Qpro.GazeBridge assembly.'
+    }
+    return $candidate
+}
+
+function Test-QproAssetBackupManifest([string]$RuntimeAssetRoot) {
+    $manifest = Join-Path $RuntimeAssetRoot 'release-manifest.json'
+    if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { return $false }
+    $metadata = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
+    if ($metadata.vrcftBackupBundled -isnot [bool] -or -not $metadata.vrcftBackupBundled) { return $false }
+    $sums = Join-Path (Split-Path -Parent $RuntimeAssetRoot) 'SHA256SUMS.txt'
+    $hashes = @(Get-Content -LiteralPath $sums | ForEach-Object {
+        if ($_ -match '^([0-9a-fA-F]{64})  QproRuntime/release-manifest\.json$') { $Matches[1] }
+    })
+    if ($hashes.Count -ne 1 -or (Get-FileHash -LiteralPath $manifest).Hash -ne $hashes[0]) {
+        throw 'The VRCFaceTracking backup declaration does not match the asset package checksum.'
+    }
+    return $true
+}
+
+$legacyModule = $null
+$backupBundled = [bool]$legacySdkRoot
+if ($legacySdkRoot) {
+    foreach ($sdkFile in @('VRCFaceTracking.Core.dll', 'VRCFaceTracking.SDK.dll', 'Microsoft.Extensions.Logging.Abstractions.dll')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $legacySdkRoot $sdkFile) -PathType Leaf)) {
+            throw "The optional legacy VRCFaceTracking module requires $sdkFile in -VrcftInstallDir."
+        }
+    }
+} elseif ($assetRootResolved) {
+    $legacyModule = Get-QproPrebuiltLegacyModule $assetRootResolved $legacyModulePath
+    if ($legacyModule) { $backupBundled = Test-QproAssetBackupManifest $assetRootResolved }
+}
+if ($legacyModule -and -not $backupBundled) {
+    Write-Warning 'The older Qpro DLL is retained for updater compatibility. To enable VRCFaceTracking backup output, supply -VrcftInstallDir to build the current module.'
+}
+if (-not ($legacySdkRoot -or $legacyModule)) {
+    $missingBridge = 'The V3.0.4 updater needs the legacy Qpro.GazeBridge.dll in the incoming package. Supply an extracted release with its SHA256SUMS.txt via -AssetRoot, or supply -VrcftInstallDir to build the DLL.'
+    if ($RequireLegacyUpdaterCompatibility) { throw $missingBridge }
+    Write-Warning "$missingBridge This direct build can still be extracted manually."
+}
+if ([string]::IsNullOrWhiteSpace($DeveloperModelRoot) -and [string]::IsNullOrWhiteSpace($ExperimentalTongueModelRoot)) {
+    $missingPair = 'Hub updaters require a bundled gate/direction model pair. Supply -DeveloperModelRoot or -ExperimentalTongueModelRoot for an update package.'
+    if ($RequireLegacyUpdaterCompatibility) { throw $missingPair }
+    Write-Warning $missingPair
+}
 
 # Refuse a stale/old native stage before deleting any previous release output.
 $controllerAssetRoot = if ($ControllerInputAssetRoot) {
@@ -57,7 +126,7 @@ New-Item -ItemType Directory -Force -Path $releaseRoot, $artifactRoot | Out-Null
 
 Write-Host "Publishing the self-contained Windows hub..."
 $hubPublish = Join-Path $artifactRoot "hub"
-& $dotnet publish (Join-Path $root "qpro-hub\QproFaceTracking.Hub.csproj") -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:DebugType=None "-p:Version=$Version" -o $hubPublish @restoreArgs
+& $dotnet publish (Join-Path $root "qpro-hub\QproFaceTracking.Hub.csproj") -c Release -r win-x64 --self-contained true -p:QproRemoteClicker=false -p:PublishSingleFile=true -p:DebugType=None "-p:Version=$Version" -o $hubPublish @restoreArgs
 if ($LASTEXITCODE -ne 0) { throw "Publishing the Windows hub failed." }
 Copy-Item -LiteralPath (Join-Path $hubPublish "QproFaceTracking.Hub.exe") -Destination (Join-Path $releaseRoot "QproFaceTracking.exe")
 
@@ -69,15 +138,17 @@ $labelDestination = Join-Path $runtimeRoot "vd-label-bridge\bin\Release\net10.0"
 New-Item -ItemType Directory -Force -Path $labelDestination | Out-Null
 Copy-Item -LiteralPath (Join-Path $labelPublish "Qpro.VirtualDesktopLabelBridge.exe") -Destination $labelDestination
 
-Write-Host "Building the Qpro Companion VRCFT modules..."
-$vrcftBuildArgs = @(if (-not [string]::IsNullOrWhiteSpace($VrcftInstallDir)) {
-    "-p:VrcftInstallDir=$([System.IO.Path]::GetFullPath($VrcftInstallDir))"
-})
-& $dotnet build (Join-Path $root "vrcft-gaze-bridge\Qpro.GazeBridge.csproj") -c Release -p:DebugType=None "-p:Version=$Version" @vrcftBuildArgs @restoreArgs
-if ($LASTEXITCODE -ne 0) { throw "Building the combined VRCFT bridge failed." }
-$vrcftBinaryDestination = Join-Path $runtimeRoot "vrcft-gaze-bridge\bin\Release\net10.0"
-New-Item -ItemType Directory -Force -Path $vrcftBinaryDestination | Out-Null
-Copy-Item -LiteralPath (Join-Path $root "vrcft-gaze-bridge\bin\Release\net10.0\Qpro.GazeBridge.dll") -Destination $vrcftBinaryDestination
+if ($legacySdkRoot) {
+    Write-Host "Building the optional Qpro VRCFaceTracking backup module for Virtual Desktop and Steam Link..."
+    & $dotnet build (Join-Path $root "vrcft-gaze-bridge\Qpro.GazeBridge.csproj") -c Release -p:BuildModuleZip=false -p:DebugType=None "-p:Version=$Version" "-p:VrcftInstallDir=$legacySdkRoot" @restoreArgs
+    if ($LASTEXITCODE -ne 0) { throw "Building the optional VRCFaceTracking backup module failed." }
+    $legacyModule = Join-Path $root $legacyModulePath
+}
+if ($legacyModule) {
+    $legacyDestination = Join-Path $runtimeRoot $legacyModulePath
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $legacyDestination) | Out-Null
+    Copy-Item -LiteralPath $legacyModule -Destination $legacyDestination
+}
 
 function Get-QproPythonArchive {
     $cacheRoot = Join-Path $root 'artifacts\python-package'
@@ -207,10 +278,12 @@ foreach ($file in $runtimeFiles) { Copy-ReleaseFile $file }
 $packagedManifestPath = Join-Path $runtimeRoot 'release-manifest.json'
 $packagedManifest = Get-Content -LiteralPath $packagedManifestPath -Raw | ConvertFrom-Json
 $packagedManifest.version = $Version
+$packagedManifest.vrcftBackupBundled = $backupBundled
+$packagedManifest.PSObject.Properties.Remove('bundledTongueModel')
 $packagedManifest | Add-Member -NotePropertyName updateFormat -NotePropertyValue 1 -Force
 $packagedManifest | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $packagedManifestPath -Encoding utf8
 
-# The optional controller runtime is built separately from the .NET face module.
+# The optional controller runtime is built separately from the Windows Hub.
 # Copy an explicit list so compiler caches, debug symbols and reference source
 # cannot enter the runnable archive.
 $controllerSourceFiles = @(
@@ -269,6 +342,7 @@ if (-not [string]::IsNullOrWhiteSpace($ExperimentalTongueModelRoot)) {
         Copy-Item -LiteralPath $source -Destination $destination
         $runtimeFiles += "models\$name"
     }
+    $packagedManifest | Add-Member -NotePropertyName bundledTongueModel -NotePropertyValue "qpro-stereo-tongue-v$experimentalVersion" -Force
 }
 if (-not [string]::IsNullOrWhiteSpace($DeveloperModelRoot)) {
     $developerModelRootResolved = [System.IO.Path]::GetFullPath($DeveloperModelRoot)
@@ -309,7 +383,7 @@ if (-not [string]::IsNullOrWhiteSpace($DeveloperModelRoot)) {
         Copy-Item -LiteralPath (Join-Path $developerModelRootResolved $name) -Destination (Join-Path $runtimeRoot ("models\" + $name))
         $runtimeFiles += "models\$name"
     }
-    $packagedManifest.bundledTongueModel = "qpro-stereo-tongue-v$developerVersion"
+    $packagedManifest | Add-Member -NotePropertyName bundledTongueModel -NotePropertyValue "qpro-stereo-tongue-v$developerVersion" -Force
     $packagedManifest.PSObject.Properties.Remove('fallbackTongueModel')
     # Retire only previously bundled identities, never a user's model merely
     # because it shares a version number. The updater backs up these removals.
@@ -470,6 +544,11 @@ $hashLines = Get-ChildItem -LiteralPath $releaseRoot -Recurse -File |
         "{0}  {1}" -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $relative
     }
 Set-Content -LiteralPath (Join-Path $releaseRoot "SHA256SUMS.txt") -Value $hashLines -Encoding utf8
+
+if ($StageOnly) {
+    Write-Host "RELEASE_READY folder=$releaseRoot"
+    return
+}
 
 $archive = "$releaseRoot.zip"
 if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }

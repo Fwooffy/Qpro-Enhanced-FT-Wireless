@@ -1,7 +1,9 @@
 {
   "name": "QproFaceTracking",
   "version": "3.0.0",
-  "transport": "usb or ADB TCP over Wi-Fi",
+  "faceOutput": "direct-vrchat-osc",
+  "vrcftBackupBundled": false,
+  "transport": "Virtual Desktop shared memory or Steam Link OSC input, direct VRChat OSC or optional VRCFaceTracking output, optional camera data over USB or wireless ADB",
   "wirelessSetup": "on-headset root terminal or Android wireless debugging pairing; USB fallback",
   "bundledEyeProfile": "qpro-independent-visual-axis-v2.json",
   "bundledTongueModel": "qpro-stereo-tongue-v15",

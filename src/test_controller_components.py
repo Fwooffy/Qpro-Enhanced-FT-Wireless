@@ -85,6 +85,10 @@ class CloseFailureOutput(io.StringIO):
 
 
 class ComponentTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        (HERE / 'artifacts').mkdir(exist_ok=True)
+
     def create_addon(self, local):
         hands, addon = module.managed_paths(local)
         module.atomic_json(addon / 'qpro-owner.json', {'format': module.OWNER_FORMAT})

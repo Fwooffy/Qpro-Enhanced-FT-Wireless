@@ -31,16 +31,18 @@ function Assert-Rejected([scriptblock]$Action, [string]$Context) {
 }
 try {
     $releaseVersion = Get-QproModuleVersion $PSScriptRoot
+    $releaseManifest = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'release-manifest.json')) | ConvertFrom-Json
+    Assert-Equal 'direct-vrchat-osc' $releaseManifest.faceOutput 'Direct release manifest identifies embedded face output for the Hub updater'
     $moduleProject = Join-Path $PSScriptRoot 'vrcft-gaze-bridge\Qpro.GazeBridge.csproj'
     $hubProject = [xml][IO.File]::ReadAllText((Join-Path $PSScriptRoot 'qpro-hub\QproFaceTracking.Hub.csproj'))
     $moduleXml = [xml][IO.File]::ReadAllText($moduleProject)
     $template = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'vrcft-gaze-bridge\module.json')) | ConvertFrom-Json
-    Assert-Equal $releaseVersion ([string]$hubProject.Project.PropertyGroup.Version) 'Hub development version'
+    Assert-Equal $releaseVersion ([string]$hubProject.SelectSingleNode('/Project/PropertyGroup/Version').InnerText) 'Hub development version'
     Assert-Equal $releaseVersion ([string]@($moduleXml.Project.PropertyGroup | Where-Object Version)[0].Version) 'Module development version'
     Assert-Equal $releaseVersion $template.Version 'Standalone module template version'
     Assert-Equal ("Qpro Companion " + [char]0x2014 + ' Virtual Desktop') $template.ModuleName 'Standalone module display name'
     $builder = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'build-release.ps1'))
-    Assert-Equal $true ([regex]::IsMatch($builder, '(?m)^& \$dotnet build .*Qpro\.GazeBridge\.csproj.*"-p:Version=\$Version"')) 'Release module uses the Hub release version argument'
+    Assert-Equal $true ([regex]::IsMatch($builder, '(?m)^if \(\$legacySdkRoot\) \{\s+Write-Host[^\r\n]+\s+& \$dotnet build .*Qpro\.GazeBridge\.csproj.*"-p:Version=\$Version"')) 'Legacy module build requires an explicit SDK and uses the Hub release version'
     $installer = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'install-vrcft-eye-bridge.ps1'))
     Assert-Equal $true ($installer.Contains('"-p:Version=$QproModuleVersion"')) 'Rebuild uses the packaged release version'
     $moduleSource = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'vrcft-gaze-bridge\TrackingModule.cs'))
@@ -60,12 +62,34 @@ try {
     }
     $runtime = Join-Path $fixture 'QproRuntime'
     New-Item -ItemType Directory -Path $runtime | Out-Null
+    Import-PureFunction (Join-Path $PSScriptRoot 'build-release.ps1') 'Get-QproPrebuiltLegacyModule'
+    $legacyRelativePath = 'vrcft-gaze-bridge\bin\Release\net10.0\Qpro.GazeBridge.dll'
+    $legacyModule = Join-Path $runtime $legacyRelativePath
+    $legacyChecksum = Join-Path $fixture 'SHA256SUMS.txt'
+    Assert-Equal $false ([bool](Get-QproPrebuiltLegacyModule $runtime $legacyRelativePath)) 'The legacy bridge is optional in a clean asset root'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $legacyModule) -Force | Out-Null
+    [IO.File]::WriteAllText($legacyModule, 'Synthetic non-module fixture')
+    Assert-Equal $false ([bool](Get-QproPrebuiltLegacyModule $runtime $legacyRelativePath)) 'Legacy binary without a package receipt is skipped'
+    $archivePath = 'QproRuntime/' + $legacyRelativePath.Replace('\', '/')
+    [IO.File]::WriteAllText($legacyChecksum, ('0' * 64) + "  $archivePath")
+    Assert-Rejected { Get-QproPrebuiltLegacyModule $runtime $legacyRelativePath } 'Legacy binary checksum mismatch'
+    [IO.File]::WriteAllText($legacyChecksum, (Get-FileHash -LiteralPath $legacyModule).Hash + "  $archivePath")
+    Assert-Rejected { Get-QproPrebuiltLegacyModule $runtime $legacyRelativePath } 'Checksum-matching fixture without a Qpro assembly identity'
+
     Assert-Equal '3.0.0' (Get-QproModuleVersion $runtime) 'Explicit development fallback'
     Assert-Equal '9.3.1' (Get-QproModuleVersion $runtime '9.3.1') 'Selected development fallback'
     Assert-Rejected { Get-QproModuleVersion $runtime 'bad' } 'Malformed development version'
     $manifestPath = Join-Path $runtime 'release-manifest.json'
+    Import-PureFunction (Join-Path $PSScriptRoot 'build-release.ps1') 'Test-QproAssetBackupManifest'
     [System.IO.File]::WriteAllText($manifestPath, '{"name":"QproFaceTracking","version":"2.4.7"}')
     Assert-Equal '2.4.7' (Get-QproModuleVersion $runtime) 'Packaged module card version'
+    Assert-Equal $false (Test-QproAssetBackupManifest $runtime) 'A historical module alone does not support switching output'
+    [IO.File]::WriteAllText($manifestPath, '{"name":"QproFaceTracking","version":"3.0.4","vrcftBackupBundled":true}')
+    Assert-Rejected { Test-QproAssetBackupManifest $runtime } 'Missing checksum for the backup capability declaration'
+    [IO.File]::WriteAllText($legacyChecksum, (Get-FileHash -LiteralPath $manifestPath).Hash + '  QproRuntime/release-manifest.json')
+    Assert-Equal $true (Test-QproAssetBackupManifest $runtime) 'Checksummed backup support can be carried forward'
+    [IO.File]::AppendAllText($manifestPath, ' ')
+    Assert-Rejected { Test-QproAssetBackupManifest $runtime } 'Changed backup declaration with a stale checksum'
     foreach ($payload in @('{invalid', '{}', '{"name":"Other","version":"2.4.7"}',
         '{"name":"QproFaceTracking","version":214}', '{"name":"QproFaceTracking","version":"v2.4.7"}',
         '{"name":"QproFaceTracking","version":"2.4.7-rc1"}', '{"name":"QproFaceTracking","version":"02.4.7"}',
@@ -126,7 +150,8 @@ try {
     foreach ($required in @('test_rocm_environment_isolation.ps1', 'test_vrcft_module_preflight.ps1',
         'camera-transport-recovery.ps1', 'test_camera_transport_recovery.ps1', 'test_camera_transport_status.py',
         'test_relay_listener_startup.ps1', 'test_wireless_camera_identity.ps1',
-        'release-package.ps1', 'companion_lifecycle.py', 'RELEASE_NOTES_V3.0.2.md', 'RELEASE_NOTES_V3.0.3.md', 'RELEASE_NOTES_V3.0.4.md')) {
+        'release-package.ps1', 'companion_lifecycle.py', 'test_companion_launcher.ps1', 'vd-label-bridge\VirtualDesktopFaceMap.cs',
+        'RELEASE_NOTES_V3.0.2.md', 'RELEASE_NOTES_V3.0.3.md', 'RELEASE_NOTES_V3.0.4.md')) {
         Assert-Equal $true ($listedSources -contains $required) "Public regression inventory: $required"
     }
     Assert-Equal $true ($actualExport -contains 'tests\test-release-package.ps1') 'Release ZIP regression exported with its helper'
