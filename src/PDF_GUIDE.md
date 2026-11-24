@@ -60,7 +60,7 @@ For avatar creators: [VRChat face OSC](https://creators.vrchat.com/avatars/face-
 
 Install **SteamVR**, **VRChat** and your streaming app's PC software. Install VRCFaceTracking only if you plan to use the backup route. PC runtime setup needs internet access and several gigabytes of free space.
 
-1. Download **QproCompanion.V3.0.4.zip** from [Releases](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases), or use the supplied release ZIP.
+1. Download **QproCompanion.V3.1.0.zip** from [Releases](https://github.com/Fwooffy/Qpro-Enhanced-FT-Wireless/releases), or use the supplied release ZIP.
 2. Right-click the ZIP in File Explorer and choose **Extract All**. Keep `QproFaceTracking.exe`, `Helpers` and `QproRuntime` together.
 3. Open `QproFaceTracking.exe`. For OneDrive, first choose **Always keep on this device** for the whole extracted folder.
 
@@ -71,7 +71,7 @@ With SteamVR running, check **First-time setup > Launch with SteamVR** in Compan
 > [!NOTE] Independent gaze is optional
 > You do not need a gaze Magisk module or the Hub's gaze preparation for ordinary face tracking, tongue tracking or pupil dilation.
 
-ADB and private Python are supplied. For update compatibility, the executable, app/data folders and `.qptonguemodel` format keep their old names. The legacy **QproFaceTracking.V3.0.4.zip** is the same package for older updaters; use either ZIP. GitHub's **Source code** archives are not the app.
+ADB and private Python are supplied. For update compatibility, the executable, app/data folders and `.qptonguemodel` format keep their old names. The legacy **QproFaceTracking.V3.1.0.zip** is the same package for older updaters; use either ZIP. GitHub's **Source code** archives are not the app.
 
 ## Virtual Desktop and Steam Link
 
@@ -364,9 +364,9 @@ The 10.1 recipe passed offline checks, not a live installation in this review. S
 
 ## Updates
 
-The Hub checks for a newer stable release when it opens. **Update available** offers **View update** for details or **Later** to dismiss. It waits until the Hub is active and idle, and appears once per release per session. Neither choice installs anything.
+The Hub checks for a newer stable release at startup. When active and idle, it offers **View update** or **Later**, once per release per session. Neither installs anything.
 
-From V3.0.2, notes show headings, emphasis, lists and code formatting. HTTP/HTTPS links open only when clicked; reading notes does not download an update. Older Hub versions show plain notes until upgraded.
+**Upgrade directly from V3.0.3 to V3.1.0.** No intermediate version is needed. The original V3.0.3 updater passed the packaged update check. Live sessions still need separate verification.
 
 1. Use **View update** or the top-right **Update available** link to read release notes. After **Later**, that link keeps the checked details, including after a temporary network failure. **Check updates** checks manually.
 2. Stop tracking, then click **Update**. The ZIP checksum and packaged files are verified. Cancelling the download leaves the current app unchanged.
@@ -386,9 +386,9 @@ For older updater rejection, see [legacy recovery](#return-to-ordinary-tracking)
 
 ### Components and recovery
 
-Stop tracking and training before component updates. Close VRCFaceTracking and its helper before maintaining installed Qpro modules.
+For **VRCFaceTracking backup**, close VRCFaceTracking and **ModuleProcess**, then select **Install Qpro backup module** under **First-time setup > VRChat output** to install the matching V3.1.0 module. For **Direct to VRChat**, close VRCFaceTracking and enable VRChat OSC.
 
-Updates retain streaming-app and ROCm choices. Errors stop remaining updates. Recovery copies remain; ROCm retains its verified environment until new GPU checks pass.
+Stop tracking and training before component updates. Saved streaming-app and ROCm choices and recovery copies remain. ROCm keeps its verified environment until new GPU checks pass.
 
 ## Controllers
 
@@ -521,8 +521,6 @@ The action removes installed Qpro modules and restores verified source-module ba
 
 ## Setup problems
 
-Read the first specific error in **Activity**. An exit code is a result, not the cause.
-
 | What you see | Next step |
 | --- | --- |
 | Install runtime seems stuck | Keep the Hub open. Look for PowerShell PID, phase and still-running messages. With no script message, check Windows Security for blocked PowerShell and send the log. |
@@ -530,6 +528,7 @@ Read the first specific error in **Activity**. An exit code is a result, not the
 | ModuleNotFoundError | Follow the missing-package/file repair message. Extract the whole named release ZIP. It is not automatically a Visual C++ issue. |
 | Waiting for VRChat or OSC | Open VRChat, enable **Action Menu > OSC > Enabled** and verify the avatar accepts face tracking. Both output routes need VRChat OSC. |
 | Direct selected while VRCFaceTracking is open | Close VRCFaceTracking and its module helper. Wait for Companion to check the local VRChat connection. |
+| Camera buffer could not open / SHARED_MEMORY_FAILED | Stop tracking, reboot and reconnect the Quest Pro. Allow Magisk **Shell / ADB Shell**, then retry. If it repeats, send **Copy diagnostics** and the app folder’s `QproRuntime\questpro-live-relay.txt`. |
 | No Steam Link expressions | Check OSC, eye/face sharing and **9015**. Stop competing receivers on that native input port, reconnect and retry. |
 | ROCm missing torchgen or another import | Use **Verify / repair ROCm 10.1** or **Repair ROCm 10.1**. An import failure alone does not mean an unsupported GPU. |
 | Integrated AMD GPU appears | Qpro requires a mapped **discrete** Radeon. Check its driver and Windows detection; otherwise use CPU/NVIDIA runtime. |

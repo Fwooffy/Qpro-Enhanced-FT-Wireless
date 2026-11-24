@@ -31,7 +31,7 @@ For avatar creators: [VRChat face OSC](https://creators.vrchat.com/avatars/face-
 
 The Hub checks for newer stable releases at startup and shows a popup when one is available. Choose **Update** to download and verify it, then **Restart and update** to apply it in the existing folder. Your personal/imported models, recordings, saved settings and connection choices stay in place. Native forwarding resumes when the Hub reopens. Start optional features again when ready.
 
-Automatic checks can be turned off in the update window. **Include prereleases** is off by default. The updater only offers newer versions; another V3.0.0 test build needs a manual download.
+Automatic checks can be turned off in the update window. **Include prereleases** is off by default. The updater only offers newer versions; another V3.1.0 test build needs a manual download.
 
 Use **Updates > Components** for private runtimes and installed optional components. Stop tracking or training first. Module recovery is available for installed backup and older Qpro modules.
 
@@ -96,7 +96,7 @@ Quick refinement and Focused training extend the model selected under **Facial t
 
 Personal camera captures, training arrays, saved headset addresses, and generated eye patches are not included in the release ZIP. The two approved bundled model pairs are included; raw recordings stay private. Share camera captures only with the wearer's permission. Maintainers can use the source-only [developer tongue training guide](DEVELOPER_TONGUE_TRAINING.md) to evaluate further candidates against independent captures before promoting them.
 
-**If you used a Qpro version before V2.0, record and train a new tongue model.** Working V2.0 or newer models can be exported and imported into V3.0.0 through **Model manager**, without retraining. Keep older exports as backups; importing a pre-V2.0 model does not replace a new capture and training run. The [beginner PDF guide](Quest_Pro_Enhanced_Face_Tracking_Guide.pdf) walks through the steps.
+**If you used a Qpro version before V2.0, record and train a new tongue model.** Working V2.0 or newer models can be exported and imported into V3.1.0 through **Model manager**, without retraining. Keep older exports as backups; importing a pre-V2.0 model does not replace a new capture and training run. The [beginner PDF guide](Quest_Pro_Enhanced_Face_Tracking_Guide.pdf) walks through the steps.
 
 This repository holds the editable source. Its release build also needs larger assets distributed with the ZIP. See [contributing](CONTRIBUTING.md), [third-party notices](THIRD_PARTY_NOTICES.md), and the [license](LICENSE) before redistributing changes. The [upstream README](UPSTREAM-README.md) retains the original project's notes, including older USB-oriented instructions.
 

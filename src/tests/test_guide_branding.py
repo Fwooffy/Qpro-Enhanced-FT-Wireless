@@ -124,7 +124,7 @@ def main():
             check(f"Page {index}: text within margins", not outside)
 
     names = ["README.md", "RELEASE_INSTRUCTIONS.md", "RELEASE_FIX_NOTES.md", "RELEASE_README.md",
-             "RELEASE_NOTES_V3.0.0.md", "PDF_GUIDE.md", "CONTROLLER_INPUT.md"]
+             f"RELEASE_NOTES_{version}.md", "PDF_GUIDE.md", "CONTROLLER_INPUT.md"]
     for name in names:
         text = (source / name).read_text(encoding="utf-8")
         check(f"{name}: public title", text.splitlines()[0].startswith("# Qpro Companion"))

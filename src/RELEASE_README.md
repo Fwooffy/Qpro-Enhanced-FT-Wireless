@@ -1,6 +1,6 @@
-# Qpro Companion V3.0.4 test build
+# Qpro Companion V3.1.0 test build
 
-Qpro Companion is the new name for QproFaceTracking. Extract the entire ready-to-run ZIP before opening the app. The branded **QproCompanion.V3.0.4.zip** and legacy **QproFaceTracking.V3.0.4.zip** are equivalent download aliases. For update compatibility, the executable, existing app/data folders and `.qptonguemodel` format keep their old names.
+Qpro Companion is the new name for QproFaceTracking. Extract the entire ready-to-run ZIP before opening the app. The branded **QproCompanion.V3.1.0.zip** and legacy **QproFaceTracking.V3.1.0.zip** are equivalent download aliases. For update compatibility, the executable, existing app/data folders and `.qptonguemodel` format keep their old names.
 
 This is a clean derivative of [Qpro-Enhanced-FT](https://github.com/n0tmast3r/Qpro-Enhanced-FT) v0.1.10-poc. V2.0 added AMD ROCm for tongue-model tracking and training, while NVIDIA CUDA has also been live-tested and is functional. A CPU fallback remains available. It carries headset camera and eye data over USB or wireless ADB on a trusted Wi-Fi network. Independent gaze and relative pupil dilation remain experimental features. Camera access and headset tools require a rooted Quest Pro. Native streaming reads face data already shared with the PC.
 

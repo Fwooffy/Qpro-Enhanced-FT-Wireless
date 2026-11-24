@@ -1,10 +1,10 @@
-# Qpro Companion V3.0.4: text setup guide
+# Qpro Companion V3.1.0: text setup guide
 
 > **For native streaming, use a Meta Quest Pro with face sharing enabled in Virtual Desktop or Steam Link, and enable OSC in VRChat.** Camera capture, temporary gaze and headset controller tools require root. If you need these features, check your exact firmware in [Singularity](https://github.com/Lumince/singularity) before following the [Quest Pro root guide](https://github.com/glorpette/quest-guides/blob/main/root_guide_by_fwooffy.md).
 >
-> **If you used a QproFaceTracking version before V2.0, record and train your tongue model again.** Do not import a pre-V2.0 model and assume it will work correctly. Working V2.0 or newer models can be exported and imported into V3.0.4. **Developer tongue model** is the default starting point on a fresh setup; updates keep personal/imported selections and replace retired bundled choices with the new developer model.
+> **If you used a QproFaceTracking version before V2.0, record and train your tongue model again.** Do not import a pre-V2.0 model and assume it will work correctly. Working V2.0 or newer models can be exported and imported into V3.1.0. **Developer tongue model** is the default starting point on a fresh setup; updates keep personal/imported selections and replace retired bundled choices with the new developer model.
 
-> **This guide previews V3.0.4.** Virtual Desktop and Steam Link are available under **Streaming app**. The two bundled tongue choices are **Developer tongue model** and **Mustachio**. Mustachio remains highly experimental; start with Developer tongue model or your existing working model.
+> **This guide previews V3.1.0.** Virtual Desktop and Steam Link are available under **Streaming app**. The two bundled tongue choices are **Developer tongue model** and **Mustachio**. Mustachio remains highly experimental; start with Developer tongue model or your existing working model.
 
 Start with the headset's eye tracking, then set up the PC software. **Qpro Companion** is the app; its main window is called the **Hub**. **ADB** is the connection it uses to talk to your Quest. Qpro sends tracking results directly to VRChat; Virtual Desktop or Steam Link supplies native expressions.
 
@@ -49,11 +49,11 @@ Before switching from the Magisk gaze method to the Hub's method, disable the ga
 
 ## 2. Download and open the Hub
 
-1. Use the supplied **QproCompanion.V3.0.4.zip**, or download the ready-to-run Companion asset from the [Releases page](https://github.com/Fwooffy/Qpro-Companion/releases).
+1. Use the supplied **QproCompanion.V3.1.0.zip**, or download the ready-to-run Companion asset from the [Releases page](https://github.com/Fwooffy/Qpro-Companion/releases).
 2. In Windows File Explorer, right-click the ZIP and choose **Extract All**. Open the extracted folder. Keep `QproFaceTracking.exe`, `Helpers`, and `QproRuntime` together.
 3. Double-click `QproFaceTracking.exe`. It opens on **First-time setup** the first time. You can return to that page from the menu on the left.
 
-The executable, existing app/data folders and `.qptonguemodel` files retain their original names for update compatibility. Older updaters may look for a release asset named **QproFaceTracking.V3.0.4.zip**. For a manual install, the supplied **QproCompanion.V3.0.4.zip** is sufficient.
+The executable, existing app/data folders and `.qptonguemodel` files retain their original names for update compatibility. Older updaters may look for a release asset named **QproFaceTracking.V3.1.0.zip**. For a manual install, the supplied **QproCompanion.V3.1.0.zip** is sufficient.
 
 Native face and eye forwarding can start as soon as your streaming app shares data and VRChat accepts OSC. If you enable a camera feature, **PC runtime** may download several gigabytes. The ZIP includes ADB, and Companion manages its own Python environment.
 
@@ -64,6 +64,8 @@ Native face and eye forwarding can start as soon as your streaming app shares da
 On future SteamVR starts, Companion opens with its usual native forwarding on the direct route. Optional camera, face and controller features still require **Start tracking**. Updating Companion in the same folder keeps the registered path. If you move the folder, open Companion from the new location and enable the option there while SteamVR is running.
 
 ### Keep the Hub updated
+
+**Upgrading from V3.0.3?** You can update directly to V3.1.0. The original V3.0.3 updater was checked against this package in a disposable installation, including preservation of sample personal models, recordings, options and connections. After updating, close VRCFaceTracking for **Direct to VRChat**. If you choose **VRCFaceTracking backup**, close VRCFaceTracking and its helper, then use **Install Qpro backup module** in **First-time setup > VRChat output** before reopening VRCFaceTracking.
 
 The Hub checks GitHub for a newer stable release when it opens. When one is available, an **Update available** popup offers **View update** to read its details or **Later** to dismiss the notice. It waits until the Hub is active and idle, and appears once per release in that Hub session. Neither choice downloads or installs anything. After **Later**, the top-right **Update available** link still opens the checked release; a temporary network failure does not discard those details. Click **Check updates** for a manual check. You can turn off **Check automatically when the Hub opens** in the update window.
 
@@ -263,7 +265,7 @@ See the [experimental controller guide](CONTROLLER_INPUT.md) for compatibility a
 
 ## 6. Tongue training and refinement
 
-**Train if you have no personal model or used a version before V2.0. You can import a working V2.0 or newer model into V3.0.4.** The two bundled choices are **Developer tongue model** and **Mustachio**; personal imports and refinements remain available.
+**Train if you have no personal model or used a version before V2.0. You can import a working V2.0 or newer model into V3.1.0.** The two bundled choices are **Developer tongue model** and **Mustachio**; personal imports and refinements remain available.
 
 1. For Quick refinement or Focused training, choose the model to extend under **Facial tracking > Lower-face tracking > Tongue model**. **Developer tongue model** is the default on a fresh setup; updates keep personal/imported selections and replace retired bundled choices with the new developer model. Full dataset makes a new personal model instead.
 2. Open **Personalize**. Under **Capture and train**, start with **Quick refinement**, or press **Show focused and full captures** for the other modes.
