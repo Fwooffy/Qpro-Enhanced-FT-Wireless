@@ -151,7 +151,7 @@ try {
         'camera-transport-recovery.ps1', 'test_camera_transport_recovery.ps1', 'test_camera_transport_status.py',
         'test_relay_listener_startup.ps1', 'test_wireless_camera_identity.ps1',
         'release-package.ps1', 'companion_lifecycle.py', 'test_companion_launcher.ps1', 'vd-label-bridge\VirtualDesktopFaceMap.cs',
-        'RELEASE_NOTES_V3.0.2.md', 'RELEASE_NOTES_V3.0.3.md', 'RELEASE_NOTES_V3.0.4.md')) {
+        'RELEASE_NOTES_V3.0.2.md', 'RELEASE_NOTES_V3.0.3.md', 'RELEASE_NOTES_V3.0.4.md', 'RELEASE_NOTES_V3.1.0.md')) {
         Assert-Equal $true ($listedSources -contains $required) "Public regression inventory: $required"
     }
     Assert-Equal $true ($actualExport -contains 'tests\test-release-package.ps1') 'Release ZIP regression exported with its helper'

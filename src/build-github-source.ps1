@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "3.0.0"
+    [string]$Version = "3.1.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -189,6 +189,7 @@ $sourceFiles = @(
     "RELEASE_NOTES_V3.0.2.md",
     "RELEASE_NOTES_V3.0.3.md",
     "RELEASE_NOTES_V3.0.4.md",
+    "RELEASE_NOTES_V3.1.0.md",
     "RELEASE_FIX_NOTES.md",
     "UPDATER_MIGRATION_NOTES.md",
     "RELEASE_INSTRUCTIONS.md",

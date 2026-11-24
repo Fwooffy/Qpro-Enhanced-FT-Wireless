@@ -1,38 +1,45 @@
-# Qpro Companion V3.0.4
+# Qpro Companion V3.1.0
 
 ## Before you install
 
-Extract the entire ZIP, then open `QproFaceTracking.exe`. For native tracking, share face and eye data in Virtual Desktop or Steam Link, close VRCFaceTracking and enable OSC in VRChat. Camera features and headset tools require a rooted Quest Pro. Install VRCFaceTracking if you choose the optional backup route.
+Download **QproCompanion.V3.1.0.zip**, extract the entire folder, then open `QproFaceTracking.exe`. The ZIP includes the updated PDF guide. GitHub's source archives contain development files.
 
-## What's changed
+Native face and eye input comes from **Virtual Desktop** or **Steam Link**. A rooted Quest Pro is required for camera tracking and headset tools. Enable OSC in VRChat and use an avatar with compatible face parameters. VRCFaceTracking is available as an optional backup output route.
 
-- **Direct to VRChat.** In **First-time setup → VRChat output**, choose your streaming app and select **Check VRChat connection**. Companion forwards the streaming app’s native face and eye data while camera tracking is stopped. Verify the result on your avatar.
-- **VRCFaceTracking backup.** In **First-time setup → VRChat output**, select **VRCFaceTracking backup** on the **Output route** switch. Companion releases direct output before the backup takes over. To switch back, close VRCFaceTracking and select **Direct to VRChat**.
-- **Launch with SteamVR.** With SteamVR running, enable the setting in **First-time setup** to open this copy of Companion on future starts. Camera and controller features still start with **Start tracking**.
+## New since V3.0.3
 
-- **Faster Hub startup.** First-time setup opens sooner because the Hub arranges its tables after their controls are in place. Saved choices are ready on the first visit to each page.
-- **Tongue tracking after a stall.** When frames resume after the tongue output expires, Companion uses the current pose. A retracted tongue can no longer briefly reappear from the old smoothing history.
-- **Model exports and captures.** A failed export preserves the previous model backup. Capture and label write failures are reported so you can identify incomplete recordings before training.
-- **Camera diagnostics.** The first FPS reading starts with the first received frame. Quitting a stalled USB read now responds to the console stop request.
-- **GeForce GTX 10-series support.** PC runtime setup selects the CUDA 12.6 build of PyTorch 2.14.1 for these cards and tests a GPU convolution before reporting CUDA ready. Use **First-time setup → Install runtime** to repair an older installation.
-- **Wireless camera recovery.** Companion can recover live camera tracking if the Wi-Fi stream disconnects or sends no bytes for 20 seconds. It waits up to 12 seconds for ADB to return, checks the headset identity and can restart the stream twice per session. Activity shows each recovery attempt. Recordings and calibration sessions end on a disconnect so their files remain separate.
-- **Tracking alerts.** Enable **Sound once if a tracking feature stops unexpectedly** under **Facial tracking → Show connection and camera settings** for an audible alert. The default is silent.
-- **Relative pupil dilation.** The detector reuses each eye’s filtered image across brightness thresholds. On the GPU, both eyes return to the CPU in one transfer. Small timing variations at 24 FPS no longer routinely discard the next pupil update.
-- **Stopping tracking.** Companion clears the tongue and pupil outputs before waiting for the preview or tongue worker to close. Activity reports a failed capture save if a recording cannot finish.
-- **Older AMD runtimes.** Fixed a Windows ROCm 7.2.1 issue that could leave the Python tracking process running after Stop.
-- **Activity.** Incoming lines are inserted together to keep the log responsive during bursts.
-- **CPU usage and diagnostics.** Companion reads each saved capture session once when listing datasets and skips routine Python checks during live tracking when the runtime is already verified. **Activity → Copy diagnostics** now includes pupil worker CPU time and elapsed processing time.
+- **Direct VRChat output.** Companion uses OSCQuery to discover VRChat and the current avatar's supported inputs. Native face and eye forwarding starts while Companion is open and continues after optional camera tracking stops.
+- **A choice of output routes.** Use the **Direct to VRChat / VRCFaceTracking backup** switch in **First-time setup > VRChat output**. Switching releases the previous sender before the other route takes over. Close VRCFaceTracking before choosing direct output.
+- **Optional SteamVR startup.** Enable **Launch with SteamVR** in First-time setup while SteamVR is running. Camera and controller extras still start with **Start tracking**.
+- **More compact controls.** Connection checks sit beside session status. Model actions sit beside the selected model. Activity groups Copy and Save together and places Pause and Jump beside the log.
 
-- **Automatic face-module switching:** Installing a Qpro module now backs up and removes recognized Virtual Desktop, LinkFT and older Steam Link source modules. Close VRCFaceTracking and its module helper first; no manual uninstall is needed for recognized modules.
-- **Verified backups and rollback:** Original module files are checked before removal. A failed installation attempts to restore the previous modules and source selection, with recovery details in Activity.
-- **Restore the previous source.** Close VRCFaceTracking and its helper, then choose **Activity → Restore stock VRCFT**. Companion restores verified saved modules when their original locations are free. Backups are kept in Qpro's local app data across extracted Companion folders.
-- **Backup module setup.** **Install Qpro backup module** saves recognized source modules before replacing them. Activity identifies files that need manual review.
-- **Updated guide:** The PDF and text instructions cover automatic switching and recovery.
+## Tracking and reliability fixes
 
-If the module and recovery folders are redirected to different drives, Companion stops before switching modules and reports the folder issue.
+- **USB camera startup.** The relay keeps its ADB and Magisk root session alive and waits for a verified listener. It reuses a correctly writable shared buffer without repeating a permission change that some rooted headsets refuse.
+- **Wireless camera recovery.** A live camera session can recover after a stream disconnect or 20 seconds without data. Recovery checks the headset identity, waits up to 12 seconds for ADB and permits two restart attempts. A recording or calibration session ends on disconnect to preserve its data boundaries.
+- **Pupil processing.** Reused image filtering, earlier rejection of unsuitable regions and a combined stereo GPU readback reduce repeated processing. Scheduling keeps only current pending frames and respects each feature's processing budget.
+- **Tongue and eye validity.** Tongue smoothing history resets after output expiry, preventing an old pose from briefly returning. Independent eye filters reset separately when an eye becomes invalid. The backup module clears brow values it owns when Virtual Desktop loses upper-face data.
+- **Cleaner stopping.** Tongue and pupil overrides clear before Companion waits for camera workers. ROCm readback cleanup addresses a worker that could stay running after Stop on older AMD runtimes.
+- **GeForce GTX 10-series setup.** Runtime setup selects a CUDA 12.6 PyTorch build for these cards and checks a GPU convolution before reporting CUDA ready.
 
-## Upgrading
+## Setup and data handling
 
-Stop tracking before updating. Close VRCFaceTracking before installing, switching or removing its Qpro module, then reopen it. Personal models, recordings and unrelated modules are kept.
+- **Automatic source-module replacement.** Installing the backup module saves and replaces recognized Virtual Desktop, LinkFT and older Steam Link modules. Installation checks backups before removing files and attempts restoration if a switch fails. Close VRCFaceTracking and its module helper first.
+- **Module recovery.** **Activity > Restore stock VRCFT** removes Qpro modules and restores verified saved source modules when their original locations are free. Activity reports recovery conflicts and the retained backup location.
+- **Safer model and capture actions.** File changes are blocked during active tracking, setup or training. A failed export preserves the previous model backup, and capture or label write failures are reported.
+- **Less repeated work.** Hub construction defers table layout, dataset lists read each session once, and active tracking skips routine runtime probes after verification. Activity batches incoming lines and includes pupil worker timings in diagnostics.
+- **Optional stop alert.** **Sound once if a tracking feature stops unexpectedly** is available under **Facial tracking > Show connection and camera settings**. It starts off.
 
-For problems, include your Companion version and **Activity → Copy diagnostics** on the [issue tracker](https://github.com/Fwooffy/Qpro-Companion/issues).
+## Upgrading from V3.0.3
+
+You can update directly to **V3.1.0** through the updater. Stop optional tracking and training, then choose **Update** and **Restart and update**. Personal models, recordings, saved options and connections retain their locations. Verified retired bundled models can be replaced by the current developer model.
+
+For **Direct to VRChat**, close VRCFaceTracking and enable OSC in VRChat. For **VRCFaceTracking backup**, close VRCFaceTracking and its helper, then use **Install Qpro backup module** in First-time setup to install the matching V3.1.0 module. Reopen VRCFaceTracking afterward. Runtime and optional component updates are available separately under **Updates > Components**.
+
+## Checks for this release
+
+A tester confirmed that the camera startup fix works on their Quest. The original V3.0.3 updater selected, staged and applied the V3.1.0 ZIP in a disposable installation, preserving sample personal models, recordings, options and connections. The upgraded app passed its packaged self-test.
+
+Offline checks also cover shared-buffer failures, output ownership, native source mapping, avatar parameter handling and synthetic pupil result agreement. Live avatar behaviour, SteamVR automatic launch, sustained wireless recovery and performance on other PCs still need session-specific checks.
+
+Report problems with your Companion version, headset build, GPU and **Activity > Copy diagnostics** on the [issue tracker](https://github.com/Fwooffy/Qpro-Companion/issues).
