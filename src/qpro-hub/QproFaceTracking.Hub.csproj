@@ -12,7 +12,7 @@
     <AssemblyTitle>Qpro Companion</AssemblyTitle>
     <Product>Qpro Companion</Product>
     <Description>Qpro Companion</Description>
-    <Version>3.0.0</Version>
+    <Version>3.1.0</Version>
   </PropertyGroup>
   <PropertyGroup Condition="'$(QproRemoteClicker)' == 'true'">
     <DefineConstants>$(DefineConstants);QPRO_REMOTE_CLICKER</DefineConstants>

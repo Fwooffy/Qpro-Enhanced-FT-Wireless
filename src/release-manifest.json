@@ -1,6 +1,6 @@
 {
   "name": "QproFaceTracking",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "faceOutput": "direct-vrchat-osc",
   "vrcftBackupBundled": false,
   "transport": "Virtual Desktop shared memory or Steam Link OSC input, direct VRChat OSC or optional VRCFaceTracking output, optional camera data over USB or wireless ADB",
