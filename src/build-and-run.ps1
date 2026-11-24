@@ -469,32 +469,19 @@ try {
         @($injectOutput | ForEach-Object { $_.ToString() }) | Tee-Object -FilePath .\questpro-live-inject.txt
         if ($injectExit -ne 0) { throw "Injection failed with exit code $injectExit. Send questpro-live-inject.txt." }
     }
-    if ($wirelessCameraTransport) {
-        # A relay orphaned by `nohup ... &` loses the live Magisk su execution
-        # context on this headset and then cannot fchmod/mmap the shared file.
-        # Keep the adb/su session alive for the relay's lifetime over Wi-Fi.
-        $relayExec = "/data/local/tmp/questpro-camera-relay-v8 --mode $CameraMode --max-fps $MaxFps"
-        New-QproRelayClientLogs
-        $relayArguments = "shell su -c `"$relayExec`""
-        $relayProcess = Start-Process -FilePath $adbExecutable `
-            -ArgumentList $relayArguments `
-            -PassThru -WindowStyle Hidden `
-            -RedirectStandardOutput $relayClientOutputPath `
-            -RedirectStandardError $relayClientErrorPath -ErrorAction Stop
-        $relayStarted = $true
-        Wait-QproRelayListening $relayProcess $relayClientOutputPath $relayClientErrorPath $StreamPort $CameraMode
-        Write-Host 'Wireless relay transport=live-adb-su listener=verified'
-    }
-    else {
-        $relayCommand = 'chmod 755 /data/local/tmp/questpro-camera-relay-v8; : > /data/local/tmp/questpro-relay-v8.log; nohup /data/local/tmp/questpro-camera-relay-v8 --mode {0} --max-fps {1} > /data/local/tmp/questpro-relay-v8.log 2>&1 < /dev/null &' -f $CameraMode, $MaxFps
-        & $adbExecutable shell su -c $relayCommand
-        if ($LASTEXITCODE -ne 0) { throw "Starting the root relay failed with exit code $LASTEXITCODE" }
-        $relayStarted = $true
-        Start-Sleep -Milliseconds 800
-        $relayLog = & $adbExecutable shell su -c "cat /data/local/tmp/questpro-relay-v8.log" 2>&1
-        @($relayLog | ForEach-Object { $_.ToString() }) | Tee-Object -FilePath .\questpro-live-relay.txt
-        if (-not (($relayLog -join "`n") -match "RELAY_LISTENING")) { throw "The root relay did not begin listening. Send questpro-live-relay.txt." }
-    }
+    # Keep the live Magisk execution context for the relay over USB and Wi-Fi.
+    # Backgrounding it can prevent access to the shared camera buffer.
+    $relayExec = "/data/local/tmp/questpro-camera-relay-v8 --mode $CameraMode --max-fps $MaxFps"
+    New-QproRelayClientLogs
+    $relayArguments = "shell su -c `"$relayExec`""
+    $relayProcess = Start-Process -FilePath $adbExecutable `
+        -ArgumentList $relayArguments `
+        -PassThru -WindowStyle Hidden `
+        -RedirectStandardOutput $relayClientOutputPath `
+        -RedirectStandardError $relayClientErrorPath -ErrorAction Stop
+    $relayStarted = $true
+    Wait-QproRelayListening $relayProcess $relayClientOutputPath $relayClientErrorPath $StreamPort $CameraMode
+    Write-Host 'Camera relay transport=live-adb-su listener=verified'
 
     if (-not $wirelessCameraTransport) {
         $injectOutput = & $adbExecutable shell su -c $injectCommand 2>&1

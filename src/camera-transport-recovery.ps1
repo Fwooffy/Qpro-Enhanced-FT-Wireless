@@ -208,11 +208,11 @@ function Wait-QproRelayListening($Process, [string]$OutputPath, [string]$ErrorPa
         # An exited client loses the required su lifetime, even if it managed
         # to print a listener line. Android/ADB daemon chatter is not readiness.
         if ($null -eq $Process -or $Process.HasExited) {
-            throw "The wireless root relay exited before listener startup completed. $text"
+            throw "The camera root relay exited before listener startup completed. $text"
         }
         if ($text -match $pattern) { Write-Host $Matches[0]; return }
         if ((& $Elapsed) -ge $TimeoutMilliseconds) {
-            throw "The wireless root relay did not report its listener within ${TimeoutMilliseconds}ms. $text"
+            throw "The camera root relay did not report its listener within ${TimeoutMilliseconds}ms. $text"
         }
         & $Pause
     }
