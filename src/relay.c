@@ -190,24 +190,37 @@ static int send_all(int fd, const void *data, size_t size) {
     return 1;
 }
 
+static uint8_t *shared_memory_failed(const char *operation, int fd) {
+    int error = errno;
+    struct stat status;
+    fprintf(stderr, "SHARED_MEMORY_FAILED operation=%s error=%s errno=%d euid=%u path=%s",
+            operation, strerror(error), error, (unsigned)geteuid(), SHARED_PATH);
+    if (fd >= 0 && fstat(fd, &status) == 0)
+        fprintf(stderr, " owner_uid=%u mode=%04o size=%lld",
+                (unsigned)status.st_uid, (unsigned)(status.st_mode & 07777),
+                (long long)status.st_size);
+    fputc('\n', stderr);
+    if (fd >= 0) close(fd);
+    errno = error;
+    return NULL;
+}
+
 static uint8_t *open_shared_memory(void) {
     int fd = open(SHARED_PATH, O_CREAT | O_RDWR | O_CLOEXEC, 0666);
-    if (fd < 0) return NULL;
+    if (fd < 0) return shared_memory_failed("open", fd);
     struct stat status;
-    if (fstat(fd, &status) != 0 ||
-        ((size_t)status.st_size != SHARED_BYTES &&
-         ftruncate(fd, (off_t)SHARED_BYTES) != 0)) {
-        close(fd);
-        return NULL;
-    }
-    if (fchmod(fd, 0666) != 0) {
-        close(fd);
-        return NULL;
-    }
+    if (fstat(fd, &status) != 0) return shared_memory_failed("fstat", fd);
+    if ((size_t)status.st_size != SHARED_BYTES &&
+        ftruncate(fd, (off_t)SHARED_BYTES) != 0)
+        return shared_memory_failed("ftruncate", fd);
+    /* Some Magisk sessions lack CAP_FOWNER for a file created by Shell.
+       Reuse the existing inode without changing an already-correct mode. */
+    if ((status.st_mode & 07777) != 0666 && fchmod(fd, 0666) != 0)
+        return shared_memory_failed("fchmod", fd);
     void *mapping = mmap(NULL, SHARED_BYTES, PROT_READ | PROT_WRITE,
                          MAP_SHARED, fd, 0);
+    if (mapping == MAP_FAILED) return shared_memory_failed("mmap", fd);
     close(fd);
-    if (mapping == MAP_FAILED) return NULL;
     uint8_t *shared = (uint8_t *)mapping;
     memcpy(shared, "QPSHARV7", 8);
     put_u32(shared, 32, SENSOR_WIDTH);
@@ -363,10 +376,7 @@ int main(int argc, char **argv) {
         close(pid_file);
     }
     uint8_t *shared = open_shared_memory();
-    if (!shared) {
-        fprintf(stderr, "SHARED_MEMORY_FAILED error=%s\n", strerror(errno));
-        return 2;
-    }
+    if (!shared) return 2;
     g_shared = shared;
     set_capture_lease(shared, 0);
     put_u32(shared, SHARED_REQUESTED_MAX_FPS_OFFSET, max_fps);
