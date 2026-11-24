@@ -149,6 +149,8 @@ foreach (var transactionFailure in new[]
 })
     Expect(competingSource + "\n" + transactionFailure, "did not complete", "Install Virtual Desktop module");
 Expect("An unrelated action failed. Close VRCFaceTracking before trying a replacement module.", "did not complete");
+Expect("SHARED_MEMORY_FAILED error=Operation not permitted", "camera buffer could not open", "Camera tracking");
+Expect("SHARED_MEMORY_FAILED operation=fchmod error=Operation not permitted errno=1", "camera buffer could not open", "Camera tracking");
 Expect("PyTorch did not detect a supported discrete Radeon GPU", "GPU was not verified");
 Expect("AMD packages imported successfully, but the discrete GPU check failed. See the detected adapter, driver or device error above.", "GPU was not verified");
 Expect("AMD package/import verification failed before GPU detection. See the exact missing package, import or DLL error above. This does not mean the discrete GPU is unsupported.", "packages could not be verified");

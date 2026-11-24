@@ -17,6 +17,9 @@ internal sealed record HubActionFailure(string Title, string Detail, string Next
         if (Has("root access was not granted") || Has("Grant Magisk Superuser access") ||
             Has("could not verify Magisk root") || Has("Superuser permission denied"))
             return new("Headset root access is needed", "Qpro could not verify Magisk root permission.", "Open Magisk, allow Shell / ADB Shell Superuser access, and retry with the headset awake.");
+        if (Has("SHARED_MEMORY_FAILED"))
+            return new("The headset camera buffer could not open", "The camera relay stopped while preparing its shared buffer. Activity includes the permission or file error from the headset.",
+                "Stop tracking, reboot the Quest Pro, then reconnect and allow Shell / ADB Shell in Magisk. If it repeats, send Copy diagnostics and QproRuntime\\questpro-live-relay.txt from this app folder.");
         if (Has("An active Magisk gaze module was found") || Has("Another headset gaze method is enabled in Magisk"))
             return new("Another gaze method is already active", "The Magisk gaze method conflicts with the Hub's temporary gaze method. This action stopped before changing headset tracking.",
                 "Leave Independent Eye Gaze off in the Hub. Skip Check gaze setup and Prepare gaze, then test eye movement on your VRChat avatar. To use the Hub method, disable the Magisk gaze module and reboot first.");
